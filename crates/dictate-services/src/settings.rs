@@ -236,21 +236,29 @@ impl SettingsStore {
             .join("settings.json")
     }
 
-    /// Load the file. A missing file is normal (defaults, no warning). A file that can't be read or
-    /// parsed gives defaults plus a warning, and is copied to `<name>.bak` first so nothing the
-    /// user typed is lost. Unknown fields are ignored; unknown enum values become their default.
+    /// Load the file. A missing file is normal (defaults, no warning).
+    ///
+    /// A file that isn't valid JSON, or isn't a JSON object, gives all defaults plus a warning. A
+    /// field that can't be read (say `"auto_refine": "yes"`) falls back to its own default while
+    /// every other field is kept, again with a warning. In both cases the file is first copied to
+    /// `<name>.bak` so nothing the user typed is lost. Unknown fields are ignored and unknown enum
+    /// values silently become their default.
     pub fn open(path: PathBuf) -> (SettingsStore, Option<LoadWarning>) {
         let (settings, warning) = match fs::read(&path) {
-            Ok(bytes) => {
-                let json = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes);
-                match serde_json::from_slice::<Settings>(json) {
-                    Ok(settings) => (settings, None),
-                    Err(e) => (
-                        Settings::default(),
-                        Some(keep_backup(&path, &format!("it isn't valid ({e})"))),
-                    ),
+            Ok(bytes) => match parse(&bytes) {
+                Ok((settings, dropped)) if dropped.is_empty() => (settings, None),
+                Ok((settings, dropped)) => {
+                    let lead = format!(
+                        "These settings couldn't be read and were reset to their defaults: {}",
+                        dropped.join(", ")
+                    );
+                    (settings, Some(keep_backup(&path, &lead)))
                 }
-            }
+                Err(why) => {
+                    let lead = format!("The settings file was reset to defaults because {why}");
+                    (Settings::default(), Some(keep_backup(&path, &lead)))
+                }
+            },
             Err(e) if e.kind() == io::ErrorKind::NotFound => (Settings::default(), None),
             Err(e) => (
                 Settings::default(),
@@ -293,20 +301,44 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     path.with_file_name(name)
 }
 
-fn keep_backup(path: &Path, why: &str) -> LoadWarning {
+/// Parse the file one field at a time, so one bad value never costs the others. Returns the
+/// settings plus the names of the fields that were dropped, or why the file isn't usable at all.
+fn parse(bytes: &[u8]) -> Result<(Settings, Vec<String>), String> {
+    let json = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
+    let value: serde_json::Value =
+        serde_json::from_slice(json).map_err(|e| format!("it isn't valid JSON ({e})"))?;
+    let serde_json::Value::Object(fields) = value else {
+        return Err("it isn't a JSON object".into());
+    };
+
+    // Add the fields one by one, keeping each only if the file still reads as `Settings`. An
+    // unknown field always passes (it is ignored), so only a known field with a bad value is dropped.
+    let mut settings = Settings::default();
+    let mut accepted = serde_json::Map::new();
+    let mut dropped = Vec::new();
+    for (name, value) in fields {
+        accepted.insert(name.clone(), value);
+        match serde_json::from_value::<Settings>(serde_json::Value::Object(accepted.clone())) {
+            Ok(parsed) => settings = parsed,
+            Err(_) => {
+                accepted.remove(&name);
+                dropped.push(name);
+            }
+        }
+    }
+    Ok((settings, dropped))
+}
+
+/// Copy the unusable file to `<name>.bak`; `lead` says what went wrong, without a final period.
+fn keep_backup(path: &Path, lead: &str) -> LoadWarning {
     let backup = with_suffix(path, ".bak");
     match fs::copy(path, &backup) {
         Ok(_) => LoadWarning {
-            message: format!(
-                "The settings file was reset to defaults because {why}. The old file was kept as {}.",
-                backup.display()
-            ),
+            message: format!("{lead}. The old file was kept as {}.", backup.display()),
             backup: Some(backup),
         },
         Err(e) => LoadWarning {
-            message: format!(
-                "The settings file was reset to defaults because {why}, and the old file couldn't be kept ({e})."
-            ),
+            message: format!("{lead}, and the old file couldn't be kept ({e})."),
             backup: None,
         },
     }
@@ -617,16 +649,71 @@ mod tests {
     }
 
     #[test]
-    fn wrong_typed_field_counts_as_corrupt() {
+    fn wrong_typed_field_keeps_the_rest() {
         let dir = tempfile::tempdir().unwrap();
-        let bad = r#"{"auto_refine":"yes","vocabulary":"kept?"}"#;
-        fs::write(dir.path().join("settings.json"), bad).unwrap();
+        let original = r#"{"auto_refine":"yes","ai_model":"m1","push_to_talk":true}"#;
+        fs::write(dir.path().join("settings.json"), original).unwrap();
+
         let (store, warning) = store_in(&dir);
-        assert!(warning.is_some());
-        assert_eq!(store.get(), Settings::default());
+        let s = store.get();
+        assert_eq!(s.auto_refine, Settings::default().auto_refine);
+        assert!(s.auto_refine);
+        assert_eq!(s.ai_model, "m1");
+        assert!(s.push_to_talk);
+
+        let warning = warning.expect("a dropped field is reported");
+        assert!(warning.message.contains("auto_refine"));
+        assert!(!warning.message.contains("ai_model"));
+        assert_eq!(warning.backup, Some(dir.path().join("settings.json.bak")));
         assert_eq!(
             fs::read_to_string(dir.path().join("settings.json.bak")).unwrap(),
-            bad
+            original
+        );
+    }
+
+    #[test]
+    fn every_unreadable_field_is_dropped_on_its_own() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("settings.json"),
+            r#"{"summary_model":null,"push_to_talk":"true","vocabulary":"Dictate",
+                "dictation_language":7,"hotkey":"Ctrl+D","whisper_model":null}"#,
+        )
+        .unwrap();
+
+        let (store, warning) = store_in(&dir);
+        let s = store.get();
+        assert_eq!(s.summary_model, "");
+        assert!(!s.push_to_talk);
+        assert_eq!(s.dictation_language, "en-US");
+        assert_eq!(s.vocabulary, "Dictate");
+        assert_eq!(s.hotkey, "Ctrl+D");
+        assert_eq!(s.whisper_model, None);
+
+        let warning = warning.expect("dropped fields are reported");
+        for field in ["summary_model", "push_to_talk", "dictation_language"] {
+            assert!(warning.message.contains(field), "{field} not named");
+        }
+        // Fields that were fine, including a null for an optional one, aren't blamed.
+        for field in ["vocabulary", "hotkey", "whisper_model"] {
+            assert!(!warning.message.contains(field), "{field} wrongly named");
+        }
+    }
+
+    #[test]
+    fn saving_after_a_dropped_field_leaves_a_clean_file_and_the_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = r#"{"auto_refine":"yes","ai_model":"m1"}"#;
+        fs::write(dir.path().join("settings.json"), original).unwrap();
+        let (store, _) = store_in(&dir);
+        store.save(&store.get()).unwrap();
+
+        let (reopened, warning) = store_in(&dir);
+        assert!(warning.is_none());
+        assert_eq!(reopened.get().ai_model, "m1");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("settings.json.bak")).unwrap(),
+            original
         );
     }
 
