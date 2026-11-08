@@ -9,6 +9,7 @@ description = "Services for the Dictate app: settings, secrets, AI and transcrip
 [dependencies]
 dirs = "7.0.0"
 keyring = "3.6.3"
+reqwest = { version = "0.12.28", default-features = false, features = ["json", "rustls-tls", "stream"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 
@@ -25,3 +26,6 @@ keyring = { version = "3.6.3", features = ["async-secret-service", "async-io", "
 
 [dev-dependencies]
 tempfile = "3.27.0"
+tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread"] }
+# wiremock 0.6.5 needs Rust 1.88: stay on 0.6.4 until the minimum Rust version moves up.
+wiremock = "=0.6.4"
