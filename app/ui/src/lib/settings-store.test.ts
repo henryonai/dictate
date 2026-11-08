@@ -213,3 +213,120 @@ describe("the language of the window", () => {
     expect(currentLanguage()).toBe("vi");
   });
 });
+
+describe("a change made while a call is on its way", () => {
+  /** Starts a save and waits until it is really on its way, held by the test. */
+  async function saveOnItsWay(store: SettingsStore, patch: Parameters<SettingsStore["update"]>[0]) {
+    const answer = later<ReturnType<typeof fakeView>>();
+    vi.mocked(api.saveSettings).mockReturnValueOnce(answer.promise);
+    const done = store.update(patch);
+    await vi.waitFor(() => expect(api.saveSettings).toHaveBeenCalledTimes(1));
+    return { answer, done };
+  }
+
+  test("is kept on screen when the earlier save answers, and is saved after it", async () => {
+    const store = await loaded();
+    const first = await saveOnItsWay(store, { push_to_talk: true });
+
+    const second = store.update({ auto_write: false });
+    first.answer.resolve(fakeView({ push_to_talk: true }));
+    await first.done;
+
+    // The answer to the first save doesn't know the second change: it must not wipe it out.
+    expect(store.view).toMatchObject({ push_to_talk: true, auto_write: false });
+
+    await second;
+    expect(api.saveSettings).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(api.saveSettings).mock.calls[1][0]).toMatchObject({ push_to_talk: true, auto_write: false });
+    expect(store.view).toMatchObject({ push_to_talk: true, auto_write: false });
+  });
+
+  test("is kept, and saved, when the earlier save fails: only the failed change goes back", async () => {
+    const store = await loaded();
+    const first = await saveOnItsWay(store, { launch_at_login: true });
+
+    const second = store.update({ auto_write: false });
+    first.answer.reject("Could not change launch at login: denied");
+    await first.done;
+
+    expect(store.view).toMatchObject({ launch_at_login: false, auto_write: false });
+
+    await second;
+    expect(vi.mocked(api.saveSettings).mock.calls[1][0]).toMatchObject({ launch_at_login: false, auto_write: false });
+    expect(store.view).toMatchObject({ launch_at_login: false, auto_write: false });
+  });
+
+  test("the last change to a setting wins, also when it is changed twice during a save", async () => {
+    const store = await loaded();
+    const first = await saveOnItsWay(store, { hotkey: "F1" });
+
+    void store.update({ hotkey: "F2" });
+    const last = store.update({ hotkey: "F3" });
+    first.answer.resolve(fakeView({ hotkey: "F1" }));
+    await first.done;
+    expect(store.view?.hotkey).toBe("F3");
+
+    await last;
+    expect(vi.mocked(api.saveSettings).mock.lastCall?.[0].hotkey).toBe("F3");
+    expect(store.view?.hotkey).toBe("F3");
+  });
+
+  test("the error of the failed save is not wiped by the save that was waiting behind it", async () => {
+    const store = await loaded();
+    const first = await saveOnItsWay(store, { launch_at_login: true });
+
+    const second = store.update({ auto_write: false });
+    first.answer.reject("denied");
+    await Promise.all([first.done, second]);
+
+    expect(store.error).toBe("denied");
+  });
+
+  test("an edit made during a provider switch is saved with the base URL the switch brought", async () => {
+    const store = await loaded();
+    const switching = later<ReturnType<typeof fakeView>>();
+    vi.mocked(api.setAiProvider).mockReturnValue(switching.promise);
+    const switched = store.setAiProvider("openai");
+
+    const edit = store.update({ ai_model: "claude-sonnet-5" });
+    switching.resolve(fakeView({ ai_provider: "openai", ai_base_url: "http://localhost:8317/v1" }));
+    await Promise.all([switched, edit]);
+
+    expect(vi.mocked(api.saveSettings).mock.calls[0][0]).toMatchObject({
+      ai_provider: "openai",
+      ai_base_url: "http://localhost:8317/v1",
+      ai_model: "claude-sonnet-5",
+    });
+  });
+});
+
+describe("the first load", () => {
+  test("says it is loading until it ends, whether it works or not", async () => {
+    const answer = later<ReturnType<typeof fakeView>>();
+    vi.mocked(api.getSettings).mockReturnValue(answer.promise);
+    const store = new SettingsStore();
+    const loading = store.load();
+    expect(store.loading).toBe(true);
+
+    answer.reject("broken");
+    await loading;
+    expect(store.loading).toBe(false);
+  });
+
+  test("can be tried again after a failure, and the old error goes while it runs", async () => {
+    vi.mocked(api.getSettings).mockRejectedValueOnce("The settings folder is locked");
+    const store = new SettingsStore();
+    await store.load();
+    expect(store.error).toBe("The settings folder is locked");
+
+    const answer = later<ReturnType<typeof fakeView>>();
+    vi.mocked(api.getSettings).mockReturnValue(answer.promise);
+    const again = store.load();
+    expect(store.error).toBe("");
+
+    answer.resolve(fakeView({ hotkey: "F9" }));
+    await again;
+    expect(store.view?.hotkey).toBe("F9");
+    expect(store.error).toBe("");
+  });
+});
