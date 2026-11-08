@@ -84,7 +84,7 @@ async fn send(
                 format!("{base}/v1/messages")
             };
             http::client()?
-                .post(parse_url(&url)?)
+                .post(http::parse_url(&url)?)
                 // Swift sets this header even without a key; the API then answers 401 itself.
                 .header("x-api-key", key.unwrap_or_default())
                 .header("anthropic-version", "2023-06-01")
@@ -109,7 +109,7 @@ async fn send(
                 body["reasoning"] = json!({"effort": "low"});
             }
             let mut request = http::client()?
-                .post(parse_url(&format!("{base}/chat/completions"))?)
+                .post(http::parse_url(&format!("{base}/chat/completions"))?)
                 .json(&body);
             if let Some(key) = key {
                 request = request.bearer_auth(key);
@@ -148,11 +148,6 @@ async fn send(
         Some(text) if !text.is_empty() => Ok(text.to_string()),
         _ => Err(ApiError::Empty),
     }
-}
-
-fn parse_url(url: &str) -> Result<reqwest::Url, ApiError> {
-    reqwest::Url::parse(url)
-        .map_err(|_| ApiError::Invalid("The base URL is not valid.".to_string()))
 }
 
 /// Applies `instruction` to the transcript `text`; the edited text comes back trimmed.

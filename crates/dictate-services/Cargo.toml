@@ -7,11 +7,14 @@ license.workspace = true
 description = "Services for the Dictate app: settings, secrets, AI and transcription clients"
 
 [dependencies]
+base64 = "0.22.1"
+dictate-core = { path = "../dictate-core" }
 dirs = "7.0.0"
 keyring = "3.6.3"
-reqwest = { version = "0.12.28", default-features = false, features = ["json", "rustls-tls", "stream"] }
+reqwest = { version = "0.12.28", default-features = false, features = ["json", "multipart", "rustls-tls", "stream"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+tokio = { version = "1.54.1", features = ["fs"] }
 
 # keyring has no default credential stores: pick the native one for each OS.
 # On Linux the pure-Rust Secret Service client avoids a libdbus build dependency.

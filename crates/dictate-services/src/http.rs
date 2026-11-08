@@ -95,6 +95,12 @@ pub fn client() -> Result<reqwest::Client, ApiError> {
         .map_err(ApiError::from)
 }
 
+/// The URL of a call; an error when the base URL the user typed does not make a valid one.
+pub(crate) fn parse_url(url: &str) -> Result<reqwest::Url, ApiError> {
+    reqwest::Url::parse(url)
+        .map_err(|_| ApiError::Invalid("The base URL is not valid.".to_string()))
+}
+
 /// Builds the error for a reply that is not a success: the provider's `error.message` when the body has one,
 /// else the first 300 characters of the body.
 pub fn status_error(status: u16, body: &[u8]) -> ApiError {
