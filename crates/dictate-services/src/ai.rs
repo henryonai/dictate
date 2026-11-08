@@ -83,7 +83,7 @@ async fn send(
             } else {
                 format!("{base}/v1/messages")
             };
-            http::client()
+            http::client()?
                 .post(parse_url(&url)?)
                 // Swift sets this header even without a key; the API then answers 401 itself.
                 .header("x-api-key", key.unwrap_or_default())
@@ -108,7 +108,7 @@ async fn send(
             if quick && base.contains("openrouter.ai") {
                 body["reasoning"] = json!({"effort": "low"});
             }
-            let mut request = http::client()
+            let mut request = http::client()?
                 .post(parse_url(&format!("{base}/chat/completions"))?)
                 .json(&body);
             if let Some(key) = key {
@@ -143,8 +143,9 @@ async fn send(
             .as_str()
             .map(str::to_owned),
     };
-    match text {
-        Some(text) if !text.is_empty() => Ok(text.trim().to_string()),
+    // A reply of blanks is as good as none: an edit must not wipe the user's text, nor a check pass.
+    match text.as_deref().map(str::trim) {
+        Some(text) if !text.is_empty() => Ok(text.to_string()),
         _ => Err(ApiError::Empty),
     }
 }
@@ -499,6 +500,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_blank_reply_is_empty_not_an_empty_string() {
+        for blank in [" ", "\n", "\r\n \t"] {
+            let server = server_replying(openai_reply(blank)).await;
+            let openai = config(AiProvider::OpenAi, &server.uri(), None);
+            assert_eq!(
+                ask(&openai, false).await.unwrap_err(),
+                ApiError::Empty,
+                "OpenAI-compatible, reply {blank:?}"
+            );
+
+            let server = server_replying(anthropic_reply(blank)).await;
+            let anthropic = config(AiProvider::Anthropic, &server.uri(), Some(KEY));
+            assert_eq!(
+                ask(&anthropic, false).await.unwrap_err(),
+                ApiError::Empty,
+                "Anthropic, reply {blank:?}"
+            );
+        }
+
+        let blocks = ResponseTemplate::new(200).set_body_json(json!({"content": [
+            {"type": "text", "text": "\n"},
+            {"type": "text", "text": "  "},
+        ]}));
+        let server = server_replying(blocks).await;
+        let anthropic = config(AiProvider::Anthropic, &server.uri(), Some(KEY));
+        assert_eq!(
+            ask(&anthropic, false).await.unwrap_err(),
+            ApiError::Empty,
+            "Anthropic, several blank blocks"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_redirect_is_an_error_and_is_never_followed() {
+        for provider in [AiProvider::Anthropic, AiProvider::OpenAi] {
+            let target = server_replying(anthropic_reply("stolen")).await;
+            let origin = server_replying(
+                ResponseTemplate::new(307)
+                    .insert_header("location", format!("{}/elsewhere", target.uri())),
+            )
+            .await;
+            let c = config(provider, &origin.uri(), Some(KEY));
+
+            let err = ask(&c, false).await.unwrap_err();
+
+            assert_eq!(
+                err,
+                ApiError::Status {
+                    status: 307,
+                    message: String::new()
+                },
+                "{provider:?}"
+            );
+            assert!(
+                target.received_requests().await.unwrap().is_empty(),
+                "{provider:?}: the redirect target got a request"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn a_base_url_that_is_not_a_url_is_invalid() {
         let c = config(AiProvider::OpenAi, "  //  ", None);
         assert!(matches!(
@@ -641,6 +703,28 @@ mod tests {
         let c = config(AiProvider::OpenAi, &server.uri(), None);
 
         assert_eq!(check(&c).await.unwrap_err(), ApiError::Empty);
+    }
+
+    #[tokio::test]
+    async fn check_fails_when_the_reply_is_blank() {
+        let server = server_replying(openai_reply("\n")).await;
+        let openai = config(AiProvider::OpenAi, &server.uri(), None);
+        assert_eq!(check(&openai).await.unwrap_err(), ApiError::Empty);
+
+        let server = server_replying(anthropic_reply("  ")).await;
+        let anthropic = config(AiProvider::Anthropic, &server.uri(), Some(KEY));
+        assert_eq!(check(&anthropic).await.unwrap_err(), ApiError::Empty);
+    }
+
+    #[tokio::test]
+    async fn refine_fails_when_the_reply_is_blank() {
+        let server = server_replying(anthropic_reply("\n")).await;
+        let c = config(AiProvider::Anthropic, &server.uri(), Some(KEY));
+
+        assert_eq!(
+            refine(&c, "my words", "Fix it.").await.unwrap_err(),
+            ApiError::Empty
+        );
     }
 
     #[test]

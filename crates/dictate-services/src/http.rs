@@ -12,20 +12,21 @@ pub enum ApiError {
     Network(String),
     /// The request could not be built, or the answer was not what the API promises.
     Invalid(String),
-    /// A good answer that holds no content.
+    /// A good answer that holds no content (nothing, or only blanks).
     Empty,
 }
 
 impl ApiError {
-    /// Whether asking again may well work: 408, 429, 5xx, a 200 that carried nothing usable, and any
-    /// network failure. A bad key, missing credit or a model that cannot do the job do not pass.
+    /// Whether asking again may well work: 408, 429, 5xx, a good reply without content (the provider failed
+    /// mid-reply), and any network failure. A bad key, missing credit, a model that cannot do the job or a reply
+    /// that is not the API's do not pass.
     pub fn is_transient(&self) -> bool {
         match self {
             ApiError::Status { status, .. } => {
                 [0, 200, 408, 429].contains(status) || *status >= 500
             }
-            ApiError::Network(_) => true,
-            ApiError::Invalid(_) | ApiError::Empty => false,
+            ApiError::Network(_) | ApiError::Empty => true,
+            ApiError::Invalid(_) => false,
         }
     }
 
@@ -81,14 +82,17 @@ impl From<reqwest::Error> for ApiError {
 
 /// A client for one burst of calls: rustls, 10 s to connect, and a `Dictate/<version>` user agent. There is no
 /// overall timeout here; each call sets its own.
-pub fn client() -> reqwest::Client {
+///
+/// Redirects are not followed: reqwest would pass headers such as `x-api-key` on to the host a redirect names.
+/// A 3xx reply comes back as a `Status` error instead.
+pub fn client() -> Result<reqwest::Client, ApiError> {
     reqwest::Client::builder()
         .user_agent(concat!("Dictate/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
-        // With rustls and its bundled root certificates there is nothing here that can fail in practice; the
-        // fallback keeps the signature infallible for callers.
-        .unwrap_or_default()
+        // A builder error, so this becomes `ApiError::Invalid`: the request cannot even be set up.
+        .map_err(ApiError::from)
 }
 
 /// Builds the error for a reply that is not a success: the provider's `error.message` when the body has one,
@@ -134,10 +138,10 @@ mod tests {
     }
 
     #[test]
-    fn network_errors_are_transient_and_bad_replies_are_not() {
+    fn network_errors_and_empty_replies_are_transient_but_invalid_ones_are_not() {
         assert!(ApiError::Network("refused".into()).is_transient());
+        assert!(ApiError::Empty.is_transient());
         assert!(!ApiError::Invalid("<html>".into()).is_transient());
-        assert!(!ApiError::Empty.is_transient());
     }
 
     #[test]
@@ -226,7 +230,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        client().get(server.uri()).send().await.unwrap();
+        client().unwrap().get(server.uri()).send().await.unwrap();
 
         let requests = server.received_requests().await.unwrap();
         let agent = requests[0]
@@ -236,5 +240,34 @@ mod tests {
             .to_str()
             .unwrap();
         assert_eq!(agent, format!("Dictate/{}", env!("CARGO_PKG_VERSION")));
+    }
+
+    #[tokio::test]
+    async fn client_does_not_follow_redirects() {
+        // reqwest would pass an `x-api-key` header on to the host a redirect names.
+        let target = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&target)
+            .await;
+        let origin = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(
+                ResponseTemplate::new(307)
+                    .insert_header("location", format!("{}/steal", target.uri())),
+            )
+            .mount(&origin)
+            .await;
+
+        let response = client()
+            .unwrap()
+            .post(origin.uri())
+            .header("x-api-key", "sk-test-key-123")
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status().as_u16(), 307);
+        assert!(target.received_requests().await.unwrap().is_empty());
     }
 }
