@@ -3,6 +3,9 @@
 
 mod commands;
 mod config;
+// Nothing calls the platform layer yet: the dictation controller (Task 10 of the dictation plan) will.
+#[allow(dead_code)]
+mod platform;
 mod state;
 #[cfg(test)]
 mod test_support;
