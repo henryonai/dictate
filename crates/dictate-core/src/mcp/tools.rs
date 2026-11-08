@@ -143,7 +143,7 @@ fn tool(
     })
 }
 
-// MARK: tools
+// -- tools
 
 fn list_meetings(library: &MeetingLibrary, args: &Args) -> Result<String, ToolError> {
     let search = TextSearch::new(string(args, "query").unwrap_or(""));
@@ -427,7 +427,7 @@ fn list_action_items(library: &MeetingLibrary, args: &Args) -> Result<String, To
     Ok(head.join("\n"))
 }
 
-// MARK: helpers
+// -- helpers
 
 fn schema(properties: Value, required: &[&str]) -> Value {
     let mut schema = Map::new();
