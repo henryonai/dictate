@@ -59,7 +59,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use super::keys::press_paste;
-use super::monitor::{is_press_message, InputMonitor, Listener};
+use super::monitor::{is_press_message, Handshake, InputMonitor, Listener};
 use super::paste::{blocked_by_uipi, is_app, KeySender, PasteError};
 use super::rules::{
     accept_caret, bounded_text_len, caret_after, classify_uia, field_anchor, first_rect,
@@ -698,58 +698,92 @@ unsafe extern "system" fn mouse_hook(code: i32, wparam: WPARAM, lparam: LPARAM) 
 /// Hears the keys and the mouse buttons that go down in every app with two low-level hooks. The hooks live on a thread
 /// of their own that runs a message loop, as Windows needs, and what they hear is sent on to a second thread that checks
 /// it and calls the handler: the hook procedures themselves do nothing slow. A click on one of our own windows (the chip
-/// itself) is not reported, as macOS doesn't report it either.
+/// itself) is not reported, as macOS doesn't report it either. Each start of the hooks has a listener of its own, so
+/// that the thread of an earlier start, which may be on its way out, can never call the handler of a later one.
 pub struct WindowsMonitor {
+    /// The hooks that are in, while they are.
+    running: Mutex<Option<Running>>,
+}
+
+/// The hooks of one start.
+struct Running {
+    /// The thread that has them.
+    thread: u32,
     listener: Arc<Listener>,
-    /// The thread of the hooks, while they are installed.
-    hooks: Mutex<Option<u32>>,
 }
 
 impl WindowsMonitor {
     pub fn new() -> WindowsMonitor {
         WindowsMonitor {
-            listener: Arc::new(Listener::default()),
-            hooks: Mutex::new(None),
+            running: Mutex::new(None),
         }
+    }
+
+    fn running(&self) -> std::sync::MutexGuard<'_, Option<Running>> {
+        self.running.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
 impl InputMonitor for WindowsMonitor {
     fn start(&self, on_input: Box<dyn Fn() + Send + Sync>) {
-        self.listener.set(on_input);
-        let mut hooks = self.hooks.lock().unwrap_or_else(PoisonError::into_inner);
-        if hooks.is_none() {
-            *hooks = install_hooks(self.listener.clone());
-            if hooks.is_none() {
-                self.listener.clear();
-            }
+        let mut running = self.running();
+        // The hooks that are in stay, and the handler is the new one.
+        if let Some(running) = running.as_ref() {
+            running.listener.set(on_input);
+            return;
         }
+        let listener = Arc::new(Listener::default());
+        listener.set(on_input);
+        *running = install_hooks(listener.clone()).map(|thread| Running { thread, listener });
     }
 
     fn stop(&self) {
         // The handler is gone at once; the thread of the hooks is told to leave and takes them out on its way.
-        self.listener.clear();
-        let thread = self
-            .hooks
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take();
-        if let Some(thread) = thread {
-            // SAFETY: a message to a thread by its id. It fails, harmlessly, when the thread is gone already.
-            let _ = unsafe { PostThreadMessageW(thread, WM_QUIT, WPARAM(0), LPARAM(0)) };
+        let running = self.running().take();
+        if let Some(running) = running {
+            running.listener.clear();
+            quit(running.thread);
         }
     }
 }
 
-/// Starts the thread of the hooks and the one that dispatches, and gives the id of the first when the hooks are in.
+impl Drop for WindowsMonitor {
+    fn drop(&mut self) {
+        // Hooks that nobody can stop any more would stay in for as long as the process does.
+        self.stop();
+    }
+}
+
+/// Tells a thread that runs a message loop to leave it.
+fn quit(thread: u32) {
+    // SAFETY: a message to a thread by its id. It fails, harmlessly, when the thread is gone already.
+    let _ = unsafe { PostThreadMessageW(thread, WM_QUIT, WPARAM(0), LPARAM(0)) };
+}
+
+/// Starts the thread of the hooks and the one that dispatches, and gives the id of the first when the hooks are in. When
+/// the hooks are not in after [`HOOKS_WAIT`] the thread is told to take them out when it gets to them, or to quit if it is
+/// in already: nothing is left running that no handle belongs to.
 fn install_hooks(listener: Arc<Listener>) -> Option<u32> {
     let (heard_tx, heard_rx) = mpsc::channel();
     let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+    let handshake = Arc::new(Handshake::default());
+    let theirs = handshake.clone();
     thread::Builder::new()
         .name("input-hooks".into())
-        .spawn(move || run_hooks(heard_tx, ready_tx))
+        .spawn(move || run_hooks(heard_tx, ready_tx, &theirs))
         .ok()?;
-    let thread = ready_rx.recv_timeout(HOOKS_WAIT).ok().flatten()?;
+    let thread = match ready_rx.recv_timeout(HOOKS_WAIT) {
+        Ok(Some(thread)) => thread,
+        // The thread could not put its hooks in, and has left.
+        Ok(None) => return None,
+        Err(_) => {
+            log::warn!("The hooks of the keyboard and the mouse took too long to come in: giving up on them");
+            if let Some(thread) = handshake.give_up() {
+                quit(thread);
+            }
+            return None;
+        }
+    };
     // It ends when the thread of the hooks does: the channel is closed then.
     let dispatched = thread::Builder::new()
         .name("input-dispatch".into())
@@ -761,16 +795,20 @@ fn install_hooks(listener: Arc<Listener>) -> Option<u32> {
             }
         });
     if dispatched.is_err() {
-        // SAFETY: as in `stop`.
-        let _ = unsafe { PostThreadMessageW(thread, WM_QUIT, WPARAM(0), LPARAM(0)) };
+        quit(thread);
         return None;
     }
     Some(thread)
 }
 
 /// The thread of the hooks: installs them, tells `ready` the id of the thread (`None` when a hook can't be installed),
-/// and runs the message loop until it is told to quit.
-fn run_hooks(heard_tx: mpsc::Sender<Press>, ready: mpsc::SyncSender<Option<u32>>) {
+/// and runs the message loop until it is told to quit. When the starter has given up waiting, takes the hooks out and
+/// leaves at once.
+fn run_hooks(
+    heard_tx: mpsc::Sender<Press>,
+    ready: mpsc::SyncSender<Option<u32>>,
+    handshake: &Handshake,
+) {
     HEARD.with(|heard| *heard.borrow_mut() = Some(heard_tx));
     // A message queue is made for the thread by looking into it, so that a quit message sent at once isn't lost.
     let mut message = MSG::default();
@@ -780,10 +818,13 @@ fn run_hooks(heard_tx: mpsc::Sender<Press>, ready: mpsc::SyncSender<Option<u32>>
     let hooks = set_hooks();
     // SAFETY: a call with no arguments.
     let thread = unsafe { GetCurrentThreadId() };
+    let wanted = handshake.arrived(thread);
     let _ = ready.send(hooks.as_ref().map(|_| thread));
     if let Some((keyboard, mouse)) = hooks {
-        // SAFETY: `message` is a buffer for the call. 0 is the quit message, and -1 an error: both end the loop.
-        while unsafe { GetMessageW(&mut message, None, 0, 0) }.0 > 0 {}
+        if wanted {
+            // SAFETY: `message` is a buffer for the call. 0 is the quit message, and -1 an error: both end the loop.
+            while unsafe { GetMessageW(&mut message, None, 0, 0) }.0 > 0 {}
+        }
         // SAFETY: the hooks that were installed above, taken out once.
         unsafe {
             let _ = UnhookWindowsHookEx(keyboard);

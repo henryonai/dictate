@@ -9,7 +9,6 @@
 //! Accessibility rectangles are in points from the top left of the primary screen, like [`Rect`], so they need no
 //! conversion; AppKit's are from the bottom left and are flipped.
 
-use std::cell::RefCell;
 use std::ptr::NonNull;
 use std::sync::{mpsc, Arc, Mutex, PoisonError};
 use std::thread;
@@ -17,11 +16,12 @@ use std::time::{Duration, Instant};
 
 use block2::RcBlock;
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, Bool, ProtocolObject};
-use objc2::MainThreadMarker;
+use objc2::runtime::{AnyObject, Bool, NSObject, NSObjectProtocol, ProtocolObject};
+use objc2::{define_class, msg_send, AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSApplicationActivationOptions, NSEvent, NSEventMask, NSPasteboard, NSPasteboardItem,
-    NSPasteboardTypeString, NSPasteboardWriting, NSRunningApplication, NSScreen, NSWorkspace,
+    NSPasteboardTypeString, NSPasteboardWriting, NSRunningApplication, NSScreen, NSTrackingArea,
+    NSTrackingAreaOptions, NSWindow, NSWorkspace,
 };
 use objc2_application_services::{
     kAXTrustedCheckOptionPrompt, AXError, AXIsProcessTrusted, AXIsProcessTrustedWithOptions,
@@ -37,7 +37,7 @@ use objc2_core_graphics::{
 };
 use objc2_foundation::{NSArray, NSData, NSString};
 
-use super::monitor::{InputMonitor, Listener};
+use super::monitor::{InputMonitor, Installed, Listener};
 use super::paste::{ChangeMark, ClipSnapshot, Clipboard, KeySender, PasteError, PasteboardItem};
 use super::rules::{
     accept_caret, ax_focus_is_the_app, caret_after, classify_ax, field_anchor, flip_y,
@@ -884,37 +884,112 @@ fn modifiers_held(flags: CGEventFlags) -> bool {
     )
 }
 
+// ---- The mouse over a window ---------------------------------------------------------------------------------
+
+/// What a [`MouseWatcher`] tells.
+struct MouseWatch {
+    on_change: Box<dyn Fn(bool)>,
+}
+
+define_class!(
+    /// Hears the mouse come into a tracking area and leave it.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "DictateMouseWatcher"]
+    #[ivars = MouseWatch]
+    struct MouseWatcher;
+
+    unsafe impl NSObjectProtocol for MouseWatcher {}
+
+    impl MouseWatcher {
+        #[unsafe(method(mouseEntered:))]
+        fn mouse_entered(&self, _event: &NSEvent) {
+            (self.ivars().on_change)(true);
+        }
+
+        #[unsafe(method(mouseExited:))]
+        fn mouse_exited(&self, _event: &NSEvent) {
+            (self.ivars().on_change)(false);
+        }
+    }
+);
+
+/// Tells `on_change` when the mouse comes over the window and when it leaves it, whichever app is the active one, with a
+/// tracking area on the window's content view. The page of a panel that is never the key window gets no mouse movement, so
+/// the page can't tell. The window keeps the delegate it has (Tauri's, which turns what the system says of the window
+/// into the events of the app): this adds to the window and replaces nothing. `ns_window` is the `NSWindow` that
+/// `WebviewWindow::ns_window` gives. On the main thread. The watcher lives as long as the window, which is as long as the app.
+pub fn watch_mouse(ns_window: *mut std::ffi::c_void, on_change: Box<dyn Fn(bool)>) -> bool {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return false;
+    };
+    // SAFETY: the pointer is the window that Tauri has made, which is alive while this runs, on the main thread.
+    let Some(window) = (unsafe { ns_window.cast::<NSWindow>().as_ref() }) else {
+        return false;
+    };
+    let Some(view) = window.contentView() else {
+        return false;
+    };
+    let watcher = MouseWatcher::alloc(mtm).set_ivars(MouseWatch { on_change });
+    // SAFETY: `init` of NSObject.
+    let watcher: Retained<MouseWatcher> = unsafe { msg_send![super(watcher), init] };
+    // `InVisibleRect`: the area is always the whole of the view, whatever its size is as the window is sized to its page.
+    let options = NSTrackingAreaOptions::MouseEnteredAndExited
+        | NSTrackingAreaOptions::ActiveAlways
+        | NSTrackingAreaOptions::InVisibleRect;
+    // SAFETY: the owner is an object that answers `mouseEntered:` and `mouseExited:`, as a tracking area needs.
+    let area = unsafe {
+        NSTrackingArea::initWithRect_options_owner_userInfo(
+            NSTrackingArea::alloc(),
+            CGRect::ZERO,
+            options,
+            Some(&watcher),
+            None,
+        )
+    };
+    view.addTrackingArea(&area);
+    // The area does not keep its owner alive for sure: the watcher is let go of by nobody, as the window is the app's for good.
+    std::mem::forget(watcher);
+    true
+}
+
 // ---- The keyboard and the mouse ------------------------------------------------------------------------------
 
 /// Hears the keys that go down and the mouse buttons that go down in other apps, through a global event monitor of
 /// AppKit. The monitor doesn't hear what goes to this app (a click on the chip is no reason to hide it), it hears the
 /// keys only while the Accessibility permission is granted, which dictation asks for, and it never says which key.
+/// Each `MacMonitor` has its monitor of its own: the one of another is not touched by it.
 pub struct MacMonitor {
     app: tauri::AppHandle,
     listener: Arc<Listener>,
+    installed: Arc<Installed<Token>>,
 }
+
+/// What AppKit gave back for the monitor, to give back to it. It is made and removed on the main thread, and it is
+/// only held (not used) anywhere else.
+struct Token(Retained<AnyObject>);
+
+// SAFETY: the object is touched on the main thread only (`install_monitor`, `remove_monitor`); other threads keep it
+// in its place and let it go, and an Objective-C object may be retained and released from any thread.
+unsafe impl Send for Token {}
 
 impl MacMonitor {
     pub fn new(app: tauri::AppHandle) -> MacMonitor {
         MacMonitor {
             app,
             listener: Arc::new(Listener::default()),
+            installed: Arc::new(Installed::default()),
         }
     }
-}
-
-thread_local! {
-    /// What AppKit gave back for the monitor. It is made and removed on the main thread, which is where this is kept.
-    static INSTALLED: RefCell<Option<Retained<AnyObject>>> = const { RefCell::new(None) };
 }
 
 impl InputMonitor for MacMonitor {
     fn start(&self, on_input: Box<dyn Fn() + Send + Sync>) {
         self.listener.set(on_input);
-        let listener = self.listener.clone();
+        let (listener, installed) = (self.listener.clone(), self.installed.clone());
         let queued = self
             .app
-            .run_on_main_thread(move || install_monitor(&listener));
+            .run_on_main_thread(move || install_monitor(&listener, &installed));
         if queued.is_err() {
             self.listener.clear();
         }
@@ -923,37 +998,42 @@ impl InputMonitor for MacMonitor {
     fn stop(&self) {
         // The handler is gone at once, whatever the main thread is busy with.
         self.listener.clear();
-        let _ = self.app.run_on_main_thread(remove_monitor);
+        let installed = self.installed.clone();
+        let _ = self
+            .app
+            .run_on_main_thread(move || remove_monitor(&installed));
     }
 }
 
-/// On the main thread. One monitor serves every start: it reports to whatever the listener has.
-fn install_monitor(listener: &Arc<Listener>) {
-    INSTALLED.with(|installed| {
-        let mut installed = installed.borrow_mut();
-        if installed.is_some() {
-            return;
-        }
+impl Drop for MacMonitor {
+    fn drop(&mut self) {
+        // A monitor that is let go of listens no more.
+        self.stop();
+    }
+}
+
+/// On the main thread. One monitor serves every start of this `MacMonitor`: it reports to whatever its listener has.
+fn install_monitor(listener: &Arc<Listener>, installed: &Installed<Token>) {
+    let made = installed.install(|| {
         let listener = listener.clone();
         let heard = RcBlock::new(move |_event: NonNull<NSEvent>| listener.report());
-        *installed = NSEvent::addGlobalMonitorForEventsMatchingMask_handler(
+        NSEvent::addGlobalMonitorForEventsMatchingMask_handler(
             NSEventMask::KeyDown | NSEventMask::LeftMouseDown | NSEventMask::RightMouseDown,
             &heard,
-        );
-        if installed.is_none() {
-            log::warn!("The system did not give a monitor for the keyboard and the mouse");
-        }
+        )
+        .map(Token)
     });
+    if !made {
+        log::warn!("The system did not give a monitor for the keyboard and the mouse");
+    }
 }
 
 /// On the main thread.
-fn remove_monitor() {
-    INSTALLED.with(|installed| {
-        if let Some(monitor) = installed.borrow_mut().take() {
-            // SAFETY: this is the object that `addGlobalMonitorForEventsMatchingMask:handler:` returned.
-            unsafe { NSEvent::removeMonitor(&monitor) };
-        }
-    });
+fn remove_monitor(installed: &Installed<Token>) {
+    if let Some(Token(monitor)) = installed.take() {
+        // SAFETY: this is the object that `addGlobalMonitorForEventsMatchingMask:handler:` returned.
+        unsafe { NSEvent::removeMonitor(&monitor) };
+    }
 }
 
 #[cfg(test)]

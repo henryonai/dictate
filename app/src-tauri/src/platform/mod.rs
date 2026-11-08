@@ -176,6 +176,13 @@ pub fn current_keys(app: &tauri::AppHandle) -> Arc<dyn paste::KeySender> {
     }
 }
 
+/// Tells `on_change` when the mouse comes over a window and when it leaves, whichever app is active (macOS only: see
+/// `macos::watch_mouse`). `ns_window` is `WebviewWindow::ns_window()`.
+#[cfg(target_os = "macos")]
+pub fn watch_mouse(ns_window: *mut std::ffi::c_void, on_change: Box<dyn Fn(bool)>) -> bool {
+    macos::watch_mouse(ns_window, on_change)
+}
+
 /// What hears the keys and the mouse buttons that go down in other apps, which hides the result chip. `app` is the way
 /// to the main thread, where macOS keeps its monitor.
 pub fn current_monitor(app: &tauri::AppHandle) -> Arc<dyn monitor::InputMonitor> {

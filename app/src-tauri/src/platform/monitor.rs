@@ -8,6 +8,7 @@
 //! this is not a keylogger, and nothing is kept.
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 /// Reports that the user pressed a key or a mouse button, in any app.
@@ -74,6 +75,74 @@ impl Listener {
     fn slot(&self) -> std::sync::MutexGuard<'_, Option<Arc<dyn Fn() + Send + Sync>>> {
         // A handler that panicked must not silence the monitor for good.
         self.handler.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// What a monitor keeps of what the system gave for it (the object that removes an AppKit monitor): one for each
+/// monitor, so that two monitors in a process can't take each other's down, and at most one at a time for each.
+#[derive(Debug)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub struct Installed<T> {
+    slot: Mutex<Option<T>>,
+}
+
+impl<T> Default for Installed<T> {
+    fn default() -> Self {
+        Self {
+            slot: Mutex::new(None),
+        }
+    }
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+impl<T> Installed<T> {
+    /// Keeps what `make` gives, unless something is kept already (then `make` is not called). Says whether there is
+    /// something kept now.
+    pub fn install(&self, make: impl FnOnce() -> Option<T>) -> bool {
+        let mut slot = self.slot.lock().unwrap_or_else(PoisonError::into_inner);
+        if slot.is_none() {
+            *slot = make();
+        }
+        slot.is_some()
+    }
+
+    /// Hands over what is kept, to be removed.
+    pub fn take(&self) -> Option<T> {
+        self.slot
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+    }
+}
+
+/// How the thread that puts hooks in and the one that started it agree, when the second waits only so long: whichever
+/// comes second sees what the first did. The thread says that it is in with `arrived`, and is told whether it is still
+/// wanted; the starter that stops waiting calls `give_up`, and is told the thread to send a quit message to, when it
+/// has arrived. One of the two always knows, so that no thread is left running its hooks with nobody that can stop it.
+#[derive(Debug, Default)]
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub struct Handshake {
+    thread: AtomicU32,
+    given_up: AtomicBool,
+}
+
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+impl Handshake {
+    /// The thread `thread` has its hooks in. False when the starter has given up waiting: take them out and leave.
+    pub fn arrived(&self, thread: u32) -> bool {
+        // Both sides write what they did and then read what the other did, all in one order (`SeqCst`): they can't both miss.
+        self.thread.store(thread, Ordering::SeqCst);
+        !self.given_up.load(Ordering::SeqCst)
+    }
+
+    /// The starter stops waiting. The thread that has arrived, if one has, is the one to tell to quit; one that has not
+    /// will find out by itself.
+    pub fn give_up(&self) -> Option<u32> {
+        self.given_up.store(true, Ordering::SeqCst);
+        match self.thread.load(Ordering::SeqCst) {
+            0 => None,
+            thread => Some(thread),
+        }
     }
 }
 
@@ -182,6 +251,84 @@ mod tests {
             0x0101, 0x0102, 0x0105, 0x0200, 0x0202, 0x0205, 0x0207, 0x020a,
         ] {
             assert!(!is_press_message(message), "{message:#06x}");
+        }
+    }
+
+    #[test]
+    fn installed_keeps_the_first_and_does_not_make_another() {
+        let installed = Installed::<u8>::default();
+        assert!(installed.install(|| Some(1)));
+        // Something is kept: the second `make` is not even called.
+        assert!(installed.install(|| panic!("a second monitor was made")));
+        assert_eq!(installed.take(), Some(1));
+    }
+
+    #[test]
+    fn installed_gives_what_it_kept_once() {
+        let installed = Installed::<u8>::default();
+        assert_eq!(installed.take(), None);
+        installed.install(|| Some(7));
+        assert_eq!(installed.take(), Some(7));
+        assert_eq!(installed.take(), None);
+        // And can be filled again after.
+        assert!(installed.install(|| Some(8)));
+        assert_eq!(installed.take(), Some(8));
+    }
+
+    #[test]
+    fn installed_stays_empty_when_the_system_gives_nothing() {
+        let installed = Installed::<u8>::default();
+        assert!(!installed.install(|| None));
+        assert_eq!(installed.take(), None);
+        // The next start may be given one.
+        assert!(installed.install(|| Some(2)));
+    }
+
+    #[test]
+    fn two_monitors_do_not_share_what_was_installed() {
+        // Each monitor has its own: one that stops takes only its own monitor down.
+        let (first, second) = (Installed::<u8>::default(), Installed::<u8>::default());
+        first.install(|| Some(1));
+        second.install(|| Some(2));
+        assert_eq!(first.take(), Some(1));
+        assert_eq!(second.take(), Some(2));
+    }
+
+    #[test]
+    fn a_thread_that_arrives_before_the_starter_gives_up_is_told_to_quit() {
+        let handshake = Handshake::default();
+        assert!(handshake.arrived(4242));
+        assert_eq!(handshake.give_up(), Some(4242));
+    }
+
+    #[test]
+    fn a_thread_that_arrives_after_the_starter_gave_up_leaves_by_itself() {
+        let handshake = Handshake::default();
+        assert_eq!(handshake.give_up(), None);
+        assert!(!handshake.arrived(4242));
+    }
+
+    #[test]
+    fn a_starter_that_gives_up_on_a_thread_that_never_comes_has_nobody_to_tell() {
+        assert_eq!(Handshake::default().give_up(), None);
+    }
+
+    #[test]
+    fn one_of_the_two_always_knows_when_they_meet_at_once() {
+        // The thread and the starter race, many times over: either the thread is told to leave, or the starter is told
+        // its id. Never neither.
+        for _ in 0..2_000 {
+            let handshake = Arc::new(Handshake::default());
+            let thread = {
+                let handshake = handshake.clone();
+                std::thread::spawn(move || handshake.arrived(77))
+            };
+            let told = handshake.give_up();
+            let wanted = thread.join().unwrap();
+            assert!(
+                !wanted || told == Some(77),
+                "wanted {wanted}, told {told:?}"
+            );
         }
     }
 }

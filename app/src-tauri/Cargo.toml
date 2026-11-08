@@ -41,7 +41,7 @@ tokio-util = { version = "0.7.20", default-features = false }
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6"
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "libc", "block2", "NSEvent", "NSPasteboard", "NSPasteboardItem", "NSRunningApplication", "NSScreen", "NSWorkspace"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "libc", "block2", "NSEvent", "NSPasteboard", "NSPasteboardItem", "NSRunningApplication", "NSResponder", "NSScreen", "NSTrackingArea", "NSView", "NSWindow", "NSWorkspace"] }
 objc2-application-services = { version = "0.3.2", default-features = false, features = ["std", "libc", "objc2", "HIServices", "AXUIElement", "AXError", "AXValue"] }
 objc2-av-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "AVCaptureDevice", "AVMediaFormat"] }
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "objc2", "CFArray", "CFBase", "CFCGTypes", "CFDictionary", "CFNumber", "CFString"] }

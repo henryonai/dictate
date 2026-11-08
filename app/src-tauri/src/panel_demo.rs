@@ -5,6 +5,8 @@
 //!   main screen), where without it they stand at the bottom centre of the screen.
 //! - `DICTATE_PANEL_DEMO_STEP_MS` is how long each state stays (3000).
 //! - `DICTATE_PANEL_DEMO_HOLD=n` stays on the n-th state (from 0) and doesn't cycle.
+//! - `DICTATE_PANEL_DEMO_CLOSE=bubble` (or `card`) closes that window once, a few seconds in, as the system does when it
+//!   asks a window to close: to see that the app hides it and shows it again with the next state.
 //! - `DICTATE_PANEL_DEMO_MONITOR=1` also starts the monitor of the keyboard and the mouse, which only logs that it heard
 //!   a key or a click (never which).
 
@@ -13,9 +15,9 @@ use std::time::Duration;
 
 use dictate_services::dictation::machine::Phase;
 use dictate_services::dictation::pipeline::{Notice, NoticeKey};
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
-use crate::panel::{emit_state, set_anchor, PanelState, View, WorkKind, Working};
+use crate::panel::{self, emit_state, set_anchor, PanelState, View, WorkKind, Working};
 use crate::platform::monitor::InputMonitor;
 use crate::platform::{self, Rect};
 
@@ -216,6 +218,12 @@ pub fn start(app: &AppHandle) {
         .ok()
         .and_then(|value| value.parse::<usize>().ok());
     let app = app.clone();
+    if let Some(label) = std::env::var("DICTATE_PANEL_DEMO_CLOSE")
+        .ok()
+        .and_then(|value| parse_close(&value))
+    {
+        close_once(&app, label);
+    }
     let monitor = std::env::var_os("DICTATE_PANEL_DEMO_MONITOR")
         .is_some()
         .then(|| start_monitor(&app));
@@ -230,6 +238,23 @@ pub fn start(app: &AppHandle) {
     if let Err(e) = spawned {
         log::warn!("Could not start the panel demo: {e}");
     }
+}
+
+/// The panel window that a `DICTATE_PANEL_DEMO_CLOSE` names.
+fn parse_close(value: &str) -> Option<&'static str> {
+    panel::window_label(value.trim())
+}
+
+/// Closes the window once, 6 s from now (a state is on screen by then).
+fn close_once(app: &AppHandle, label: &'static str) {
+    let app = app.clone();
+    let _ = std::thread::Builder::new()
+        .name("panel-demo-close".into())
+        .spawn(move || {
+            std::thread::sleep(Duration::from_secs(6));
+            let closed = app.get_webview_window(label).map(|window| window.close());
+            log::info!("Panel demo: closed the {label} window: {closed:?}");
+        });
 }
 
 /// Starts the monitor of the keyboard and the mouse, to see that it hears. It logs that something was pressed, and
@@ -345,6 +370,15 @@ mod tests {
         assert!(fixtures.iter().any(|f| f.push_to_talk));
         assert!(fixtures.iter().any(|f| !f.push_to_talk));
         assert!(fixtures.iter().any(|f| f.phase == Phase::Finishing));
+    }
+
+    #[test]
+    fn the_window_to_close_is_one_of_the_two_panels() {
+        assert_eq!(parse_close("bubble"), Some("bubble"));
+        assert_eq!(parse_close(" card "), Some("card"));
+        // The Settings window is not one to close here, and nor is a name that is none.
+        assert_eq!(parse_close("settings"), None);
+        assert_eq!(parse_close(""), None);
     }
 
     #[test]

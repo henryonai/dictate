@@ -434,7 +434,7 @@ fn monitors(_app: &AppHandle) -> Vec<MonitorBox> {
 }
 
 /// The window of this name, as it is named in the page's URL and in the capability: `None` for any other.
-fn window_label(label: &str) -> Option<&'static str> {
+pub(crate) fn window_label(label: &str) -> Option<&'static str> {
     WINDOWS.into_iter().find(|window| *window == label)
 }
 
@@ -492,9 +492,7 @@ fn create_bubble(app: &AppHandle) -> tauri::Result<()> {
 /// it is shown with `orderFrontRegardless` and nothing else.
 #[cfg(target_os = "macos")]
 fn create_bubble(app: &AppHandle) -> tauri::Result<()> {
-    use tauri_nspanel::{
-        tauri_panel, CollectionBehavior, PanelBuilder, PanelLevel, StyleMask, TrackingAreaOptions,
-    };
+    use tauri_nspanel::{tauri_panel, CollectionBehavior, PanelBuilder, PanelLevel, StyleMask};
 
     tauri_panel! {
         panel!(BubblePanel {
@@ -503,22 +501,10 @@ fn create_bubble(app: &AppHandle) -> tauri::Result<()> {
                 can_become_main_window: false,
                 is_floating_panel: true
             }
-            // The page of a window that is never the key window gets no mouse movement, so that the chip can't tell
-            // that the mouse is over it: the window watches for the mouse itself, whichever app is active.
-            with: {
-                tracking_area: {
-                    options: TrackingAreaOptions::new()
-                        .active_always()
-                        .mouse_entered_and_exited(),
-                    auto_resize: true
-                }
-            }
         })
-
-        panel_event!(BubbleEvents {})
     }
 
-    let panel = PanelBuilder::<_, BubblePanel>::new(app, BUBBLE)
+    PanelBuilder::<_, BubblePanel>::new(app, BUBBLE)
         .url(WebviewUrl::App("panel.html?view=bubble".into()))
         .level(PanelLevel::Floating)
         .style_mask(StyleMask::empty().nonactivating_panel())
@@ -539,12 +525,17 @@ fn create_bubble(app: &AppHandle) -> tauri::Result<()> {
         })
         .build()?;
 
-    let events = BubbleEvents::new();
-    let (entered, left) = (app.clone(), app.clone());
-    events.on_mouse_entered(move |_| chip_hover(&entered, true));
-    events.on_mouse_exited(move |_| chip_hover(&left, false));
-    // The panel keeps the handler for as long as it lives.
-    panel.set_event_handler(Some(events.as_ref()));
+    // The page of a window that is never the key window gets no mouse movement, so that the chip can't tell that the mouse
+    // is over it: the window watches for the mouse itself, whichever app is active. The window keeps its own delegate.
+    if let Some(window) = app.get_webview_window(BUBBLE) {
+        let ns_window = window.ns_window()?;
+        let handle = app.clone();
+        let watching =
+            platform::watch_mouse(ns_window, Box::new(move |over| chip_hover(&handle, over)));
+        if !watching {
+            log::warn!("Could not watch for the mouse over the bubble window");
+        }
+    }
     Ok(())
 }
 
@@ -792,6 +783,11 @@ fn resize_and_place(app: &AppHandle, label: &'static str, size: (f64, f64)) {
 pub fn window_closed(app: &AppHandle, label: &str) {
     if let Some(panels) = app.try_state::<Panels>() {
         panels.lock().window_closed(label);
+        if window_label(label).is_some() {
+            log::info!(
+                "The {label} window was closed by the system: the next state shows it again"
+            );
+        }
     }
 }
 
