@@ -101,6 +101,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dictate-mcp"
+version = "0.1.0"
+dependencies = [
+ "dictate-core",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "dirs"
 version = "7.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
