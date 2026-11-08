@@ -1,6 +1,7 @@
 //! Services for the Dictate app: settings, secrets, AI and transcription clients.
 
 pub mod ai;
+pub mod audio;
 pub mod http;
 pub mod presets;
 pub mod secrets;

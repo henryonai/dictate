@@ -33,10 +33,10 @@ On top of that:
   ```
 
   Open a new terminal afterwards, so that it finds the new tools. If the build can't find libclang, set `LIBCLANG_PATH` to the `bin` folder of the LLVM install.
-- **Linux:** the web view, tray and build libraries. On Debian and Ubuntu:
+- **Linux:** the web view, tray, audio (ALSA, for the microphone) and build libraries. On Debian and Ubuntu:
 
   ```sh
-  sudo apt-get install -y build-essential cmake libclang-dev \
+  sudo apt-get install -y build-essential cmake libclang-dev libasound2-dev \
     libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
   ```
 
