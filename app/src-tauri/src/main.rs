@@ -59,6 +59,7 @@ fn main() {
             commands::transcribe_wav,
             commands::cancel_transcribe,
             commands::edit_presets,
+            commands::transcribe_presets,
             commands::open_meetings_folder,
         ])
         .build(tauri::generate_context!())
@@ -110,4 +111,36 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         tray::show_settings(app.handle());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{json, Value};
+
+    /// What the settings window may ask of the opener plugin, from the capability file.
+    fn opener_permissions() -> Vec<Value> {
+        let capability: Value =
+            serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
+        capability["permissions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|permission| {
+                let name = permission
+                    .as_str()
+                    .or_else(|| permission["identifier"].as_str());
+                name.is_some_and(|name| name.starts_with("opener:"))
+            })
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn the_window_may_open_https_pages_and_nothing_else_of_the_opener() {
+        // "Get a key" opens a page in the browser. Folders are opened by the Rust side, which needs no permission.
+        assert_eq!(
+            opener_permissions(),
+            [json!({ "identifier": "opener:allow-open-url", "allow": [{ "url": "https://*" }] })]
+        );
+    }
 }

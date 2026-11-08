@@ -99,6 +99,15 @@ pub struct EditPresetView {
     pub instruction: &'static str,
 }
 
+/// One transcription service, with what the UI shows beyond the settings: its models and the page that hands
+/// out its keys. The names of the services are the UI's to translate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TranscribePresetView {
+    pub id: TranscribePreset,
+    pub models: &'static [&'static str],
+    pub key_url: Option<&'static str>,
+}
+
 // ---- the plain functions behind the commands
 
 /// The key saved for an account. A key store that fails counts as no key: the settings stay usable and saving a
@@ -420,6 +429,23 @@ fn edit_presets_list() -> Vec<EditPresetView> {
         .collect()
 }
 
+/// Every transcription service, in the order the UI offers them.
+fn transcribe_presets_list() -> Vec<TranscribePresetView> {
+    [
+        TranscribePreset::OpenRouter,
+        TranscribePreset::OpenAi,
+        TranscribePreset::Groq,
+        TranscribePreset::Custom,
+    ]
+    .into_iter()
+    .map(|preset| TranscribePresetView {
+        id: preset,
+        models: preset.models(),
+        key_url: preset.key_url(),
+    })
+    .collect()
+}
+
 /// Makes sure the folder is there.
 fn ensure_directory(path: &Path) -> Result<(), String> {
     fs::create_dir_all(path).map_err(|e| format!("Could not create {}: {e}", path.display()))
@@ -622,6 +648,11 @@ pub async fn cancel_transcribe(state: State<'_, AppState>) -> Result<(), String>
 #[tauri::command]
 pub async fn edit_presets() -> Result<Vec<EditPresetView>, String> {
     Ok(edit_presets_list())
+}
+
+#[tauri::command]
+pub async fn transcribe_presets() -> Result<Vec<TranscribePresetView>, String> {
+    Ok(transcribe_presets_list())
 }
 
 #[tauri::command]
@@ -1452,6 +1483,31 @@ mod tests {
             assert_eq!(view.instruction, preset.instruction);
         }
         assert_eq!(list[0].id, "clean");
+    }
+
+    #[test]
+    fn the_transcription_services_come_with_their_models_and_key_pages() {
+        let list = transcribe_presets_list();
+        assert_eq!(
+            list.iter().map(|view| view.id).collect::<Vec<_>>(),
+            [
+                TranscribePreset::OpenRouter,
+                TranscribePreset::OpenAi,
+                TranscribePreset::Groq,
+                TranscribePreset::Custom
+            ]
+        );
+
+        let json = serde_json::to_value(&list).unwrap();
+        assert_eq!(json[0]["id"], "openrouter");
+        assert_eq!(json[0]["models"][0], "google/gemini-3.5-flash");
+        assert_eq!(json[0]["key_url"], "https://openrouter.ai/keys");
+        assert_eq!(json[1]["models"][0], "whisper-1");
+        assert_eq!(json[2]["key_url"], "https://console.groq.com/keys");
+        // A custom endpoint takes any model name and has no page that hands out keys.
+        assert_eq!(json[3]["id"], "custom");
+        assert_eq!(json[3]["models"], serde_json::json!([]));
+        assert!(json[3]["key_url"].is_null());
     }
 
     #[test]
