@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./api";
 import type { ModelView } from "./api";
 import { ModelList } from "./models.svelte";
-import { stubApi } from "../test-helpers";
+import { freezeTime, passTime, setWallClockBack, stubApi } from "../test-helpers";
 
 const tiny: ModelView = { id: "tiny", size_mb: 75, downloaded: false, recommended: false };
 
@@ -17,15 +17,6 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.useRealTimers();
 });
-
-/** Only the clock is faked, so that a test decides how long ago something started. */
-function freezeTime() {
-  vi.useFakeTimers({ toFake: ["Date"] });
-}
-
-function passTime(ms: number) {
-  vi.setSystemTime(Date.now() + ms);
-}
 
 function later<T>() {
   let resolve!: (value: T) => void;
@@ -161,6 +152,19 @@ describe("a download", () => {
     await list.cancel("tiny");
     expect(api.cancelDownload).toHaveBeenCalledWith("tiny");
     expect(list.stateOf("tiny").state).toBe("cancelling");
+  });
+
+  test("a Cancel is not held back by the clock having been set back after the start", async () => {
+    freezeTime();
+    const list = await started();
+    vi.mocked(api.downloadModel).mockReturnValue(later<void>().promise);
+    void list.download("tiny");
+
+    setWallClockBack(60 * 60 * 1000);
+    passTime(1000);
+    await list.cancel("tiny");
+
+    expect(api.cancelDownload).toHaveBeenCalledWith("tiny");
   });
 
   test("the late end of an old download leaves a newer download of the model alone", async () => {

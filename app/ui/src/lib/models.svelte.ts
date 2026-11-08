@@ -1,7 +1,7 @@
 // The Whisper models list: what is on disk, and how each download is going.
 import { api, errorText } from "./api";
 import type { DownloadEvent, ModelView } from "./api";
-import { tooSoonToCancel } from "./double-click";
+import { startedNow, tooSoonToCancel } from "./double-click";
 
 /** Where a model's download stands. A model with no download going on, finished or not, is `idle`. */
 export type Download =
@@ -60,7 +60,7 @@ export class ModelList {
     const now = this.stateOf(id).state;
     if (now === "running" || now === "cancelling") return;
     this.error = "";
-    const run = { number: (this.runs[id]?.number ?? 0) + 1, startedAt: Date.now() };
+    const run = { number: (this.runs[id]?.number ?? 0) + 1, startedAt: startedNow() };
     this.runs[id] = run;
     this.downloads[id] = { state: "running", done: 0, total: null };
     try {

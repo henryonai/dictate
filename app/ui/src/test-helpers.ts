@@ -96,3 +96,22 @@ export async function loadedStore(overrides: Partial<SettingsView> = {}): Promis
   await store.load();
   return store;
 }
+
+/**
+ * Fakes the two clocks a guard against a double click may read, and nothing else: the wall clock (`Date`) and the
+ * one that only goes forward (`performance`). A test decides how long ago something started. The caller restores
+ * them with `vi.useRealTimers()`.
+ */
+export function freezeTime() {
+  vi.useFakeTimers({ toFake: ["Date", "performance"] });
+}
+
+/** Time goes by on both clocks. */
+export function passTime(ms: number) {
+  vi.advanceTimersByTime(ms);
+}
+
+/** The wall clock is set back, as a time sync or a person does; the clock that only goes forward isn't affected. */
+export function setWallClockBack(ms: number) {
+  vi.setSystemTime(Date.now() - ms);
+}

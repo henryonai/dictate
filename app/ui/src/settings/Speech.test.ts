@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api } from "../lib/api";
 import type { ModelView } from "../lib/api";
 import { setLanguage } from "../lib/i18n";
-import { loadedStore, stubApi } from "../test-helpers";
+import { freezeTime, loadedStore, passTime, setWallClockBack, stubApi } from "../test-helpers";
 import Speech from "./Speech.svelte";
 
 const tiny: ModelView = { id: "tiny", size_mb: 75, downloaded: false, recommended: false };
@@ -23,15 +23,6 @@ afterEach(() => {
   vi.useRealTimers();
   setLanguage("en");
 });
-
-/** Only the clock is faked, so that a test decides how long ago something started. */
-function freezeTime() {
-  vi.useFakeTimers({ toFake: ["Date"] });
-}
-
-function passTime(ms: number) {
-  vi.setSystemTime(Date.now() + ms);
-}
 
 const lastSaved = () => vi.mocked(api.saveSettings).mock.lastCall?.[0];
 
@@ -282,6 +273,22 @@ test("the second click of a double click on Transcribe doesn't land on Cancel", 
   expect(api.cancelTranscribe).not.toHaveBeenCalled();
   expect(screen.getByText("Transcribing…")).toBeInTheDocument();
   expect(api.transcribeWav).toHaveBeenCalledTimes(1);
+});
+
+test("Cancel on a transcription works when the clock was set back after the start", async () => {
+  freezeTime();
+  const user = userEvent.setup();
+  vi.mocked(api.transcribeWav).mockReturnValue(later<string>().promise);
+  render(Speech, { store: await loadedStore() });
+  await user.type(screen.getByLabelText("Path to a WAV file"), "a.wav");
+  await user.click(screen.getByRole("button", { name: "Transcribe" }));
+  expect(await screen.findByText("Transcribing…")).toBeInTheDocument();
+
+  setWallClockBack(60 * 60 * 1000);
+  passTime(1000);
+  await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+  expect(api.cancelTranscribe).toHaveBeenCalledTimes(1);
 });
 
 test("a running transcription can be cancelled and says Cancelling… until it ends", async () => {

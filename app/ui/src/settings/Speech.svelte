@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { api, errorText } from "../lib/api";
   import type { Engine } from "../lib/api";
-  import { tooSoonToCancel } from "../lib/double-click";
+  import { startedNow, tooSoonToCancel } from "../lib/double-click";
   import { t } from "../lib/i18n";
   import { ModelList } from "../lib/models.svelte";
   import type { SettingsStore } from "../lib/settings-store.svelte";
@@ -53,7 +53,7 @@
 
   async function transcribe() {
     if (wavBusy) return;
-    wavStartedAt = Date.now();
+    wavStartedAt = startedNow();
     wav = { state: "running" };
     try {
       wav = { state: "done", text: await api.transcribeWav(wavPath.trim()) };
