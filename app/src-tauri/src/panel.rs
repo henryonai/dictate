@@ -1085,15 +1085,23 @@ mod tests {
     }
 
     #[test]
-    fn the_panel_windows_may_listen_for_events_and_nothing_else_of_the_api() {
-        // Its own commands need no permission; it listens for the state and stops listening. It may not open pages,
-        // move windows or emit events.
+    fn the_panel_windows_are_given_events_and_the_panel_commands_and_nothing_else() {
+        // What the permissions let through is tested where the app is built (`main.rs`: the windows ask for every
+        // command); this pins what the file grants: they listen for the state and stop listening, and they ask for
+        // the commands of this file. They may not open pages, move windows or emit events.
         let capability: Value =
             serde_json::from_str(include_str!("../capabilities/panel.json")).unwrap();
-        assert_eq!(
-            capability["permissions"],
-            json!(["core:event:allow-listen", "core:event:allow-unlisten"])
-        );
+        let commands = [
+            "allow-dictation-languages",
+            "allow-dictation-stop",
+            "allow-dictation-cancel",
+            "allow-dictation-set-language",
+            "allow-panel-language",
+            "allow-panel-resized",
+        ];
+        let mut wanted = vec!["core:event:allow-listen", "core:event:allow-unlisten"];
+        wanted.extend(commands);
+        assert_eq!(capability["permissions"], json!(wanted));
     }
 
     #[test]

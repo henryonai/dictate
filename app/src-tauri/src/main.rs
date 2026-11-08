@@ -27,6 +27,12 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use hotkey::HotkeyEvent;
 use state::AppState;
 
+/// The app's configuration and its permissions, as compiled in. One function holds the only `generate_context!`, which
+/// can't be expanded twice in a program: the tests build an app with the real permissions from it too.
+fn context<R: tauri::Runtime>() -> tauri::Context<R> {
+    tauri::generate_context!()
+}
+
 /// How long quitting waits for downloads to write down what they have, so that they can be resumed.
 const QUIT_WAIT: Duration = Duration::from_secs(3);
 
@@ -104,7 +110,7 @@ fn main() {
             panel::panel_language,
             panel::panel_resized,
         ])
-        .build(tauri::generate_context!())
+        .build(context())
         .expect("the Dictate app could not start");
 
     app.run(|app, event| match event {
@@ -199,7 +205,165 @@ fn log_hotkey_events(mut events: UnboundedReceiver<HotkeyEvent>) {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use serde_json::{json, Value};
+    use tauri::ipc::{CallbackFn, InvokeBody};
+    use tauri::test::{mock_builder, MockRuntime, INVOKE_KEY};
+    use tauri::webview::InvokeRequest;
+    use tauri::{App, WebviewUrl, WebviewWindowBuilder};
+
+    /// The commands of the Settings window.
+    const SETTINGS_COMMANDS: [&str; 20] = [
+        "get_settings",
+        "save_settings",
+        "set_ai_provider",
+        "set_transcribe_preset",
+        "set_hotkey",
+        "hotkey_status",
+        "hotkey_recording",
+        "set_secret",
+        "check_ai",
+        "check_transcribe",
+        "list_models",
+        "download_model",
+        "cancel_download",
+        "delete_model",
+        "models_disk_usage_mb",
+        "transcribe_wav",
+        "cancel_transcribe",
+        "edit_presets",
+        "transcribe_presets",
+        "open_meetings_folder",
+    ];
+
+    /// The commands of the two floating windows.
+    const PANEL_COMMANDS: [&str; 6] = [
+        "dictation_languages",
+        "dictation_stop",
+        "dictation_cancel",
+        "dictation_set_language",
+        "panel_language",
+        "panel_resized",
+    ];
+
+    /// An app with the real permissions, in which every command that gets past them answers "ok": what is tested is
+    /// who may ask, not what the commands do.
+    fn app() -> App<MockRuntime> {
+        let app = mock_builder()
+            .invoke_handler(|invoke| {
+                invoke.resolver.resolve("ok");
+                true
+            })
+            .build(super::context())
+            .expect("the app could not be built with its permissions");
+        for label in ["settings", "bubble", "card", "stranger"] {
+            WebviewWindowBuilder::new(&app, label, WebviewUrl::default())
+                .build()
+                .expect("a window");
+        }
+        app
+    }
+
+    /// What happens when the page of the window `label` calls `command`.
+    fn asked_by(app: &App<MockRuntime>, label: &str, command: &str) -> Result<(), String> {
+        use tauri::Manager;
+        let window = app.get_webview_window(label).expect("the window");
+        let request = InvokeRequest {
+            cmd: command.into(),
+            callback: CallbackFn(0),
+            error: CallbackFn(1),
+            url: if cfg!(windows) {
+                "http://tauri.localhost"
+            } else {
+                "tauri://localhost"
+            }
+            .parse()
+            .unwrap(),
+            body: InvokeBody::default(),
+            headers: Default::default(),
+            invoke_key: INVOKE_KEY.to_string(),
+        };
+        tauri::test::get_ipc_response(&window, request)
+            .map(|_| ())
+            .map_err(|refusal| refusal.to_string())
+    }
+
+    #[test]
+    fn the_settings_window_may_ask_for_what_settings_uses_and_for_nothing_of_the_panels() {
+        let app = app();
+        for command in SETTINGS_COMMANDS {
+            assert_eq!(asked_by(&app, "settings", command), Ok(()), "{command}");
+        }
+        for command in PANEL_COMMANDS {
+            let refusal = asked_by(&app, "settings", command).expect_err(command);
+            assert!(refusal.contains("not allowed"), "{command}: {refusal}");
+        }
+    }
+
+    #[test]
+    fn the_panel_windows_may_ask_for_the_panel_commands_and_for_nothing_else() {
+        let app = app();
+        for window in ["bubble", "card"] {
+            for command in PANEL_COMMANDS {
+                assert_eq!(
+                    asked_by(&app, window, command),
+                    Ok(()),
+                    "{window} {command}"
+                );
+            }
+            // The keys, the settings and the downloads are not theirs: a page that went wrong can't reach them.
+            for command in SETTINGS_COMMANDS {
+                let refusal = asked_by(&app, window, command).expect_err(command);
+                assert!(
+                    refusal.contains("not allowed"),
+                    "{window} {command}: {refusal}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_window_no_capability_names_may_ask_for_nothing() {
+        let app = app();
+        for command in SETTINGS_COMMANDS.into_iter().chain(PANEL_COMMANDS) {
+            assert!(asked_by(&app, "stranger", command).is_err(), "{command}");
+        }
+    }
+
+    /// The names between quotes in the first list of strings after `marker`.
+    fn quoted_after(source: &str, marker: &str, end: char) -> BTreeSet<String> {
+        let from = source.find(marker).expect(marker) + marker.len();
+        let list = &source[from..from + source[from..].find(end).expect("the end of the list")];
+        list.split('"')
+            .skip(1)
+            .step_by(2)
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[test]
+    fn every_command_of_the_app_is_in_the_manifest_that_scopes_it_and_in_one_list_of_these_tests() {
+        let wanted: BTreeSet<String> = SETTINGS_COMMANDS
+            .into_iter()
+            .chain(PANEL_COMMANDS)
+            .map(str::to_owned)
+            .collect();
+        let manifest = quoted_after(include_str!("../build.rs"), "COMMANDS: &[&str] = &[", ']');
+        assert_eq!(manifest, wanted, "build.rs");
+
+        // What the app registers: `commands::name,` and `panel::name,` in `generate_handler!`.
+        let source = include_str!("main.rs");
+        let from = source.find("generate_handler![").unwrap();
+        let handler = &source[from..from + source[from..].find(']').unwrap()];
+        let registered: BTreeSet<String> = handler
+            .lines()
+            .filter_map(|line| line.trim().strip_suffix(','))
+            .filter_map(|path| path.rsplit("::").next())
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(registered, wanted, "generate_handler!");
+    }
 
     /// What the settings window may ask of the opener plugin, from the capability file.
     fn opener_permissions() -> Vec<Value> {

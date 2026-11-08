@@ -77,5 +77,7 @@ enigo = { version = "0.6.1", default-features = false, features = ["x11rb"] }
 x11rb = "0.13"
 
 [dev-dependencies]
+# The mock runtime, to ask the app's own commands from the windows of the app and see what the permissions let through.
+tauri = { version = "2", features = ["test"] }
 serde_json = "1.0.154"
 tempfile = "3.27.0"
