@@ -86,21 +86,33 @@ pub enum PasteError {
     Failed(String),
 }
 
-/// Why the text was only copied.
+/// Why the text was not pasted. In every case but [`CopyReason::NotCopied`] it is on the clipboard.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CopyReason {
     /// The app would not come forward (it quit, or the system refused): the shortcut would land in some other app.
     AppNotForward,
     Elevated,
     NoWaylandTool,
+    /// The shortcut could not be sent, for the reason given. The text is on the clipboard.
     Failed(String),
+    /// The text could not be put on the clipboard, for the reason given: it is **not** there, and the user's own
+    /// clipboard is as it was. A message that says "copied" must not be shown for this one.
+    NotCopied(String),
+}
+
+impl CopyReason {
+    /// Whether the text is on the clipboard, for the user to paste.
+    pub fn on_clipboard(&self) -> bool {
+        !matches!(self, CopyReason::NotCopied(_))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PasteResult {
     /// The shortcut was sent. Whether the field took the text is for [`landed`] to say.
     Pasted,
-    /// The text is on the clipboard, for the user to paste; the user's own clipboard stays replaced.
+    /// The text was not pasted. It is on the clipboard for the user to paste, and the user's own clipboard stays
+    /// replaced, unless the reason says that it could not be copied (see [`CopyReason::on_clipboard`]).
     CopiedOnly(CopyReason),
 }
 
@@ -143,6 +155,8 @@ struct State {
     held: Option<Held>,
     /// The number of the paste that the restore belongs to: a later paste takes the restore over.
     turn: u64,
+    /// What the clipboard was like after the last paste wrote its text.
+    mark: Option<ChangeMark>,
 }
 
 fn locked(state: &Mutex<State>) -> MutexGuard<'_, State> {
@@ -182,25 +196,36 @@ impl Paster {
         clip: &Arc<dyn Clipboard>,
         keys: &dyn KeySender,
     ) -> PasteResult {
-        // 1 and 2: keep the user's clipboard, unless a restore is waiting (what is on it then is the text of the
-        // paste before, and the user's clipboard is the one that is kept), and put the text in its place.
+        // 1 and 2: keep the user's clipboard, and put the text in its place. A restore that is waiting holds the
+        // user's clipboard from before the paste before this one: what is on the clipboard now is that paste's
+        // text, and that clipboard is the one to keep. Unless somebody has copied since: what is on it then is
+        // theirs, and the old one is out of date.
         let (turn, mark) = {
             let mut state = locked(&self.state);
+            if let Some(last) = state.mark {
+                if state.held.is_some() && clip.changed_since(&last) {
+                    state.held = None;
+                }
+            }
             let fresh = state.held.is_none().then(|| clip.snapshot());
             let mark = match clip.write_transient(text) {
                 Ok(mark) => mark,
                 Err(error) => {
-                    // The write may have cleared the clipboard on its way to failing.
-                    if let Some(snapshot) = fresh {
+                    // The write may have cleared the clipboard on its way to failing: what was on it before this
+                    // paste is put back, the snapshot just taken or the user's own that a restore was waiting
+                    // to give back (which has nothing left to wait for).
+                    if let Some(snapshot) = fresh.or_else(|| state.held.take().map(|h| h.snapshot))
+                    {
                         clip.restore(snapshot);
                     }
-                    return PasteResult::CopiedOnly(CopyReason::Failed(error));
+                    return PasteResult::CopiedOnly(CopyReason::NotCopied(error));
                 }
             };
             if let Some(snapshot) = fresh {
                 state.held = Some(Held { snapshot });
             }
             state.turn += 1;
+            state.mark = Some(mark);
             (state.turn, mark)
         };
 
@@ -501,7 +526,7 @@ mod tests {
         clock: Arc<FakeClock>,
         log: Log,
         state: Mutex<FakeBoard>,
-        write_fails: Option<String>,
+        write_fails: Mutex<Option<String>>,
     }
 
     struct FakeBoard {
@@ -520,7 +545,7 @@ mod tests {
                     changes: 0,
                     snapshots: 0,
                 }),
-                write_fails: None,
+                write_fails: Mutex::new(None),
             })
         }
 
@@ -537,6 +562,11 @@ mod tests {
 
         fn snapshots(&self) -> usize {
             self.state.lock().unwrap().snapshots
+        }
+
+        /// From now on a write fails, and clears the clipboard on its way to failing (as a real one may).
+        fn fail_writes(&self, error: &str) {
+            *self.write_fails.lock().unwrap() = Some(error.into());
         }
 
         /// The user copies something.
@@ -559,8 +589,9 @@ mod tests {
         }
 
         fn write_transient(&self, text: &str) -> Result<ChangeMark, String> {
-            if let Some(error) = &self.write_fails {
-                return Err(error.clone());
+            if let Some(error) = self.write_fails.lock().unwrap().clone() {
+                self.state.lock().unwrap().text.clear();
+                return Err(error);
             }
             self.note(&format!("write {text}"));
             let mut board = self.state.lock().unwrap();
@@ -888,15 +919,16 @@ mod tests {
 
     #[test]
     fn paster_that_cannot_write_the_text_keeps_nothing_and_sends_nothing() {
-        let mut f = Fixture::new(true);
-        Arc::get_mut(&mut f.clip).unwrap().write_fails = Some("clipboard busy".into());
+        let f = Fixture::new(true);
+        f.clip.fail_writes("clipboard busy");
         let keys = f.keys();
 
         let result = f.paste("hello", &keys);
 
+        // The text is not on the clipboard: the reason must not say that it is.
         assert_eq!(
             result,
-            PasteResult::CopiedOnly(CopyReason::Failed("clipboard busy".into()))
+            PasteResult::CopiedOnly(CopyReason::NotCopied("clipboard busy".into()))
         );
         assert!(!f.paster.restore_pending());
         assert!(!names(&f.events()).iter().any(|w| w.starts_with("paste")));
@@ -905,14 +937,72 @@ mod tests {
     #[test]
     fn paster_that_cannot_write_the_text_gives_the_users_clipboard_back() {
         // A write that fails may have cleared the clipboard on the way.
-        let mut f = Fixture::new(true);
-        Arc::get_mut(&mut f.clip).unwrap().write_fails = Some("clipboard busy".into());
+        let f = Fixture::new(true);
+        f.clip.fail_writes("clipboard busy");
         let keys = f.keys();
 
         f.paste("hello", &keys);
 
         assert_eq!(names(&f.events()), ["snapshot", "restore"]);
         assert_eq!(f.clip.text(), "original");
+    }
+
+    #[test]
+    fn paster_that_cannot_write_while_a_restore_waits_gives_the_users_clipboard_back() {
+        let f = Fixture::new(true);
+        let keys = f.keys();
+        assert_eq!(f.paste("first", &keys), PasteResult::Pasted);
+        f.clip.fail_writes("clipboard busy");
+
+        let result = f.paste("second", &keys);
+
+        // What is on the clipboard now (the failed write cleared it) is the user's own again, and no restore is
+        // left to run over it.
+        assert_eq!(
+            result,
+            PasteResult::CopiedOnly(CopyReason::NotCopied("clipboard busy".into()))
+        );
+        assert_eq!(f.clip.text(), "original");
+        assert!(!f.paster.restore_pending());
+        f.clock.release();
+        thread::sleep(Duration::from_millis(100));
+        assert_eq!(f.clip.text(), "original");
+        let restores = names(&f.events())
+            .iter()
+            .filter(|what| **what == "restore")
+            .count();
+        assert_eq!(restores, 1);
+    }
+
+    #[test]
+    fn only_a_copy_that_failed_says_that_the_text_is_not_on_the_clipboard() {
+        for reason in [
+            CopyReason::AppNotForward,
+            CopyReason::Elevated,
+            CopyReason::NoWaylandTool,
+            CopyReason::Failed("no display".into()),
+        ] {
+            assert!(reason.on_clipboard(), "{reason:?}");
+        }
+        assert!(!CopyReason::NotCopied("clipboard busy".into()).on_clipboard());
+    }
+
+    #[test]
+    fn paster_back_to_back_after_a_user_copy_keeps_the_users_copy() {
+        let f = Fixture::new(true);
+        let keys = f.keys();
+        assert_eq!(f.paste("first", &keys), PasteResult::Pasted);
+        f.clock.wait_for_timers(1);
+
+        // The user copies while the restore of the first paste is waiting: what is on the clipboard is theirs
+        // now, and the second paste must keep that, not the clipboard from before the first paste.
+        f.clip.user_copies("copied by the user");
+        assert_eq!(f.paste("second", &keys), PasteResult::Pasted);
+        assert_eq!(f.clip.snapshots(), 2);
+
+        f.finish_restore();
+
+        assert_eq!(f.clip.text(), "copied by the user");
     }
 
     #[test]
