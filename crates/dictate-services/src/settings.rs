@@ -155,6 +155,9 @@ impl Settings {
 
 /// With OpenRouter for both AI and transcripts one key is enough: the AI key is reused when no
 /// separate transcription key is set. Empty keys count as absent.
+///
+/// The AI key only ever goes to OpenRouter itself: both base URLs must be `https` URLs whose host is
+/// exactly `openrouter.ai`. A transcription URL that points anywhere else gets no key of the AI part.
 pub fn effective_transcribe_key(
     s: &Settings,
     ai_key: Option<&str>,
@@ -166,12 +169,20 @@ pub fn effective_transcribe_key(
         (Some(key), _) => Some(key.into()),
         (None, Some(key))
             if s.transcribe_preset == TranscribePreset::OpenRouter
-                && s.ai_base_url.contains("openrouter.ai") =>
+                && is_openrouter_url(&s.ai_base_url)
+                && is_openrouter_url(&s.transcribe_base_url) =>
         {
             Some(key.into())
         }
         _ => None,
     }
+}
+
+/// Whether the URL is an `https` one on the host `openrouter.ai` itself, not a path, a query, a user name or a
+/// longer host name that merely contains it.
+fn is_openrouter_url(url: &str) -> bool {
+    reqwest::Url::parse(url.trim())
+        .is_ok_and(|url| url.scheme() == "https" && url.host_str() == Some("openrouter.ai"))
 }
 
 /// Local proxies (CLIProxyAPI, Ollama) work without a key; hosted endpoints such as OpenRouter
@@ -476,13 +487,22 @@ mod tests {
         assert_eq!(s.ai_base_url, "http://localhost:8317/v1");
     }
 
+    /// Settings with OpenRouter as the transcription service, the two base URLs as given.
+    fn openrouter_with(ai_base_url: &str, transcribe_base_url: &str) -> Settings {
+        Settings {
+            transcribe_preset: TranscribePreset::OpenRouter,
+            ai_base_url: ai_base_url.into(),
+            transcribe_base_url: transcribe_base_url.into(),
+            ..Settings::default()
+        }
+    }
+
     #[test]
     fn openrouter_key_is_shared() {
-        let s = Settings {
-            transcribe_preset: TranscribePreset::OpenRouter,
-            ai_base_url: "https://openrouter.ai/api/v1".into(),
-            ..Settings::default()
-        };
+        let s = openrouter_with(
+            "https://openrouter.ai/api/v1",
+            "https://openrouter.ai/api/v1",
+        );
 
         assert_eq!(
             effective_transcribe_key(&s, Some("ai-key"), None),
@@ -503,11 +523,7 @@ mod tests {
 
     #[test]
     fn the_ai_key_is_not_shared_outside_openrouter() {
-        let s = Settings {
-            transcribe_preset: TranscribePreset::OpenRouter,
-            ai_base_url: "https://api.anthropic.com".into(),
-            ..Settings::default()
-        };
+        let s = openrouter_with("https://api.anthropic.com", "https://openrouter.ai/api/v1");
         assert_eq!(effective_transcribe_key(&s, Some("ai-key"), None), None);
 
         let s = Settings {
@@ -520,6 +536,57 @@ mod tests {
             effective_transcribe_key(&s, Some("ai-key"), Some("groq-key")),
             Some("groq-key".to_string())
         );
+    }
+
+    #[test]
+    fn the_ai_key_goes_only_to_openrouter_itself() {
+        const OPENROUTER: &str = "https://openrouter.ai/api/v1";
+        // Each of these merely mentions or resembles the host, or is not the secure site.
+        for impostor in [
+            "https://evil.example/v1",
+            "https://openrouter.ai.evil.example/api/v1",
+            "https://evil-openrouter.ai/api/v1",
+            "https://evil.example/openrouter.ai",
+            "https://evil.example/v1?via=openrouter.ai",
+            "https://openrouter.ai@evil.example/v1",
+            "http://openrouter.ai/api/v1",
+            "ftp://openrouter.ai/api/v1",
+            "openrouter.ai/api/v1",
+            "https://openrouter.ai./api/v1",
+            "",
+        ] {
+            let on_transcribe = openrouter_with(OPENROUTER, impostor);
+            assert_eq!(
+                effective_transcribe_key(&on_transcribe, Some("ai-key"), None),
+                None,
+                "transcription at {impostor:?} must not get the AI key"
+            );
+            let on_ai = openrouter_with(impostor, OPENROUTER);
+            assert_eq!(
+                effective_transcribe_key(&on_ai, Some("ai-key"), None),
+                None,
+                "an AI key for {impostor:?} is not an OpenRouter key"
+            );
+        }
+    }
+
+    #[test]
+    fn only_the_host_decides_whether_the_key_is_shared() {
+        // The spelling around the host doesn't matter: case, a port, a path, blanks, a trailing slash.
+        for spelling in [
+            "https://openrouter.ai",
+            "https://openrouter.ai/",
+            "https://OpenRouter.AI/api/v1",
+            "https://openrouter.ai:443/api/v1/",
+            "  https://openrouter.ai/api/v1  ",
+        ] {
+            let s = openrouter_with(spelling, spelling);
+            assert_eq!(
+                effective_transcribe_key(&s, Some("ai-key"), None),
+                Some("ai-key".to_string()),
+                "{spelling:?}"
+            );
+        }
     }
 
     #[test]

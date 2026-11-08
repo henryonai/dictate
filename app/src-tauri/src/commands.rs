@@ -752,12 +752,19 @@ mod tests {
         let f = fixture();
         f.secrets.set(Account::Ai, AI_KEY).unwrap();
         let mut s = f.store.get();
-        s.transcribe_preset = TranscribePreset::OpenRouter;
+        s.set_transcribe_preset(TranscribePreset::OpenRouter);
         s.ai_base_url = "https://openrouter.ai/api/v1".into();
         f.store.save(&s).unwrap();
         assert!(get_settings_view(&f.store, &f.secrets).shares_openrouter_key);
 
+        // A transcription URL that has moved to another host gets nothing of it.
+        s.transcribe_base_url = "https://stt.example.com/v1".into();
+        f.store.save(&s).unwrap();
+        assert!(!get_settings_view(&f.store, &f.secrets).shares_openrouter_key);
+
         // With a key of its own, nothing is shared.
+        s.transcribe_base_url = "https://openrouter.ai/api/v1".into();
+        f.store.save(&s).unwrap();
         f.secrets.set(Account::Transcribe, STT_KEY).unwrap();
         assert!(!get_settings_view(&f.store, &f.secrets).shares_openrouter_key);
     }
@@ -990,6 +997,24 @@ mod tests {
         assert!(config.chat);
         assert_eq!(config.language.as_deref(), Some("vi"));
         assert_eq!(config.prompt, "Dictate");
+    }
+
+    #[test]
+    fn the_transcription_config_keeps_the_ai_key_from_another_host() {
+        let f = fixture();
+        f.secrets.set(Account::Ai, AI_KEY).unwrap();
+        let mut s = f.store.get();
+        s.ai_base_url = "https://openrouter.ai/api/v1".into();
+        s.set_transcribe_preset(TranscribePreset::OpenRouter);
+        s.transcribe_base_url = "https://stt.example.com/v1".into();
+        f.store.save(&s).unwrap();
+
+        let config = transcribe_config(&f.store, &f.secrets);
+        assert_eq!(config.base_url, "https://stt.example.com/v1");
+        assert_eq!(
+            config.api_key, "",
+            "the key of OpenRouter stays with OpenRouter"
+        );
     }
 
     #[test]

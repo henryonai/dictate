@@ -303,6 +303,16 @@ test("no sharing note when the service has its own key", async () => {
   expect(stt.queryByText("Sharing the OpenRouter key from the AI section")).not.toBeInTheDocument();
 });
 
+test("the hint on the key says that the AI key serves only when the AI part is OpenRouter too", async () => {
+  render(Accounts, { store: await loadedStore({ transcribe_preset: "openrouter" }) });
+  const { stt } = await sections();
+  expect(
+    stt.getByText(
+      "OpenRouter can do without its own key when the AI section uses OpenRouter too: it then uses the AI key above.",
+    ),
+  ).toBeInTheDocument();
+});
+
 // ---- the AI provider
 
 test("the provider and its settings are shown", async () => {

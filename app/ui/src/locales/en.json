@@ -130,7 +130,7 @@
   "accounts.dictation_model": "Dictation model",
   "accounts.dictation_model_name": "Dictation model name",
   "accounts.shares_key": "Sharing the OpenRouter key from the AI section",
-  "accounts.key_optional": "OpenRouter can do without its own key: it then uses the AI key above.",
+  "accounts.key_optional": "OpenRouter can do without its own key when the AI section uses OpenRouter too: it then uses the AI key above.",
   "accounts.get_key": "Get a key",
   "accounts.footer_openrouter": "OpenRouter has no speech-to-text endpoint: the audio goes to a model that can listen (Gemini), which returns the transcript.",
   "accounts.footer_models": "Used when the API is chosen in the Speech recognition tab: the file model for files, the dictation model for dictation.",

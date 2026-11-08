@@ -130,7 +130,7 @@
   "accounts.dictation_model": "Model đọc chính tả",
   "accounts.dictation_model_name": "Tên model đọc chính tả",
   "accounts.shares_key": "Đang dùng chung key OpenRouter ở mục AI",
-  "accounts.key_optional": "OpenRouter không cần key riêng: khi đó dùng key AI ở trên.",
+  "accounts.key_optional": "OpenRouter không cần key riêng khi mục AI cũng dùng OpenRouter: khi đó dùng key AI ở trên.",
   "accounts.get_key": "Lấy API key",
   "accounts.footer_openrouter": "OpenRouter không có API speech-to-text riêng: audio được gửi cho model nghe được (Gemini), model trả về transcript.",
   "accounts.footer_models": "Dùng khi chọn API ở tab Nhận dạng giọng nói: model cho file và model cho đọc chính tả.",
