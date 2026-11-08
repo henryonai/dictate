@@ -1,0 +1,39 @@
+[00:00] Speaker 1: Chào mừng các bạn đến buổi đào tạo onboarding. Hôm nay nhóm sẽ giới thiệu mục tiêu, kiến trúc và cách làm việc, sau đó mỗi người nhận một việc nhỏ để làm quen với hệ thống. Phần đầu là tổng quan, phần hai là thực hành, phần cuối dành cho câu hỏi của các bạn nên cứ ghi lại những chỗ chưa rõ nhé.
+
+[00:45] Speaker 2: Mình là Lan, phụ trách tài liệu kiến trúc của nhóm.
+
+[02:10] Speaker 1: Mỗi dịch vụ có một người phụ trách riêng, và mọi thay đổi đều đi qua review của nhóm trước khi nhập vào nhánh chính.
+
+[05:07] Speaker 3: Trước khi viết mã, mọi người cần đọc kỹ phần tổng quan của tài liệu, vì nó giải thích vì sao nhóm chọn tách hệ thống thành nhiều dịch vụ nhỏ thay vì một khối lớn. Mỗi dịch vụ có cơ sở dữ liệu riêng, có đường triển khai riêng và có người trực riêng khi sự cố xảy ra. Cách làm này giúp nhóm phát hành nhanh hơn nhưng đòi hỏi kỷ luật cao về hợp đồng giữa các dịch vụ, nên bạn nào thấy chỗ nào chưa rõ thì cứ hỏi ngay trong kênh chung của nhóm nhé, đừng đoán.
+
+[08:30] Speaker 2: Đồng ý với anh, nhóm nên ghi lại mọi quyết định về hợp đồng giữa các dịch vụ.
+
+[10:00] Đoạn này không có người nói.
+
+[11:00] Đây là một câu rất dài không có người nói nhưng có dấu hai chấm: như thế này
+
+[12:00] Mr. Nam: câu này có dấu chấm trước dấu hai chấm nên không phải tên người nói.
+
+Một đoạn không có mốc thời gian, nối tiếp đoạn trước.
+
+[15:20] Speaker 1: Nhóm dùng một dòng
+xuống hàng trong cùng đoạn để thử.
+
+
+[16:00] Speaker 2: Đoạn sau ba dòng trống.
+
+[18:40] Speaker 3: Dự án có ba môi trường: phát triển, thử nghiệm và chính thức. Nhóm chỉ triển khai lên chính thức vào sáng thứ Ba và thứ Năm, tránh cuối tuần. Trước mỗi lần triển khai cần có hai người xác nhận, sau đó mới bấm nút. Nếu có sự cố, nhóm quay lại bản trước trong vòng mười phút và ghi lại nguyên nhân vào tài liệu sự cố, để lần sau không ai phải đoán lại từ đầu. Nhớ khóa API riêng.
+
+[22:15] Speaker 2: Nhóm chia việc như sau, Lan lo tài liệu, Minh lo tài khoản CI.
+
+[25:00] Speaker 1: Nhóm kiểm tra lại danh sách việc cần làm cuối buổi.
+
+[30:00] Speaker 1: Câu số 1: mỗi nhân viên mới cần cài đặt môi trường theo hướng dẫn. Câu số 2: mỗi nhân viên mới cần cài đặt môi trường theo hướng dẫn. Câu số 3: mỗi nhân viên mới cần cài đặt môi trường theo hướng dẫn. Câu số 4: mỗi nhân viên mới cần cài đặt môi trường theo hướng dẫn. Câu số 5: mỗi nhân viên mới cần cài đặt môi trường theo hướng dẫn. Câu số 6: mỗi nhân viên mới cần cài đặt môi trường theo hướng dẫn. Câu số 7: mỗi nhân viên mới cần cài đặt môi trường theo hướng dẫn. Câu số 8: mỗi nhân viên mới cần cài đặt môi trường theo hướng dẫn. Câu số 9: mỗi nhân viên mới cần cài đặt môi trường theo hướng dẫn. Câu số 10: mỗi nhân viên mới cần cài đặt môi trường theo hướng dẫn. Câu số 11: mỗi nhân viên mới cần cài đặt môi trường theo hướng dẫn. Câu số 12: mỗi nhân viên mới cần cài đặt môi trường theo hướng dẫn. Câu số 13: mỗi nhân viên mới cần cài đặt môi trường theo hướng dẫn. Câu số 14: mỗi nhân viên mới cần cài đặt môi trường theo hướng dẫn. Câu số 15: mỗi nhân viên mới cần cài đặt môi trường theo hướng dẫn. Câu số 16: mỗi nhân viên mới cần cài đặt môi trường theo hướng dẫn. Câu số 17: mỗi nhân viên mới cần cài đặt môi trường theo hướng dẫn. Câu số 18: mỗi nhân viên mới cần cài đặt môi trường theo hướng dẫn. Câu số 19: mỗi nhân viên mới cần cài đặt môi trường theo hướng dẫn. Câu số 20: mỗi nhân viên mới cần cài đặt môi trường theo hướng dẫn. Câu số 21: mỗi nhân viên mới cần cài đặt môi trường theo hướng dẫn. Câu số 22: mỗi nhân viên mới cần cài đặt môi trường theo hướng dẫn. Câu số 23: mỗi nhân viên mới cần cài đặt môi trường theo hướng dẫn. Câu số 24: mỗi nhân viên mới cần cài đặt môi trường theo hướng dẫn. Câu số 25: mỗi nhân viên mới cần cài đặt môi trường theo hướng dẫn. Câu số 26: mỗi nhân viên mới cần cài đặt môi trường theo hướng dẫn. Câu số 27: mỗi nhân viên mới cần cài đặt môi trường theo hướng dẫn. Câu số 28: mỗi nhân viên mới cần cài đặt môi trường theo hướng dẫn. Câu số 29: mỗi nhân viên mới cần cài đặt môi trường theo hướng dẫn. Câu số 30: mỗi nhân viên mới cần cài đặt môi trường theo hướng dẫn. Câu số 31: mỗi nhân viên mới cần cài đặt môi trường theo hướng dẫn. Câu số 32: mỗi nhân viên mới cần cài đặt môi trường theo hướng dẫn. Câu số 33: mỗi nhân viên mới cần cài đặt môi trường theo hướng dẫn. Câu số 34: mỗi nhân viên mới cần cài đặt môi trường theo hướng dẫn. Câu số 35: mỗi nhân viên mới cần cài đặt môi trường theo hướng dẫn.
+
+[45:00] Speaker 2: Nhóm sẽ họp lại vào tuần sau để xem ai đã xong phần việc của mình.
+
+[55:30] Speaker 3: Nhóm cần thêm người trực vào cuối tuần.
+
+[1:02:00] Speaker 1: Cảm ơn cả nhóm, hẹn gặp lại.
+
+[1:02:05] Speaker 2: Nhóm chụp ảnh chung nhé.

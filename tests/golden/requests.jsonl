@@ -1,0 +1,294 @@
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"golden","version":"1"}}}
+{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"golden","version":"1"}}}
+{"jsonrpc":"2.0","id":3,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"golden","version":"1"}}}
+{"jsonrpc":"2.0","id":4,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"golden","version":"1"}}}
+{"jsonrpc":"2.0","id":5,"method":"initialize","params":{"protocolVersion":"2023-01-01","capabilities":{},"clientInfo":{"name":"golden","version":"1"}}}
+{"jsonrpc":"2.0","id":6,"method":"initialize","params":{"protocolVersion":"2026-07-28","capabilities":{},"clientInfo":{"name":"golden","version":"1"}}}
+{"jsonrpc":"2.0","id":7,"method":"initialize","params":{"protocolVersion":"","capabilities":{},"clientInfo":{"name":"golden","version":"1"}}}
+{"jsonrpc":"2.0","id":8,"method":"initialize","params":{"protocolVersion":5}}
+{"jsonrpc":"2.0","id":9,"method":"initialize","params":{}}
+{"jsonrpc":"2.0","id":10,"method":"initialize"}
+{"jsonrpc":"2.0","id":11,"method":"initialize","params":{"protocolVersion":"2025-06-18","_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":1}}
+{"jsonrpc":"2.0","id":12,"method":"tools/list"}
+{"jsonrpc":"2.0","id":13,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}
+{"jsonrpc":"2.0","id":14,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}
+{"jsonrpc":"2.0","id":15,"method":"server/discover"}
+{"jsonrpc":"2.0","id":16,"method":"ping"}
+{"jsonrpc":"2.0","id":17,"method":"ping","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}
+{"jsonrpc":"2.0","id":18,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-01-01","io.modelcontextprotocol/clientCapabilities":{}}}}
+{"jsonrpc":"2.0","id":19,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2025-11-25","io.modelcontextprotocol/clientCapabilities":{}}}}
+{"jsonrpc":"2.0","id":20,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}
+{"jsonrpc":"2.0","id":21,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":"none"}}}
+{"jsonrpc":"2.0","id":22,"method":"resources/list"}
+{"jsonrpc":"2.0","id":23,"method":"resources/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}
+{"jsonrpc":"2.0","id":24,"method":"no/such/method","params":{"x":1}}
+{"jsonrpc":"2.0","id":25,"method":"tools/call","params":{"name":"nope","arguments":{}}}
+{"jsonrpc":"2.0","id":26,"method":"tools/call","params":{"arguments":{}}}
+{"jsonrpc":"2.0","id":27,"method":"tools/call","params":{"name":"list_meetings","arguments":"not an object"}}
+{"jsonrpc":"2.0","id":28,"method":"tools/call","params":{"name":"get_meeting","arguments":["a"]}}
+{"jsonrpc":"2.0","id":"abc","method":"ping"}
+{"jsonrpc":"2.0","id":1000,"method":"tools/list","params":"oops"}
+{"jsonrpc":"2.0","id":null,"method":"tools/list"}
+{"jsonrpc":"2.0","id":1001}
+{"jsonrpc":"2.0","id":1002,"result":{}}
+{"jsonrpc":"2.0","id":1003,"error":{"code":-1,"message":"x"}}
+this is not json
+{"jsonrpc":"2.0","id":1004,"method":"ping"
+
+   
+"a string"
+42
+[]
+[{"jsonrpc":"2.0","id":2001,"method":"ping"},{"jsonrpc":"2.0","method":"notifications/initialized"},{"jsonrpc":"2.0","id":2002,"method":"tools/list"},7]
+[{"jsonrpc":"2.0","method":"notifications/initialized"}]
+{"jsonrpc":"2.0","id":3000,"method":"tools/call","params":{"name":"list_meetings"}}
+{"jsonrpc":"2.0","id":3001,"method":"tools/call","params":{"name":"list_meetings","arguments":{}}}
+{"jsonrpc":"2.0","id":3002,"method":"tools/call","params":{"name":"list_meetings","arguments":{"query":"hop"},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}
+{"jsonrpc":"2.0","id":3003,"method":"tools/call","params":{"name":"list_meetings","arguments":{"query":"HỌP kế"}}}
+{"jsonrpc":"2.0","id":3004,"method":"tools/call","params":{"name":"list_meetings","arguments":{"query":"  họp  "}}}
+{"jsonrpc":"2.0","id":3005,"method":"tools/call","params":{"name":"list_meetings","arguments":{"query":"swift concurrency"}}}
+{"jsonrpc":"2.0","id":3006,"method":"tools/call","params":{"name":"list_meetings","arguments":{"query":"đường truyền"}}}
+{"jsonrpc":"2.0","id":3007,"method":"tools/call","params":{"name":"list_meetings","arguments":{"query":"băng thông"}}}
+{"jsonrpc":"2.0","id":3008,"method":"tools/call","params":{"name":"list_meetings","arguments":{"query":"nhom"}}}
+{"jsonrpc":"2.0","id":3009,"method":"tools/call","params":{"name":"list_meetings","arguments":{"query":"dong y"}}}
+{"jsonrpc":"2.0","id":3010,"method":"tools/call","params":{"name":"list_meetings","arguments":{"query":"ngan sach"}}}
+{"jsonrpc":"2.0","id":3011,"method":"tools/call","params":{"name":"list_meetings","arguments":{"query":"không hề có"}}}
+{"jsonrpc":"2.0","id":3012,"method":"tools/call","params":{"name":"list_meetings","arguments":{"query":"   "}}}
+{"jsonrpc":"2.0","id":3013,"method":"tools/call","params":{"name":"list_meetings","arguments":{"query":5}}}
+{"jsonrpc":"2.0","id":3014,"method":"tools/call","params":{"name":"list_meetings","arguments":{"query":null}}}
+{"jsonrpc":"2.0","id":3015,"method":"tools/call","params":{"name":"list_meetings","arguments":{"from":"2026-10-17"}}}
+{"jsonrpc":"2.0","id":3016,"method":"tools/call","params":{"name":"list_meetings","arguments":{"to":"2026-10-17"}}}
+{"jsonrpc":"2.0","id":3017,"method":"tools/call","params":{"name":"list_meetings","arguments":{"from":"2026-10-16","to":"2026-10-16"}}}
+{"jsonrpc":"2.0","id":3018,"method":"tools/call","params":{"name":"list_meetings","arguments":{"from":"2026-10-18","to":"2026-10-19"}}}
+{"jsonrpc":"2.0","id":3019,"method":"tools/call","params":{"name":"list_meetings","arguments":{"from":"2026-10-19","to":"2026-10-19"}}}
+{"jsonrpc":"2.0","id":3020,"method":"tools/call","params":{"name":"list_meetings","arguments":{"from":"2026-10-20"}}}
+{"jsonrpc":"2.0","id":3021,"method":"tools/call","params":{"name":"list_meetings","arguments":{"to":"2026-10-13"}}}
+{"jsonrpc":"2.0","id":3022,"method":"tools/call","params":{"name":"list_meetings","arguments":{"from":"2026-10-19","to":"2026-10-15"}}}
+{"jsonrpc":"2.0","id":3023,"method":"tools/call","params":{"name":"list_meetings","arguments":{"from":" 2026-10-17 "}}}
+{"jsonrpc":"2.0","id":3024,"method":"tools/call","params":{"name":"list_meetings","arguments":{"from":"2026-10-17","query":"swift"}}}
+{"jsonrpc":"2.0","id":3025,"method":"tools/call","params":{"name":"list_meetings","arguments":{"from":"2026-10-14","to":"2026-10-15","query":"khong co"}}}
+{"jsonrpc":"2.0","id":3026,"method":"tools/call","params":{"name":"list_meetings","arguments":{"from":"2026-13-45"}}}
+{"jsonrpc":"2.0","id":3027,"method":"tools/call","params":{"name":"list_meetings","arguments":{"to":"hôm qua"}}}
+{"jsonrpc":"2.0","id":3028,"method":"tools/call","params":{"name":"list_meetings","arguments":{"from":"2026-10-1"}}}
+{"jsonrpc":"2.0","id":3029,"method":"tools/call","params":{"name":"list_meetings","arguments":{"from":"17/10/2026"}}}
+{"jsonrpc":"2.0","id":3030,"method":"tools/call","params":{"name":"list_meetings","arguments":{"from":"2026-10-17T09:00:00"}}}
+{"jsonrpc":"2.0","id":3031,"method":"tools/call","params":{"name":"list_meetings","arguments":{"from":""}}}
+{"jsonrpc":"2.0","id":3032,"method":"tools/call","params":{"name":"list_meetings","arguments":{"to":""}}}
+{"jsonrpc":"2.0","id":3033,"method":"tools/call","params":{"name":"list_meetings","arguments":{"limit":1}}}
+{"jsonrpc":"2.0","id":3034,"method":"tools/call","params":{"name":"list_meetings","arguments":{"limit":3}}}
+{"jsonrpc":"2.0","id":3035,"method":"tools/call","params":{"name":"list_meetings","arguments":{"limit":7}}}
+{"jsonrpc":"2.0","id":3036,"method":"tools/call","params":{"name":"list_meetings","arguments":{"limit":6}}}
+{"jsonrpc":"2.0","id":3037,"method":"tools/call","params":{"name":"list_meetings","arguments":{"limit":0}}}
+{"jsonrpc":"2.0","id":3038,"method":"tools/call","params":{"name":"list_meetings","arguments":{"limit":-4}}}
+{"jsonrpc":"2.0","id":3039,"method":"tools/call","params":{"name":"list_meetings","arguments":{"limit":1000}}}
+{"jsonrpc":"2.0","id":3040,"method":"tools/call","params":{"name":"list_meetings","arguments":{"limit":"2"}}}
+{"jsonrpc":"2.0","id":3041,"method":"tools/call","params":{"name":"list_meetings","arguments":{"limit":"abc"}}}
+{"jsonrpc":"2.0","id":3042,"method":"tools/call","params":{"name":"list_meetings","arguments":{"limit":2.7}}}
+{"jsonrpc":"2.0","id":3043,"method":"tools/call","params":{"name":"list_meetings","arguments":{"limit":null}}}
+{"jsonrpc":"2.0","id":3044,"method":"tools/call","params":{"name":"list_meetings","arguments":{"limit":2,"query":"nhom"}}}
+{"jsonrpc":"2.0","id":3045,"method":"tools/call","params":{"name":"list_meetings","arguments":{"limit":1,"from":"2026-10-15","to":"2026-10-17"}}}
+{"jsonrpc":"2.0","id":3046,"method":"tools/call","params":{"name":"get_meeting","arguments":{"id":"2026-10-19 22-20-58"},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}
+{"jsonrpc":"2.0","id":3047,"method":"tools/call","params":{"name":"get_meeting","arguments":{"id":"Họp kế hoạch refactor"}}}
+{"jsonrpc":"2.0","id":3048,"method":"tools/call","params":{"name":"get_meeting","arguments":{"id":"hop ke hoach REFACTOR"}}}
+{"jsonrpc":"2.0","id":3049,"method":"tools/call","params":{"name":"get_meeting","arguments":{"id":"  Họp kế hoạch refactor  "}}}
+{"jsonrpc":"2.0","id":3050,"method":"tools/call","params":{"name":"get_meeting","arguments":{"id":"\"2026-10-19 22-20-58\""}}}
+{"jsonrpc":"2.0","id":3051,"method":"tools/call","params":{"name":"get_meeting","arguments":{"id":"'2026-10-19 22-20-58'"}}}
+{"jsonrpc":"2.0","id":3052,"method":"tools/call","params":{"name":"get_meeting","arguments":{"id":"/2026-10-19 22-20-58/"}}}
+{"jsonrpc":"2.0","id":3053,"method":"tools/call","params":{"name":"get_meeting","arguments":{"id":"Swift"}}}
+{"jsonrpc":"2.0","id":3054,"method":"tools/call","params":{"name":"get_meeting","arguments":{"id":"2026-10-18 11-50-17"}}}
+{"jsonrpc":"2.0","id":3055,"method":"tools/call","params":{"name":"get_meeting","arguments":{"id":"2026-10-17 09-00-00"}}}
+{"jsonrpc":"2.0","id":3056,"method":"tools/call","params":{"name":"get_meeting","arguments":{"id":"2026-10-17 09-00-00"}}}
+{"jsonrpc":"2.0","id":3057,"method":"tools/call","params":{"name":"get_meeting","arguments":{"id":"2026-10-16 00-00-00"}}}
+{"jsonrpc":"2.0","id":3058,"method":"tools/call","params":{"name":"get_meeting","arguments":{"id":"onboarding"}}}
+{"jsonrpc":"2.0","id":3059,"method":"tools/call","params":{"name":"get_meeting","arguments":{"id":"2026-10-15 10-30-00"}}}
+{"jsonrpc":"2.0","id":3060,"method":"tools/call","params":{"name":"get_meeting","arguments":{"id":"Ghi chú nhanh về ngân sách"}}}
+{"jsonrpc":"2.0","id":3061,"method":"tools/call","params":{"name":"get_meeting","arguments":{"id":"2026-10-14 17-45-30"}}}
+{"jsonrpc":"2.0","id":3062,"method":"tools/call","params":{"name":"get_meeting","arguments":{"id":"Bản ghi chưa xử lý"}}}
+{"jsonrpc":"2.0","id":3063,"method":"tools/call","params":{"name":"get_meeting","arguments":{"id":"ghi"}}}
+{"jsonrpc":"2.0","id":3064,"method":"tools/call","params":{"name":"get_meeting","arguments":{"id":"không có bản ghi này"}}}
+{"jsonrpc":"2.0","id":3065,"method":"tools/call","params":{"name":"get_meeting","arguments":{"id":"2026-10-19"}}}
+{"jsonrpc":"2.0","id":3066,"method":"tools/call","params":{"name":"get_meeting","arguments":{"id":"no-such-recording"},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}
+{"jsonrpc":"2.0","id":3067,"method":"tools/call","params":{"name":"get_meeting","arguments":{"id":""}}}
+{"jsonrpc":"2.0","id":3068,"method":"tools/call","params":{"name":"get_meeting","arguments":{"id":"   "}}}
+{"jsonrpc":"2.0","id":3069,"method":"tools/call","params":{"name":"get_meeting","arguments":{"id":7}}}
+{"jsonrpc":"2.0","id":3070,"method":"tools/call","params":{"name":"get_meeting","arguments":{"id":null}}}
+{"jsonrpc":"2.0","id":3071,"method":"tools/call","params":{"name":"get_meeting","arguments":{}}}
+{"jsonrpc":"2.0","id":3072,"method":"tools/call","params":{"name":"get_meeting"}}
+{"jsonrpc":"2.0","id":3073,"method":"tools/call","params":{"name":"get_meeting","arguments":{"id":"../2026-10-19 22-20-58"}}}
+{"jsonrpc":"2.0","id":3074,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-19 22-20-58"},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}
+{"jsonrpc":"2.0","id":3075,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"Họp kế hoạch refactor"}}}
+{"jsonrpc":"2.0","id":3076,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-19 22-20-58","start":"01:05"}}}
+{"jsonrpc":"2.0","id":3077,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-19 22-20-58","end":"01:05"}}}
+{"jsonrpc":"2.0","id":3078,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-19 22-20-58","start":"00:30","end":"01:30"}}}
+{"jsonrpc":"2.0","id":3079,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-19 22-20-58","start":"02:10","end":"02:10"}}}
+{"jsonrpc":"2.0","id":3080,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-19 22-20-58","start":"03:00"}}}
+{"jsonrpc":"2.0","id":3081,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-19 22-20-58","start":"01:30","end":"00:30"}}}
+{"jsonrpc":"2.0","id":3082,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-19 22-20-58","start":65}}}
+{"jsonrpc":"2.0","id":3083,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-19 22-20-58","start":65.5,"end":130}}}
+{"jsonrpc":"2.0","id":3084,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-19 22-20-58","start":"65"}}}
+{"jsonrpc":"2.0","id":3085,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-19 22-20-58","end":"[01:05]"}}}
+{"jsonrpc":"2.0","id":3086,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-19 22-20-58","start":" 1:05 "}}}
+{"jsonrpc":"2.0","id":3087,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-19 22-20-58","start":"abc"}}}
+{"jsonrpc":"2.0","id":3088,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-19 22-20-58","end":"1:2:3:4"}}}
+{"jsonrpc":"2.0","id":3089,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-19 22-20-58","start":"1:xx"}}}
+{"jsonrpc":"2.0","id":3090,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-19 22-20-58","start":""}}}
+{"jsonrpc":"2.0","id":3091,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-19 22-20-58","offset":1}}}
+{"jsonrpc":"2.0","id":3092,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-19 22-20-58","offset":2}}}
+{"jsonrpc":"2.0","id":3093,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-19 22-20-58","offset":3}}}
+{"jsonrpc":"2.0","id":3094,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-19 22-20-58","offset":99}}}
+{"jsonrpc":"2.0","id":3095,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-19 22-20-58","offset":-5}}}
+{"jsonrpc":"2.0","id":3096,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-19 22-20-58","offset":"1"}}}
+{"jsonrpc":"2.0","id":3097,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-19 22-20-58","start":"01:00","offset":1}}}
+{"jsonrpc":"2.0","id":3098,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-19 22-20-58","start":"09:00"}}}
+{"jsonrpc":"2.0","id":3099,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-19 22-20-58","max_chars":2000}}}
+{"jsonrpc":"2.0","id":3100,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-18 11-50-17"}}}
+{"jsonrpc":"2.0","id":3101,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-17 09-00-00"}}}
+{"jsonrpc":"2.0","id":3102,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-17 09-00-00","start":"00:01"}}}
+{"jsonrpc":"2.0","id":3103,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-16 00-00-00"}}}
+{"jsonrpc":"2.0","id":3104,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-16 00-00-00","max_chars":2000}}}
+{"jsonrpc":"2.0","id":3105,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-16 00-00-00","max_chars":2000,"offset":13}}}
+{"jsonrpc":"2.0","id":3106,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-16 00-00-00","max_chars":2000,"offset":14}}}
+{"jsonrpc":"2.0","id":3107,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-16 00-00-00","max_chars":2000,"offset":15}}}
+{"jsonrpc":"2.0","id":3108,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-16 00-00-00","max_chars":500}}}
+{"jsonrpc":"2.0","id":3109,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-16 00-00-00","max_chars":3000,"offset":3}}}
+{"jsonrpc":"2.0","id":3110,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-16 00-00-00","max_chars":"4000"}}}
+{"jsonrpc":"2.0","id":3111,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-16 00-00-00","max_chars":100000}}}
+{"jsonrpc":"2.0","id":3112,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-16 00-00-00","max_chars":5000000}}}
+{"jsonrpc":"2.0","id":3113,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-16 00-00-00","max_chars":2000.9}}}
+{"jsonrpc":"2.0","id":3114,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-16 00-00-00","start":"1:02:00"}}}
+{"jsonrpc":"2.0","id":3115,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-16 00-00-00","start":"1:02:00","end":"1:02:05"}}}
+{"jsonrpc":"2.0","id":3116,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-16 00-00-00","start":"05:07","end":"08:30"}}}
+{"jsonrpc":"2.0","id":3117,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-16 00-00-00","start":"05:07","end":"08:30","max_chars":2000,"offset":1}}}
+{"jsonrpc":"2.0","id":3118,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-16 00-00-00","start":3720}}}
+{"jsonrpc":"2.0","id":3119,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-16 00-00-00","start":"10:00","end":"20:00"}}}
+{"jsonrpc":"2.0","id":3120,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-16 00-00-00","start":"10:00","end":"20:00","max_chars":2000,"offset":2}}}
+{"jsonrpc":"2.0","id":3121,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-16 00-00-00","start":"20:00","end":"50:00","max_chars":2000}}}
+{"jsonrpc":"2.0","id":3122,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-16 00-00-00","start":"02:00","end":"03:00","offset":5}}}
+{"jsonrpc":"2.0","id":3123,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-16 00-00-00","start":"3:00:00"}}}
+{"jsonrpc":"2.0","id":3124,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-15 10-30-00"}}}
+{"jsonrpc":"2.0","id":3125,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-14 17-45-30"}}}
+{"jsonrpc":"2.0","id":3126,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"no-such-recording"}}}
+{"jsonrpc":"2.0","id":3127,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":""}}}
+{"jsonrpc":"2.0","id":3128,"method":"tools/call","params":{"name":"get_transcript","arguments":{"start":"00:00"}}}
+{"jsonrpc":"2.0","id":3129,"method":"tools/call","params":{"name":"get_transcript"}}
+{"jsonrpc":"2.0","id":3130,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"hop"},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}
+{"jsonrpc":"2.0","id":3131,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"HỌP"}}}
+{"jsonrpc":"2.0","id":3132,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"họp kế hoạch"}}}
+{"jsonrpc":"2.0","id":3133,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"refactor"}}}
+{"jsonrpc":"2.0","id":3134,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"repo test"}}}
+{"jsonrpc":"2.0","id":3135,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"swift"}}}
+{"jsonrpc":"2.0","id":3136,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"dong y"}}}
+{"jsonrpc":"2.0","id":3137,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"Đồng ý"}}}
+{"jsonrpc":"2.0","id":3138,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"henry"}}}
+{"jsonrpc":"2.0","id":3139,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"thu sau"}}}
+{"jsonrpc":"2.0","id":3140,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"chua ro"}}}
+{"jsonrpc":"2.0","id":3141,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"ke hoach refactor"}}}
+{"jsonrpc":"2.0","id":3142,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"mo dau"}}}
+{"jsonrpc":"2.0","id":3143,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"thử ghi âm"}}}
+{"jsonrpc":"2.0","id":3144,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"ngan sach"}}}
+{"jsonrpc":"2.0","id":3145,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"ha tang"}}}
+{"jsonrpc":"2.0","id":3146,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"nhom"}}}
+{"jsonrpc":"2.0","id":3147,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"nhom","limit":1}}}
+{"jsonrpc":"2.0","id":3148,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"nhom","limit":3}}}
+{"jsonrpc":"2.0","id":3149,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"nhom","limit":9}}}
+{"jsonrpc":"2.0","id":3150,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"nhom","limit":12}}}
+{"jsonrpc":"2.0","id":3151,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"nhom","limit":100}}}
+{"jsonrpc":"2.0","id":3152,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"nhom","limit":0}}}
+{"jsonrpc":"2.0","id":3153,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"nhom","limit":1000}}}
+{"jsonrpc":"2.0","id":3154,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"nhom","limit":"4"}}}
+{"jsonrpc":"2.0","id":3155,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"nhom","limit":"abc"}}}
+{"jsonrpc":"2.0","id":3156,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"nhom","limit":2.5}}}
+{"jsonrpc":"2.0","id":3157,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"ky luat"}}}
+{"jsonrpc":"2.0","id":3158,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"luat cao"}}}
+{"jsonrpc":"2.0","id":3159,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"dich vu nho"}}}
+{"jsonrpc":"2.0","id":3160,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"Chào mừng"}}}
+{"jsonrpc":"2.0","id":3161,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"khóa API"}}}
+{"jsonrpc":"2.0","id":3162,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"co so du lieu"}}}
+{"jsonrpc":"2.0","id":3163,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"cau so 20"}}}
+{"jsonrpc":"2.0","id":3164,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"xuong hang trong cung doan"}}}
+{"jsonrpc":"2.0","id":3165,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"ba dong trong"}}}
+{"jsonrpc":"2.0","id":3166,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"khong co nguoi noi"}}}
+{"jsonrpc":"2.0","id":3167,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"mr nam"}}}
+{"jsonrpc":"2.0","id":3168,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"dau hai cham"}}}
+{"jsonrpc":"2.0","id":3169,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"nhom lan"}}}
+{"jsonrpc":"2.0","id":3170,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"thu ba thu nam"}}}
+{"jsonrpc":"2.0","id":3171,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"tai khoan"}}}
+{"jsonrpc":"2.0","id":3172,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"review"}}}
+{"jsonrpc":"2.0","id":3173,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"ai truc"}}}
+{"jsonrpc":"2.0","id":3174,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"kien truc"}}}
+{"jsonrpc":"2.0","id":3175,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"hang tuan"}}}
+{"jsonrpc":"2.0","id":3176,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"onboarding"}}}
+{"jsonrpc":"2.0","id":3177,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"khong hề có"}}}
+{"jsonrpc":"2.0","id":3178,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"xyzzy plugh"}}}
+{"jsonrpc":"2.0","id":3179,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"repo biết"}}}
+{"jsonrpc":"2.0","id":3180,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":""}}}
+{"jsonrpc":"2.0","id":3181,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"   "}}}
+{"jsonrpc":"2.0","id":3182,"method":"tools/call","params":{"name":"search_meetings","arguments":{}}}
+{"jsonrpc":"2.0","id":3183,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":5}}}
+{"jsonrpc":"2.0","id":3184,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":null}}}
+{"jsonrpc":"2.0","id":3185,"method":"tools/call","params":{"name":"search_meetings"}}
+{"jsonrpc":"2.0","id":3186,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"hop"},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}
+{"jsonrpc":"2.0","id":3187,"method":"tools/call","params":{"name":"list_action_items"}}
+{"jsonrpc":"2.0","id":3188,"method":"tools/call","params":{"name":"list_action_items","arguments":{},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}
+{"jsonrpc":"2.0","id":3189,"method":"tools/call","params":{"name":"list_action_items","arguments":{"status":"open"}}}
+{"jsonrpc":"2.0","id":3190,"method":"tools/call","params":{"name":"list_action_items","arguments":{"status":"done"}}}
+{"jsonrpc":"2.0","id":3191,"method":"tools/call","params":{"name":"list_action_items","arguments":{"status":"all"}}}
+{"jsonrpc":"2.0","id":3192,"method":"tools/call","params":{"name":"list_action_items","arguments":{"status":"pending"}}}
+{"jsonrpc":"2.0","id":3193,"method":"tools/call","params":{"name":"list_action_items","arguments":{"status":"DONE"}}}
+{"jsonrpc":"2.0","id":3194,"method":"tools/call","params":{"name":"list_action_items","arguments":{"status":" done "}}}
+{"jsonrpc":"2.0","id":3195,"method":"tools/call","params":{"name":"list_action_items","arguments":{"status":""}}}
+{"jsonrpc":"2.0","id":3196,"method":"tools/call","params":{"name":"list_action_items","arguments":{"status":1}}}
+{"jsonrpc":"2.0","id":3197,"method":"tools/call","params":{"name":"list_action_items","arguments":{"status":null}}}
+{"jsonrpc":"2.0","id":3198,"method":"tools/call","params":{"name":"list_action_items","arguments":{"owner":"henry"}}}
+{"jsonrpc":"2.0","id":3199,"method":"tools/call","params":{"name":"list_action_items","arguments":{"owner":"HENRY"}}}
+{"jsonrpc":"2.0","id":3200,"method":"tools/call","params":{"name":"list_action_items","arguments":{"owner":"lan"}}}
+{"jsonrpc":"2.0","id":3201,"method":"tools/call","params":{"name":"list_action_items","arguments":{"owner":"lan anh"}}}
+{"jsonrpc":"2.0","id":3202,"method":"tools/call","params":{"name":"list_action_items","arguments":{"owner":"minh"}}}
+{"jsonrpc":"2.0","id":3203,"method":"tools/call","params":{"name":"list_action_items","arguments":{"owner":"chưa rõ"}}}
+{"jsonrpc":"2.0","id":3204,"method":"tools/call","params":{"name":"list_action_items","arguments":{"owner":"unknown"}}}
+{"jsonrpc":"2.0","id":3205,"method":"tools/call","params":{"name":"list_action_items","arguments":{"owner":"tbd"}}}
+{"jsonrpc":"2.0","id":3206,"method":"tools/call","params":{"name":"list_action_items","arguments":{"owner":"mai"}}}
+{"jsonrpc":"2.0","id":3207,"method":"tools/call","params":{"name":"list_action_items","arguments":{"owner":"khong ai"}}}
+{"jsonrpc":"2.0","id":3208,"method":"tools/call","params":{"name":"list_action_items","arguments":{"owner":"  "}}}
+{"jsonrpc":"2.0","id":3209,"method":"tools/call","params":{"name":"list_action_items","arguments":{"owner":"henry","status":"all"}}}
+{"jsonrpc":"2.0","id":3210,"method":"tools/call","params":{"name":"list_action_items","arguments":{"owner":"henry","status":"done"}}}
+{"jsonrpc":"2.0","id":3211,"method":"tools/call","params":{"name":"list_action_items","arguments":{"owner":"lan","status":"all"}}}
+{"jsonrpc":"2.0","id":3212,"method":"tools/call","params":{"name":"list_action_items","arguments":{"owner":"minh","status":"done"}}}
+{"jsonrpc":"2.0","id":3213,"method":"tools/call","params":{"name":"list_action_items","arguments":{"owner":"minh","status":"open"}}}
+{"jsonrpc":"2.0","id":3214,"method":"tools/call","params":{"name":"list_action_items","arguments":{"owner":7}}}
+{"jsonrpc":"2.0","id":3215,"method":"tools/call","params":{"name":"list_action_items","arguments":{"from":"2026-10-17"}}}
+{"jsonrpc":"2.0","id":3216,"method":"tools/call","params":{"name":"list_action_items","arguments":{"to":"2026-10-16","status":"all"}}}
+{"jsonrpc":"2.0","id":3217,"method":"tools/call","params":{"name":"list_action_items","arguments":{"from":"2026-10-15","to":"2026-10-15","status":"all"}}}
+{"jsonrpc":"2.0","id":3218,"method":"tools/call","params":{"name":"list_action_items","arguments":{"from":"2026-10-16","to":"2026-10-18","status":"all"}}}
+{"jsonrpc":"2.0","id":3219,"method":"tools/call","params":{"name":"list_action_items","arguments":{"from":"2026-10-20","status":"all"}}}
+{"jsonrpc":"2.0","id":3220,"method":"tools/call","params":{"name":"list_action_items","arguments":{"from":"2026-10-19","to":"2026-10-15"}}}
+{"jsonrpc":"2.0","id":3221,"method":"tools/call","params":{"name":"list_action_items","arguments":{"from":"2026-13-45"}}}
+{"jsonrpc":"2.0","id":3222,"method":"tools/call","params":{"name":"list_action_items","arguments":{"to":"yesterday"}}}
+{"jsonrpc":"2.0","id":3223,"method":"tools/call","params":{"name":"list_action_items","arguments":{"status":"all","limit":1}}}
+{"jsonrpc":"2.0","id":3224,"method":"tools/call","params":{"name":"list_action_items","arguments":{"status":"all","limit":2}}}
+{"jsonrpc":"2.0","id":3225,"method":"tools/call","params":{"name":"list_action_items","arguments":{"status":"all","limit":3}}}
+{"jsonrpc":"2.0","id":3226,"method":"tools/call","params":{"name":"list_action_items","arguments":{"status":"all","limit":5}}}
+{"jsonrpc":"2.0","id":3227,"method":"tools/call","params":{"name":"list_action_items","arguments":{"status":"all","limit":9}}}
+{"jsonrpc":"2.0","id":3228,"method":"tools/call","params":{"name":"list_action_items","arguments":{"status":"all","limit":10}}}
+{"jsonrpc":"2.0","id":3229,"method":"tools/call","params":{"name":"list_action_items","arguments":{"status":"all","limit":0}}}
+{"jsonrpc":"2.0","id":3230,"method":"tools/call","params":{"name":"list_action_items","arguments":{"status":"all","limit":-1}}}
+{"jsonrpc":"2.0","id":3231,"method":"tools/call","params":{"name":"list_action_items","arguments":{"status":"all","limit":1000}}}
+{"jsonrpc":"2.0","id":3232,"method":"tools/call","params":{"name":"list_action_items","arguments":{"status":"all","limit":"3"}}}
+{"jsonrpc":"2.0","id":3233,"method":"tools/call","params":{"name":"list_action_items","arguments":{"status":"all","limit":"abc"}}}
+{"jsonrpc":"2.0","id":3234,"method":"tools/call","params":{"name":"list_action_items","arguments":{"status":"all","limit":2.9}}}
+{"jsonrpc":"2.0","id":3235,"method":"tools/call","params":{"name":"list_action_items","arguments":{"status":"all","limit":2,"from":"2026-10-16"}}}
+{"jsonrpc":"2.0","id":3236,"method":"tools/call","params":{"name":"list_action_items","arguments":{"limit":1}}}
+{"jsonrpc":"2.0","id":3237,"method":"tools/call","params":{"name":"list_action_items","arguments":{"limit":2,"owner":"lan"}}}
+{"jsonrpc":"2.0","id":3238,"method":"tools/call","params":{"name":"list_action_items","arguments":{"owner":"henry","limit":1,"status":"all"}}}
+{"jsonrpc":"2.0","id":3239,"method":"tools/call","params":{"name":"list_action_items","arguments":{"status":"done","from":"2026-10-16","to":"2026-10-16"}}}
+{"jsonrpc":"2.0","id":3240,"method":"tools/call","params":{"name":"list_action_items","arguments":{"status":"done","owner":"mai"}}}
+{"jsonrpc":"2.0","id":3241,"method":"tools/call","params":{"name":"list_action_items","arguments":{"status":"done","from":"2026-10-17","to":"2026-10-18"}}}
+{"jsonrpc":"2.0","id":3242,"method":"tools/call","params":{"name":"list_action_items","arguments":{"status":"open","from":"2026-10-14","to":"2026-10-15"}}}
+{"jsonrpc":"2.0","id":3243,"method":"tools/call","params":{"name":"list_meetings","arguments":{"unknown_argument":1,"query":"swift"}}}
+{"jsonrpc":"2.0","id":3244,"method":"tools/call","params":{"name":"nope","arguments":{}}}
+{"jsonrpc":"2.0","id":3245,"method":"tools/call","params":{"name":"","arguments":{}}}
+{"jsonrpc":"2.0","id":3246,"method":"tools/call","params":{"name":"LIST_MEETINGS","arguments":{}}}
+{"jsonrpc":"2.0","id":3247,"method":"tools/call","params":{"name":5,"arguments":{}}}
+{"jsonrpc":"2.0","id":3248,"method":"tools/call","params":{"name":"list_meetings","arguments":null}}
