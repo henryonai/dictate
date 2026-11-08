@@ -1,4 +1,10 @@
-//! The audio window and the text of a dictation while it is recording (section R2 of the plan 3 dictation reference).
+//! The audio window and the text of a dictation while it is recording.
+//!
+//! About once a second the recording is transcribed again so that the text on screen follows the speech. The job
+//! covers all the audio while it is short. Once it is 20 s long, its first 20 s are committed (their text is
+//! final) and the next job starts after them, so that no job grows without bound on a long take. The text is
+//! what is committed followed by the latest guess for the rest, joined with a space, or with none for languages
+//! written without spaces between words (Japanese, Chinese, Cantonese, Thai).
 
 use std::ops::Range;
 
@@ -78,8 +84,9 @@ impl LiveWindow {
         }
     }
 
-    /// The text of the commit job is committed: the window now starts where that job ended. It does nothing
-    /// when no commit job is waiting.
+    /// The commit job offered last is over: the window now starts where that job ended. A caller calls it when
+    /// the text is committed, and also to give up on a commit job that failed, whose audio is then left out;
+    /// without it the same job is offered again on every tick. It does nothing when no commit job is waiting.
     pub fn commit_done(&mut self) {
         if let Some(end) = self.commit_end.take() {
             self.start = end;

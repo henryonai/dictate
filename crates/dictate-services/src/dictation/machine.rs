@@ -1,4 +1,9 @@
-//! What a press or a release of the dictation hotkey does, by phase (section R1 of the plan 3 dictation reference).
+//! What a press or a release of the dictation hotkey does, by phase.
+//!
+//! In toggle mode a press stops a recording and starts one from every other phase. In hold mode (push to talk) a
+//! press starts the recording and the release stops it. A press while the recording is being finished, or while
+//! a paste is in progress, is ignored. A press while the AI is still editing and nothing is written yet writes
+//! the transcript as it is, without the edit.
 
 use serde::Serialize;
 

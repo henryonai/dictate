@@ -1,4 +1,8 @@
-//! Recognition languages and how the hotkey is shown (sections R1 and R2 of the plan 3 dictation reference).
+//! Recognition languages and how the hotkey is shown.
+//!
+//! The language menu lists a few favourites first and the other languages after them. A language is labelled by
+//! the first two letters of its code in capitals. A hotkey is written with the Mac symbols on the Mac and as
+//! plain names elsewhere.
 
 /// The languages at the top of the language menu, in the order they are shown.
 pub const FAVOURITES: [&str; 8] = [
