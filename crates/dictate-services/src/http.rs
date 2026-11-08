@@ -32,10 +32,7 @@ impl ApiError {
 
     /// Hides `secret` in the messages, in case a provider or proxy echoes it back.
     pub fn redact(self, secret: Option<&str>) -> ApiError {
-        let Some(secret) = secret.filter(|s| !s.is_empty()) else {
-            return self;
-        };
-        let hide = |m: String| m.replace(secret, "***");
+        let hide = |m: String| hide_secret(&m, secret);
         match self {
             ApiError::Status { status, message } => ApiError::Status {
                 status,
@@ -45,6 +42,14 @@ impl ApiError {
             ApiError::Invalid(m) => ApiError::Invalid(hide(m)),
             ApiError::Empty => ApiError::Empty,
         }
+    }
+}
+
+/// `text` with every `secret` in it replaced by `***`; as it is when there is no secret (or an empty one).
+fn hide_secret(text: &str, secret: Option<&str>) -> String {
+    match secret.filter(|s| !s.is_empty()) {
+        Some(secret) => text.replace(secret, "***"),
+        None => text.to_owned(),
     }
 }
 
@@ -102,18 +107,27 @@ pub(crate) fn parse_url(url: &str) -> Result<reqwest::Url, ApiError> {
 }
 
 /// Builds the error for a reply that is not a success: the provider's `error.message` when the body has one,
-/// else the first 300 characters of the body.
-pub fn status_error(status: u16, body: &[u8]) -> ApiError {
+/// else the first 300 characters of the body. `secret`, the key the call was made with, is hidden in either.
+pub fn status_error(status: u16, body: &[u8], secret: Option<&str>) -> ApiError {
     let message = serde_json::from_slice::<serde_json::Value>(body)
         .ok()
-        .and_then(|json| json.pointer("/error/message")?.as_str().map(str::to_owned))
-        .unwrap_or_else(|| snippet(body));
+        .and_then(|json| {
+            let message = json.pointer("/error/message")?.as_str()?;
+            Some(hide_secret(message, secret))
+        })
+        .unwrap_or_else(|| snippet(body, secret));
     ApiError::Status { status, message }
 }
 
-/// The first 300 characters of a body, for error messages.
-pub fn snippet(body: &[u8]) -> String {
-    String::from_utf8_lossy(body).chars().take(300).collect()
+/// The first 300 characters of a body, for error messages, with `secret` hidden.
+///
+/// The key is hidden in the whole body and only then is the text cut: the other way round the cut could leave
+/// the beginning of a key that it split, which no later hiding would recognize.
+pub fn snippet(body: &[u8], secret: Option<&str>) -> String {
+    hide_secret(&String::from_utf8_lossy(body), secret)
+        .chars()
+        .take(300)
+        .collect()
 }
 
 #[cfg(test)]
@@ -154,7 +168,7 @@ mod tests {
     fn status_error_prefers_the_provider_message() {
         let body = br#"{"error":{"message":"bad key","type":"auth"}}"#;
         assert_eq!(
-            status_error(401, body),
+            status_error(401, body, None),
             ApiError::Status {
                 status: 401,
                 message: "bad key".into()
@@ -165,7 +179,7 @@ mod tests {
     #[test]
     fn status_error_falls_back_to_the_start_of_the_body() {
         let html = format!("<html>{}</html>", "x".repeat(500));
-        let ApiError::Status { status, message } = status_error(502, html.as_bytes()) else {
+        let ApiError::Status { status, message } = status_error(502, html.as_bytes(), None) else {
             panic!("expected a Status error");
         };
         assert_eq!(status, 502);
@@ -176,7 +190,7 @@ mod tests {
     #[test]
     fn status_error_counts_characters_not_bytes() {
         let body = "ế".repeat(400);
-        let ApiError::Status { message, .. } = status_error(500, body.as_bytes()) else {
+        let ApiError::Status { message, .. } = status_error(500, body.as_bytes(), None) else {
             panic!("expected a Status error");
         };
         assert_eq!(message, "ế".repeat(300));
@@ -186,7 +200,7 @@ mod tests {
     fn status_error_uses_the_body_when_the_error_has_no_message() {
         let body = br#"{"error":"rate limited"}"#;
         assert_eq!(
-            status_error(429, body),
+            status_error(429, body, None),
             ApiError::Status {
                 status: 429,
                 message: r#"{"error":"rate limited"}"#.into()
@@ -196,7 +210,66 @@ mod tests {
 
     #[test]
     fn status_error_of_an_empty_body_has_an_empty_message() {
-        assert_eq!(status_error(503, b""), status(503));
+        assert_eq!(status_error(503, b"", None), status(503));
+    }
+
+    /// A body of `length` characters with `key` starting at character `start`.
+    fn body_with_key_at(start: usize, length: usize, key: &str) -> String {
+        let mut body = "x".repeat(start);
+        body.push_str(key);
+        body.push_str(&"y".repeat(length - start - key.chars().count()));
+        body
+    }
+
+    const KEY: &str = "sk-or-v1-0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn a_key_that_the_cut_would_split_is_hidden_before_it() {
+        // The key starts a little before the 300th character: cutting first and hiding after would leave its
+        // beginning in the message, where hiding no longer recognizes it.
+        for start in 250..=299 {
+            let body = body_with_key_at(start, 500, KEY);
+            let ApiError::Status { message, .. } = status_error(502, body.as_bytes(), Some(KEY))
+            else {
+                panic!("expected a Status error");
+            };
+            let leaked = |text: &str| text.contains(&KEY[..8]);
+            assert!(!leaked(&message), "key at {start}: {message}");
+            assert!(
+                !leaked(&snippet(body.as_bytes(), Some(KEY))),
+                "key at {start}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_message_is_cut_after_the_key_is_hidden() {
+        let body = body_with_key_at(0, 500, KEY);
+        let ApiError::Status { message, .. } = status_error(502, body.as_bytes(), Some(KEY)) else {
+            panic!("expected a Status error");
+        };
+        assert_eq!(message.chars().count(), 300);
+        assert!(message.starts_with("***yyy"));
+        assert_eq!(snippet(body.as_bytes(), Some(KEY)), message);
+    }
+
+    #[test]
+    fn the_key_is_hidden_in_the_message_of_the_provider_too() {
+        let body = format!(r#"{{"error":{{"message":"No access for {KEY}, sorry"}}}}"#);
+        assert_eq!(
+            status_error(401, body.as_bytes(), Some(KEY)),
+            ApiError::Status {
+                status: 401,
+                message: "No access for ***, sorry".into()
+            }
+        );
+    }
+
+    #[test]
+    fn nothing_is_hidden_without_a_key() {
+        for secret in [None, Some("")] {
+            assert_eq!(snippet(b"plain body", secret), "plain body");
+        }
     }
 
     #[test]

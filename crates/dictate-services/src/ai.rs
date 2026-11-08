@@ -122,13 +122,13 @@ async fn send(
     let status = response.status();
     let body = response.bytes().await?;
     if !status.is_success() {
-        return Err(http::status_error(status.as_u16(), &body));
+        return Err(http::status_error(status.as_u16(), &body, key));
     }
     let Some(reply) = serde_json::from_slice::<Value>(&body)
         .ok()
         .filter(Value::is_object)
     else {
-        return Err(ApiError::Invalid(http::snippet(&body)));
+        return Err(ApiError::Invalid(http::snippet(&body, key)));
     };
 
     let text = match c.provider {
@@ -452,6 +452,21 @@ mod tests {
 
         assert!(!err.to_string().contains(key), "{err}");
         assert!(!format!("{err:?}").contains(key), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn a_key_in_a_long_body_does_not_survive_the_cut_even_in_part() {
+        let key = "sk-very-secret-key-0123456789";
+        // The key starts just before the 300th character, where the message is cut.
+        let body = format!("{}{key}{}", "x".repeat(285), "y".repeat(100));
+        for provider in [AiProvider::Anthropic, AiProvider::OpenAi] {
+            let server = server_replying(ResponseTemplate::new(502).set_body_string(&body)).await;
+            let c = config(provider, &server.uri(), Some(key));
+
+            let err = ask(&c, false).await.unwrap_err();
+
+            assert!(!err.to_string().contains(&key[..8]), "{err}");
+        }
     }
 
     #[tokio::test]

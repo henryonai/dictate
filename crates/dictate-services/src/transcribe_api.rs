@@ -281,17 +281,18 @@ async fn post(
     let status = response.status();
     let body = response.bytes().await?;
     if !status.is_success() {
-        return Err(http::status_error(status.as_u16(), &body));
+        return Err(http::status_error(status.as_u16(), &body, Some(&c.api_key)));
     }
     Ok(body.to_vec())
 }
 
-/// The JSON object a body holds; a page of HTML or any other text is an error with its first 300 characters.
-fn json_object(body: &[u8]) -> Result<Value, ApiError> {
+/// The JSON object a body holds; a page of HTML or any other text is an error with its first 300 characters,
+/// the key hidden in them.
+fn json_object(body: &[u8], c: &TranscribeConfig) -> Result<Value, ApiError> {
     serde_json::from_slice::<Value>(body)
         .ok()
         .filter(Value::is_object)
-        .ok_or_else(|| ApiError::Invalid(http::snippet(body)))
+        .ok_or_else(|| ApiError::Invalid(http::snippet(body, Some(&c.api_key))))
 }
 
 /// `/audio/transcriptions`: a multipart upload, as OpenAI, Groq and compatible servers take it.
@@ -322,7 +323,7 @@ async fn plain_transcribe(
     form = form.part("file", file);
 
     let body = post(http::client()?.post(url).multipart(form), c, timeout).await?;
-    let reply = json_object(&body)?;
+    let reply = json_object(&body, c)?;
 
     let timed: Vec<Segment> = reply["segments"]
         .as_array()
@@ -345,7 +346,7 @@ async fn plain_transcribe(
     }
     // gpt-4o-*-transcribe: the text only. Without it the reply is not a transcript at all.
     let Some(text) = reply["text"].as_str() else {
-        return Err(ApiError::Invalid(http::snippet(&body)));
+        return Err(ApiError::Invalid(http::snippet(&body, Some(&c.api_key))));
     };
     Ok(single_segment(text))
 }
@@ -421,7 +422,7 @@ async fn chat_audio(
         }));
 
     let body = post(request, c, timeout).await?;
-    let reply = json_object(&body)?;
+    let reply = json_object(&body, c)?;
     let choice = &reply["choices"][0];
     let finish = choice["finish_reason"].as_str();
     // Checked before the content: a blocked reply may come with null instead of text.
@@ -442,7 +443,7 @@ async fn chat_audio(
             cut,
         }),
         // A good status without a reply: the provider failed mid-reply. Its error message, if it gave one.
-        None => Err(http::status_error(200, &body).into()),
+        None => Err(http::status_error(200, &body, Some(&c.api_key)).into()),
     }
 }
 
@@ -1225,6 +1226,27 @@ mod tests {
         assert!(!err.to_string().contains(KEY), "{err}");
         let err = check(&c).await.unwrap_err();
         assert!(!err.to_string().contains(KEY), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_key_in_a_long_body_does_not_survive_the_cut_even_in_part() {
+        // The key starts 8 characters before the 300th, where the message is cut.
+        let body = format!("{}{KEY}{}", "x".repeat(292), "y".repeat(100));
+        let (_dir, path) = audio_file("a.m4a", b"x");
+
+        // An error status, and a good status with a body that is not JSON.
+        for status in [502, 200] {
+            let server =
+                server_replying(ResponseTemplate::new(status).set_body_string(&body)).await;
+            for chat in [false, true] {
+                let c = config(&server.uri(), "whisper-1", chat);
+                let err = transcribe_file(&c, &path, None, TIMEOUT).await.unwrap_err();
+                assert!(
+                    !err.to_string().contains(&KEY[..8]),
+                    "{status} {chat}: {err}"
+                );
+            }
+        }
     }
 
     #[tokio::test]

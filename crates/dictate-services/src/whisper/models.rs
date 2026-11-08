@@ -425,7 +425,7 @@ async fn status_failure(
             _ => break,
         }
     }
-    DownloadError::Http(http::status_error(status, &body))
+    DownloadError::Http(http::status_error(status, &body, None))
 }
 
 /// Waits for one step of the transfer (the reply, or the next piece of the body): ends at once when `cancel` is
