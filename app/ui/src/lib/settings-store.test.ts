@@ -300,6 +300,37 @@ describe("a change made while a call is on its way", () => {
   });
 });
 
+describe("what a call sends", () => {
+  test("an edit sent before a provider switch doesn't carry the switch, which then moves the base URL", async () => {
+    const store = await loaded();
+    const slow = later<ReturnType<typeof fakeView>>();
+    vi.mocked(api.saveSettings).mockReturnValueOnce(slow.promise);
+    const inFlight = store.update({ hotkey: "F1" });
+    await vi.waitFor(() => expect(api.saveSettings).toHaveBeenCalledTimes(1));
+
+    // Both are made while the slow call is out: the edit first, the switch after it.
+    const edit = store.update({ ai_model: "claude-sonnet-5" });
+    vi.mocked(api.setAiProvider).mockResolvedValue(
+      fakeView({ hotkey: "F1", ai_model: "claude-sonnet-5", ai_provider: "openai", ai_base_url: "http://localhost:8317/v1" }),
+    );
+    const switched = store.setAiProvider("openai");
+    expect(store.view?.ai_provider).toBe("openai");
+
+    slow.resolve(fakeView({ hotkey: "F1" }));
+    await Promise.all([inFlight, edit, switched]);
+
+    // The edit's call knows the provider the Rust side has, so that the switch that follows is a real change there.
+    expect(api.saveSettings).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(api.saveSettings).mock.calls[1][0]).toMatchObject({
+      hotkey: "F1",
+      ai_model: "claude-sonnet-5",
+      ai_provider: "anthropic",
+      ai_base_url: "https://api.anthropic.com",
+    });
+    expect(store.view).toMatchObject({ ai_provider: "openai", ai_base_url: "http://localhost:8317/v1" });
+  });
+});
+
 describe("the first load", () => {
   test("says it is loading until it ends, whether it works or not", async () => {
     const answer = later<ReturnType<typeof fakeView>>();

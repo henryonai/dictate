@@ -6,7 +6,8 @@
 //
 // What is on screen is always what the Rust side last confirmed with the changes that it hasn't answered yet laid
 // on top, oldest first. So an answer never wipes out a change made while the call was on its way, and the last
-// change to a setting wins.
+// change to a setting wins. A call sends the same, but only up to its own change: the ones made after it come with
+// their own calls.
 import { api, errorText } from "./api";
 import type { Account, AiProvider, Settings, SettingsView, TranscribePreset } from "./api";
 import { setLanguage } from "./i18n";
@@ -69,9 +70,10 @@ export class SettingsStore {
   /** Saves a change to the settings. Whether it was saved. */
   update(patch: Partial<Settings>): Promise<boolean> {
     if (!this.saved) return Promise.resolve(false);
-    // The settings as they are when the call starts: the answers of the calls before it, and the changes of the
-    // ones after it.
-    return this.send(patch, () => api.saveSettings(settingsOf(this.view as SettingsView)));
+    // The call sends the settings as they are when it starts, with its own change on them: never the changes made
+    // after it, which would go to the Rust side before their turn.
+    // `saved` is set: that was checked above and it never goes back to null.
+    return this.send(patch, (settings) => api.saveSettings(settings as Settings));
   }
 
   /** The Rust side moves the base URL along with the provider, so its answer decides what shows. */
@@ -94,21 +96,35 @@ export class SettingsStore {
     await this.queue;
   }
 
+  /**
+   * What the Rust side confirmed with the changes still waiting for it laid on top, oldest first. With `last`, only
+   * up to and including that change.
+   */
+  private laidOn(saved: SettingsView, last?: Pending): SettingsView {
+    let view = saved;
+    for (const entry of this.pending) {
+      view = { ...view, ...entry.patch };
+      if (entry === last) break;
+    }
+    return view;
+  }
+
   /** Puts what the Rust side confirmed, and the changes still waiting for it, on screen. */
   private show(): void {
     if (!this.saved) return;
-    const view = this.pending.reduce<SettingsView>((shown, entry) => ({ ...shown, ...entry.patch }), this.saved);
+    const view = this.laidOn(this.saved);
     this.view = view;
     setLanguage(view.ui_language);
   }
 
-  private send(patch: Partial<Settings>, call: () => Promise<SettingsView>): Promise<boolean> {
+  /** `call` gets the settings to send as the call starts; the calls that don't send settings ignore them. */
+  private send(patch: Partial<Settings>, call: (settings: Settings | null) => Promise<SettingsView>): Promise<boolean> {
     const entry: Pending = { patch, failuresBefore: this.failures };
     this.pending.push(entry);
     this.show();
     const sent = this.queue.then(async () => {
       try {
-        this.saved = await call();
+        this.saved = await call(this.saved && settingsOf(this.laidOn(this.saved, entry)));
         this.loadWarning = this.saved.load_warning ?? this.loadWarning;
         // A call that was queued before a failure doesn't make that failure go away.
         if (this.failures === entry.failuresBefore) this.error = "";
