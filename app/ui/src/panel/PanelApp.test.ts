@@ -79,21 +79,48 @@ test("the card window shows the pill for a state of the pill view", async () => 
   expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument();
 });
 
-test("the words follow the language of the UI settings, asked on the start and each time the panel hides", async () => {
+test("the words follow the language of the UI settings, asked each time the panel shows, before it draws", async () => {
   vi.mocked(api.panelLanguage).mockResolvedValue("vi");
   await renderPanel("bubble");
-  await vi.waitFor(() => expect(api.panelLanguage).toHaveBeenCalledOnce());
 
   act(() => panel.emitState(fakePanelState({ view: "bubble" })));
   expect(await screen.findByText("Đang nghe")).toBeInTheDocument();
+  expect(api.panelLanguage).toHaveBeenCalledOnce();
   // A state that goes on showing doesn't ask again.
   act(() => panel.emitState(fakePanelState({ view: "bubble", level: 0.5 })));
+  await Promise.resolve();
   expect(api.panelLanguage).toHaveBeenCalledOnce();
 
-  // The setting is changed in Settings; the panel hides, and has the change before it shows again.
-  vi.mocked(api.panelLanguage).mockResolvedValue("en");
+  // The panel hides, the setting is changed in Settings, and the next showing is in the new language at once.
   act(() => panel.emitState(fakePanelState({ view: "hidden", phase: "hidden" })));
-  await vi.waitFor(() => expect(api.panelLanguage).toHaveBeenCalledTimes(2));
+  vi.mocked(api.panelLanguage).mockResolvedValue("en");
+  act(() => panel.emitState(fakePanelState({ view: "bubble" })));
+  expect(await screen.findByText("Listening")).toBeInTheDocument();
+  expect(screen.queryByText("Đang nghe")).not.toBeInTheDocument();
+  expect(api.panelLanguage).toHaveBeenCalledTimes(2);
+});
+
+test("a state waits for the language, and the states that follow wait behind it, in order", async () => {
+  let answer: (language: "en" | "vi") => void = () => {};
+  vi.mocked(api.panelLanguage).mockReturnValue(new Promise((resolve) => (answer = resolve)));
+  const { container } = await renderPanel("bubble");
+
+  act(() => panel.emitState(fakePanelState({ view: "bubble" })));
+  act(() => panel.emitState(fakePanelState({ view: "bubble", committed: "Second" })));
+  // Nothing is drawn in the language of the last showing while the answer is on its way.
+  await Promise.resolve();
+  expect(container.querySelector(".bubble")).toBeNull();
+
+  answer("vi");
+  expect(await screen.findByText("Đang nghe")).toBeInTheDocument();
+  expect(screen.getByText("Second")).toBeInTheDocument();
+});
+
+test("when the language can't be asked the panel shows in the one it has", async () => {
+  vi.mocked(api.panelLanguage).mockRejectedValue("no settings");
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+  await renderPanel("bubble");
+
   act(() => panel.emitState(fakePanelState({ view: "bubble" })));
   expect(await screen.findByText("Listening")).toBeInTheDocument();
 });

@@ -18,8 +18,9 @@
   /** The size last told to the Rust side, so that the same size is told once. */
   let told = { width: 0, height: 0 };
 
-  // The words follow the language of the settings. It is asked at the start and whenever the panel hides, so that a
-  // change made in Settings is there before the next showing, and not after it.
+  // The words follow the language of the settings. It is asked when the panel goes from hidden to shown, and the state
+  // that shows it waits for the answer: the window is blank until then, and never drawn in the language of the showing
+  // before. States that come meanwhile wait behind it, so that they are applied in the order they were sent.
   async function refreshLanguage() {
     try {
       setLanguage(await api.panelLanguage());
@@ -28,16 +29,21 @@
     }
   }
 
+  let applied: Promise<void> = Promise.resolve();
+
+  function apply(next: PanelState) {
+    applied = applied.then(async () => {
+      if (current.view === "hidden" && next.view !== "hidden") await refreshLanguage();
+      current = next;
+    });
+  }
+
   $effect(() => {
     if (!known) return;
     let stopped = false;
     let stop: (() => void) | undefined;
-    void refreshLanguage();
     api
-      .onPanelState((next) => {
-        if (next.view === "hidden") void refreshLanguage();
-        current = next;
-      })
+      .onPanelState(apply)
       .then((unlisten) => {
         if (stopped) unlisten();
         else stop = unlisten;

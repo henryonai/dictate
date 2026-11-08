@@ -145,3 +145,48 @@ test("when the Rust side can't list the languages the menu says nothing rather t
   // The language in use can always be chosen again.
   expect(within(menu).getAllByRole("menuitemradio")).toHaveLength(1);
 });
+
+/**
+ * jsdom lays nothing out: says where the menu is by the class of the element. `left` is where its left edge falls on
+ * the page, which is what a browser would say.
+ */
+function menuAt(left: number) {
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    const at = this.classList.contains("menu") ? left : 0;
+    return { x: at, y: 0, left: at, top: 0, right: at + 210, bottom: 100, width: 210, height: 100, toJSON() {} };
+  });
+}
+
+test("a menu that would hang off the left edge of the window is moved right, to 14 pixels from it, where the shadows have room", async () => {
+  // The empty bubble and the empty pill are narrower than the menu, which hangs left from the right edge of the chip.
+  menuAt(-11);
+  render(LanguageMenu, { language: "en-US" });
+  await fireEvent.click(chip());
+
+  const menu = await screen.findByRole("menu");
+  await vi.waitFor(() => expect(menu.style.right).toBe("-25px"));
+});
+
+test("a menu that has the room is left where it is", async () => {
+  menuAt(120);
+  render(LanguageMenu, { language: "en-US" });
+  await fireEvent.click(chip());
+
+  const menu = await screen.findByRole("menu");
+  // Let the effect that measures it run.
+  await Promise.resolve();
+  expect(menu.style.right).toBe("0px");
+});
+
+test("the menu is measured anew each time it opens, and not moved twice", async () => {
+  menuAt(-11);
+  render(LanguageMenu, { language: "en-US" });
+  await fireEvent.click(chip());
+  await vi.waitFor(() => expect(screen.getByRole("menu").style.right).toBe("-25px"));
+
+  await fireEvent.click(chip());
+  expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  // The second time the menu starts at the chip again: the same -11 gives the same move.
+  await fireEvent.click(chip());
+  await vi.waitFor(() => expect(screen.getByRole("menu").style.right).toBe("-25px"));
+});

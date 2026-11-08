@@ -11,6 +11,12 @@
   /** The lists, asked of the Rust side when the menu is opened first. */
   let lists = $state<{ favourites: string[]; others: string[] }>();
   let root: HTMLElement | undefined = $state();
+  let menu: HTMLElement | undefined = $state();
+  /** How far right the menu is moved, so that it doesn't hang off the left edge of the window. */
+  let shift = $state(0);
+
+  /** The room the page keeps around what it draws, for the shadows: the menu stays this far from the left edge of the window. */
+  const EDGE = 14;
 
   async function toggle() {
     if (open) return close();
@@ -28,7 +34,14 @@
   function close() {
     open = false;
     othersOpen = false;
+    shift = 0;
   }
+
+  // The menu hangs left from the right edge of the chip, and the empty bubble and the empty pill are narrower than it:
+  // what is left of the window is cut off. It is moved right instead, and the window grows to hold it.
+  $effect(() => {
+    if (menu) shift = Math.max(0, EDGE - menu.getBoundingClientRect().left);
+  });
 
   async function choose(code: string) {
     close();
@@ -91,7 +104,7 @@
   >
   {#if open && lists}
     <!-- Counted in the size of the window, which grows to hold the menu. -->
-    <div class="menu" role="menu" data-extent>
+    <div class="menu" role="menu" data-extent bind:this={menu} style:right="{-shift}px">
       {#each lists.favourites as code (code)}
         {@render item(code)}
       {/each}
