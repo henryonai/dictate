@@ -2,6 +2,7 @@
 name = "dictate-core"
 version = "0.1.0"
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 description = "Shared logic for Dictate: meetings library, transcript and summary parsing, search"
 
