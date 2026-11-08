@@ -41,6 +41,7 @@ export function fakeView(overrides: Partial<SettingsView> = {}): SettingsView {
     has_transcribe_key: false,
     shares_openrouter_key: false,
     load_warning: null,
+    system_language: "en",
     ...overrides,
   };
 }

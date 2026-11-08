@@ -74,6 +74,22 @@ describe("setLanguage", () => {
     expect(document.documentElement.lang).toBe("vi");
   });
 
+  test("system takes the language the Rust side resolved, when it tells one, and not the web view's", () => {
+    vi.spyOn(navigator, "language", "get").mockReturnValue("en-US");
+    setLanguage("system", "vi");
+    expect(currentLanguage()).toBe("vi");
+    vi.spyOn(navigator, "language", "get").mockReturnValue("vi-VN");
+    setLanguage("system", "en");
+    expect(currentLanguage()).toBe("en");
+  });
+
+  test("an explicit choice wins over the resolved system language too", () => {
+    setLanguage("en", "vi");
+    expect(currentLanguage()).toBe("en");
+    setLanguage("vi", "en");
+    expect(currentLanguage()).toBe("vi");
+  });
+
   test("an explicit choice wins over the web view", () => {
     vi.spyOn(navigator, "language", "get").mockReturnValue("vi-VN");
     setLanguage("en");

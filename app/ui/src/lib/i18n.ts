@@ -27,8 +27,13 @@ const watch = createSubscriber((update) => {
   };
 });
 
-export function setLanguage(setting: UiLanguage): void {
-  current = resolveLanguage(setting, navigator.language);
+/**
+ * `systemLanguage` is what "system" means on this machine, as the Rust side resolved it: the tray menu is in that
+ * language, so the window must be too. Without it (before the Rust side has answered) the web view's own language
+ * stands in, which on Windows may differ from the system's.
+ */
+export function setLanguage(setting: UiLanguage, systemLanguage: string | undefined = navigator.language): void {
+  current = resolveLanguage(setting, systemLanguage);
   document.documentElement.lang = current;
   announce?.();
 }

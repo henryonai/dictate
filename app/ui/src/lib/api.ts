@@ -52,6 +52,8 @@ export interface SettingsView extends Settings {
   shares_openrouter_key: boolean;
   /** Why the settings file wasn't used as it was. Only the first view after the start carries it. */
   load_warning: string | null;
+  /** What the "system" language means on this machine, as the Rust side resolved it: the language of the tray menu. */
+  system_language: "en" | "vi";
 }
 
 export interface ModelView {

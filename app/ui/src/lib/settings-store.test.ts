@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./api";
+import type { SettingsView } from "./api";
 import { currentLanguage, setLanguage } from "./i18n";
 import { SettingsStore } from "./settings-store.svelte";
 import { fakeSettings, fakeView, stubApi } from "../test-helpers";
@@ -202,6 +203,40 @@ describe("the language of the window", () => {
 
     await store.update({ ui_language: "en" });
     expect(currentLanguage()).toBe("en");
+  });
+
+  test("system means what the Rust side resolved it to, the same as in the tray, not what the web view says", async () => {
+    // Windows: the web view may have another language than the one the system's own menus are in.
+    vi.spyOn(navigator, "language", "get").mockReturnValue("en-US");
+    const store = await loaded(fakeView({ ui_language: "system", system_language: "vi" }));
+    expect(currentLanguage()).toBe("vi");
+    // The Rust side tells the language of the system with every answer.
+    vi.mocked(api.saveSettings).mockImplementation(async (settings) =>
+      fakeView({ ...settings, system_language: "vi" }),
+    );
+
+    await store.update({ ui_language: "en" });
+    expect(currentLanguage()).toBe("en");
+    // Back to system: shows at once, before the answer, in the language of the system.
+    const answer = later<SettingsView>();
+    vi.mocked(api.saveSettings).mockReturnValue(answer.promise);
+    const saving = store.update({ ui_language: "system" });
+    expect(currentLanguage()).toBe("vi");
+    answer.resolve(fakeView({ ui_language: "system", system_language: "vi" }));
+    await saving;
+    expect(currentLanguage()).toBe("vi");
+  });
+
+  test("an English system stays English in a Vietnamese web view", async () => {
+    vi.spyOn(navigator, "language", "get").mockReturnValue("vi-VN");
+    await loaded(fakeView({ ui_language: "system", system_language: "en" }));
+    expect(currentLanguage()).toBe("en");
+  });
+
+  test("the language of the system is not sent back with the settings", async () => {
+    const store = await loaded(fakeView({ system_language: "vi" }));
+    await store.update({ vocabulary: "Dictate" });
+    expect(vi.mocked(api.saveSettings).mock.lastCall?.[0]).not.toHaveProperty("system_language");
   });
 
   test("goes back with the setting when the save fails", async () => {

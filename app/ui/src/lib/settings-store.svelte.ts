@@ -14,7 +14,7 @@ import { setLanguage } from "./i18n";
 
 /** The settings without what the view adds to them. */
 function settingsOf(view: SettingsView): Settings {
-  const { has_ai_key, has_transcribe_key, shares_openrouter_key, load_warning, ...settings } = view;
+  const { has_ai_key, has_transcribe_key, shares_openrouter_key, load_warning, system_language, ...settings } = view;
   return settings;
 }
 
@@ -114,7 +114,7 @@ export class SettingsStore {
     if (!this.saved) return;
     const view = this.laidOn(this.saved);
     this.view = view;
-    setLanguage(view.ui_language);
+    setLanguage(view.ui_language, view.system_language);
   }
 
   /** `call` gets the settings to send as the call starts; the calls that don't send settings ignore them. */

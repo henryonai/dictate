@@ -1,6 +1,7 @@
 //! The tray icon and its menu, and the Settings window it opens.
 
 use dictate_services::settings::{Settings, UiLanguage};
+use serde::Serialize;
 use tauri::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager};
@@ -15,8 +16,9 @@ const ID_MEETINGS: &str = "meetings";
 const ID_VERSION: &str = "version";
 const ID_QUIT: &str = "quit";
 
-/// The languages the app speaks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The languages the app speaks. Sent to the window as `"en"` and `"vi"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Lang {
     En,
     Vi,
@@ -61,6 +63,12 @@ pub fn tray_labels(lang: Lang) -> TrayLabels {
 /// The language of the UI for these settings, on this OS.
 pub fn language_for(settings: &Settings) -> Lang {
     resolve_language(settings.ui_language, sys_locale::get_locale().as_deref())
+}
+
+/// The language that the choice "System" means on this OS. The window is told this one, so that it speaks the
+/// language of the tray menu and does not guess it again from what its web view reports.
+pub fn system_language() -> Lang {
+    resolve_language(UiLanguage::System, sys_locale::get_locale().as_deref())
 }
 
 fn build_menu(app: &AppHandle, lang: Lang) -> tauri::Result<Menu<tauri::Wry>> {
@@ -166,6 +174,21 @@ mod tests {
         assert_eq!(vi.settings, "Cài đặt…");
         assert_eq!(vi.open_meetings, "Mở thư mục cuộc họp");
         assert_eq!(vi.quit, "Thoát");
+    }
+
+    #[test]
+    fn a_language_is_sent_to_the_window_as_en_or_vi() {
+        assert_eq!(serde_json::to_value(Lang::En).unwrap(), "en");
+        assert_eq!(serde_json::to_value(Lang::Vi).unwrap(), "vi");
+    }
+
+    #[test]
+    fn the_system_language_is_what_system_resolves_to_here() {
+        let system = Settings {
+            ui_language: UiLanguage::System,
+            ..Settings::default()
+        };
+        assert_eq!(system_language(), language_for(&system));
     }
 
     #[test]

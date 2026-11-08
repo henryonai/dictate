@@ -49,6 +49,9 @@ pub struct SettingsView {
     pub shares_openrouter_key: bool,
     /// Why the settings file wasn't used as it was. Only the first view after the start carries it.
     pub load_warning: Option<String>,
+    /// What the language choice "System" means on this machine: the language of the tray menu. The window
+    /// resolves "System" to this one and not by its own guess, so that both always agree.
+    pub system_language: tray::Lang,
 }
 
 /// What `model-download` events tell about a download.
@@ -133,6 +136,7 @@ fn get_settings_view(store: &SettingsStore, secrets: &dyn SecretStore) -> Settin
         has_transcribe_key: own_key.is_some(),
         shares_openrouter_key: own_key.is_none() && used_key.is_some(),
         load_warning: None,
+        system_language: tray::system_language(),
         settings,
     }
 }
@@ -670,6 +674,7 @@ mod tests {
     use crate::state::Job;
     use dictate_services::presets::EDIT_PRESETS;
     use dictate_services::secrets::{Account, MemoryStore, SecretError};
+    use dictate_services::settings::UiLanguage;
     use dictate_services::whisper::models::CATALOG;
     use std::io::{Read, Write};
     use std::net::TcpListener;
@@ -744,6 +749,27 @@ mod tests {
         assert!(!json.contains(AI_KEY), "{json}");
         assert!(!json.contains(STT_KEY), "{json}");
         assert!(view.has_ai_key && view.has_transcribe_key);
+    }
+
+    #[test]
+    fn view_tells_what_the_system_language_is_as_the_tray_resolves_it() {
+        let f = fixture();
+        let system = Settings {
+            ui_language: UiLanguage::System,
+            ..Settings::default()
+        };
+        let wanted = match tray::language_for(&system) {
+            tray::Lang::En => "en",
+            tray::Lang::Vi => "vi",
+        };
+        // Whatever language is chosen: the window needs it to resolve "system" in the tray's language.
+        for chosen in [UiLanguage::System, UiLanguage::En, UiLanguage::Vi] {
+            let mut s = f.store.get();
+            s.ui_language = chosen;
+            f.store.save(&s).unwrap();
+            let json = serde_json::to_value(get_settings_view(&f.store, &f.secrets)).unwrap();
+            assert_eq!(json["system_language"], wanted, "with {chosen:?} chosen");
+        }
     }
 
     #[test]
