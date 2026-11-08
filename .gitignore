@@ -1,1 +1,7 @@
 target/
+node_modules/
+app/ui/dist/
+# Written by tauri-build on every build.
+app/src-tauri/gen/
+# Some global ignore files list macOS's "Icon?" file, which also matches this folder.
+!/app/src-tauri/icons/

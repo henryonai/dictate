@@ -1,0 +1,6 @@
+packages:
+  - ui
+# One copy of the web API, the one that goes with the Rust tauri crate: the opener plugin would otherwise pull the
+# newest.
+overrides:
+  '@tauri-apps/api': ~2.11.1

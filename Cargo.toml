@@ -1,6 +1,7 @@
 [workspace]
-resolver = "2"
-members = ["crates/*"]
+# Resolver 3 picks dependency versions that build with the workspace rust-version.
+resolver = "3"
+members = ["crates/*", "app/src-tauri"]
 
 [workspace.package]
 edition = "2021"

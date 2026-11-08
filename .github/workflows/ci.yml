@@ -8,6 +8,12 @@ on:
 permissions:
   contents: read
 
+# A newer push to the same pull request makes the run of the older one pointless. A run on main is never cut short:
+# it fills the build cache that the pull requests start from.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -25,6 +31,78 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      # One cache per OS, shared by the jobs of that OS: both build whisper.cpp, which takes the most time. Only
+      # main saves it; pull requests read what main saved.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ runner.os }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # whisper.cpp is built from source: it needs cmake and a C++ compiler, and its bindings need libclang. The
+      # macOS and Windows runners have them; this makes sure the Linux one does. The rest is what the Tauri app
+      # links against: the web view, the tray icon and the keyboard helper library.
+      - name: Install the Linux build dependencies
+        if: runner.os == 'Linux'
+        run: >
+          sudo apt-get update && sudo apt-get install -y
+          cmake libclang-dev
+          libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
       - run: cargo fmt --all --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test --all
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --all --locked
+
+  # The app: its web UI (type check, tests, build) and the Tauri shell around it, on every OS.
+  app:
+    name: app (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ runner.os }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Install the Linux build dependencies
+        if: runner.os == 'Linux'
+        run: >
+          sudo apt-get update && sudo apt-get install -y
+          cmake libclang-dev
+          libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
+      # The pnpm version is the "packageManager" in app/package.json: pnpm/action-setup installs that one.
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: app/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+      - run: pnpm --dir app install --frozen-lockfile
+      - run: pnpm --dir app/ui check
+      - run: pnpm --dir app/ui test
+      - run: pnpm --dir app/ui build
+      - run: cargo build -p dictate-app --locked
+
+  # The oldest Rust the workspace promises to build with (`rust-version` in Cargo.toml). `+1.85` is spelled out
+  # because `rust-toolchain.toml` would otherwise pick the stable one.
+  msrv:
+    name: msrv (1.85)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: msrv
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Install the Linux build dependencies
+        run: >
+          sudo apt-get update && sudo apt-get install -y
+          cmake libclang-dev
+          libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
+      - run: cargo +1.85 check --workspace --all-targets --locked

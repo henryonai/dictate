@@ -1,0 +1,196 @@
+/* The look of the Settings window: plain CSS, light and dark by the system's choice. */
+
+:root {
+  color-scheme: light dark;
+  --bg: #f5f5f7;
+  --surface: #ffffff;
+  --fg: #1d1d1f;
+  --muted: #6e6e73;
+  --border: #d2d2d7;
+  --accent: #0a64d6;
+  --accent-fg: #ffffff;
+  --accent-soft: #e3eefc;
+  --ok: #1a7f37;
+  --danger: #c4261d;
+  --warn-bg: #fff4d6;
+  --warn-fg: #6b4a00;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1e1e20;
+    --surface: #2a2a2d;
+    --fg: #f2f2f4;
+    --muted: #a0a0a8;
+    --border: #44444a;
+    --accent: #4c9aff;
+    --accent-fg: #0b1626;
+    --accent-soft: #1d3150;
+    --ok: #4cc26b;
+    --danger: #ff7b72;
+    --warn-bg: #3d3112;
+    --warn-fg: #f1d68a;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+h2 {
+  margin: 0 0 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+h3 {
+  margin: 12px 0 4px;
+  font-size: 13px;
+}
+
+/* A group of rows on a card. */
+section.group {
+  margin: 0 0 16px;
+  padding: 10px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 6px 0;
+}
+
+.field-control {
+  flex: 0 1 300px;
+  min-width: 0;
+}
+
+.field-control > * {
+  width: 100%;
+}
+
+input[type="text"],
+input[type="password"],
+select,
+textarea {
+  padding: 5px 8px;
+  font: inherit;
+  color: inherit;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+input[readonly] {
+  color: var(--muted);
+}
+
+textarea {
+  display: block;
+  width: 100%;
+  min-height: 90px;
+  resize: vertical;
+}
+
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+button:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+button {
+  padding: 4px 12px;
+  font: inherit;
+  color: inherit;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+button.primary {
+  color: var(--accent-fg);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+a {
+  color: var(--accent);
+}
+
+.hint {
+  margin: 0 0 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.error {
+  margin: 4px 0;
+  font-size: 12px;
+  color: var(--danger);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.toggle {
+  padding: 4px 0;
+}
+
+.toggle label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.toggle .hint {
+  margin: 2px 0 0 24px;
+}
+
+.badge {
+  margin-left: 6px;
+  padding: 1px 7px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 999px;
+}
+
+.badge.ok {
+  margin-left: 0;
+  color: var(--ok);
+  background: transparent;
+  padding: 0;
+}
