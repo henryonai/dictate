@@ -69,6 +69,21 @@
     api.openUrl(url).catch((e: unknown) => (keyPageError = errorText(e)));
   }
 
+  // What each check depends on. A typed key counts as soon as it is typed.
+  const aiConfig = $derived(
+    JSON.stringify([view.ai_provider, view.ai_base_url, view.ai_model, view.has_ai_key, aiDraft]),
+  );
+  const transcribeConfig = $derived(
+    JSON.stringify([
+      view.transcribe_preset,
+      view.transcribe_base_url,
+      view.transcribe_model,
+      view.has_transcribe_key,
+      view.shares_openrouter_key,
+      transcribeDraft,
+    ]),
+  );
+
   const modelOptions = (models: string[]) => models.map((model) => ({ value: model, label: model }));
 </script>
 
@@ -107,7 +122,7 @@
     onsave={() => saveDraft("ai")}
     onremove={() => store.setSecret("ai", "")}
   />
-  <CheckButton run={checkAi} />
+  <CheckButton run={checkAi} config={aiConfig} />
   <p class="hint">{t("accounts.ai_footer")}</p>
 </section>
 
@@ -160,7 +175,7 @@
   {#if view.shares_openrouter_key}
     <p class="hint">{t("accounts.shares_key")}</p>
   {/if}
-  <CheckButton run={checkTranscribe} />
+  <CheckButton run={checkTranscribe} config={transcribeConfig} />
   {#if preset?.key_url}
     <a href={preset.key_url} onclick={(event) => openKeyPage(event, preset.key_url!)}>{t("accounts.get_key")}</a>
   {/if}

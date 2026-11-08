@@ -3,23 +3,35 @@
   import { t } from "../lib/i18n";
 
   // A button that tests a connection. `run` resolves with the text to show on success; what it rejects with is
-  // shown as it is.
-  let { run }: { run: () => Promise<string> } = $props();
+  // shown as it is. `config` stands for everything the test depends on (provider, URL, model, key): a result
+  // is about the config it was got with and goes away when that changes.
+  let { run, config }: { run: () => Promise<string>; config: string } = $props();
 
   let phase = $state<"idle" | "checking" | "ok" | "failed">("idle");
   let message = $state("");
+  let checkedWith = "";
 
   async function check() {
     phase = "checking";
     message = "";
+    let result: { phase: "ok" | "failed"; message: string };
     try {
-      message = await run();
-      phase = "ok";
+      result = { phase: "ok", message: await run() };
     } catch (e) {
-      message = errorText(e);
-      phase = "failed";
+      result = { phase: "failed", message: errorText(e) };
     }
+    // Whatever the run changed on its way (it saves a key that was typed) is part of this result.
+    checkedWith = config;
+    message = result.message;
+    phase = result.phase;
   }
+
+  $effect(() => {
+    if ((phase === "ok" || phase === "failed") && config !== checkedWith) {
+      phase = "idle";
+      message = "";
+    }
+  });
 </script>
 
 <div class="check">

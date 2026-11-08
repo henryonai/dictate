@@ -130,6 +130,98 @@ test("a key typed but not saved yet is saved before it is checked", async () => 
   await vi.waitFor(() => expect(order).toEqual(["save", "check"]));
   expect(api.setSecret).toHaveBeenCalledWith("ai", "sk-typed-key");
   expect(ai.getByLabelText("API key")).toHaveValue("");
+  // Saving the key was part of the check: its result stays.
+  expect(await ai.findByText("Connected: claude-haiku-5-5 answered.")).toBeInTheDocument();
+});
+
+// ---- a result belongs to the settings it was got with
+
+const aiResult = "API error 401: bad key";
+
+async function aiWithResult(overrides = {}) {
+  const user = userEvent.setup();
+  vi.mocked(api.checkAi).mockRejectedValue(aiResult);
+  render(Accounts, { store: await loadedStore({ has_ai_key: true, ...overrides }) });
+  const parts = await sections();
+  await user.click(parts.ai.getByRole("button", { name: "Check" }));
+  await parts.ai.findByText(aiResult);
+  return { user, ...parts };
+}
+
+test("the AI result goes away when the model changes", async () => {
+  const { user, ai } = await aiWithResult();
+
+  await user.clear(ai.getByLabelText("Model"));
+  await user.type(ai.getByLabelText("Model"), "claude-sonnet-5");
+  await user.tab();
+
+  expect(ai.queryByText(aiResult)).not.toBeInTheDocument();
+});
+
+test("the AI result goes away when the base URL changes", async () => {
+  const { user, ai } = await aiWithResult();
+
+  await user.type(ai.getByLabelText("Base URL"), "/v2");
+  await user.tab();
+
+  expect(ai.queryByText(aiResult)).not.toBeInTheDocument();
+});
+
+test("the AI result goes away when the provider changes", async () => {
+  const { user, ai } = await aiWithResult();
+  vi.mocked(api.setAiProvider).mockResolvedValue(
+    fakeView({ ai_provider: "openai", ai_base_url: "http://localhost:8317/v1", has_ai_key: true }),
+  );
+
+  await user.selectOptions(ai.getByLabelText("Provider"), "OpenAI-compatible");
+
+  expect(ai.queryByText(aiResult)).not.toBeInTheDocument();
+});
+
+test("the AI result goes away when a new key is typed", async () => {
+  const { user, ai } = await aiWithResult();
+
+  await user.type(ai.getByLabelText("API key"), "sk-new");
+
+  expect(ai.queryByText(aiResult)).not.toBeInTheDocument();
+});
+
+test("the AI result goes away when the key is removed", async () => {
+  const { user, ai } = await aiWithResult();
+  vi.mocked(api.setSecret).mockResolvedValue(fakeView({ has_ai_key: false }));
+
+  await user.click(ai.getByRole("button", { name: "Remove key" }));
+
+  await vi.waitFor(() => expect(ai.queryByText(aiResult)).not.toBeInTheDocument());
+});
+
+test("the AI result stays when only the transcription settings change", async () => {
+  const { user, stt } = await aiWithResult();
+  const { ai } = await sections();
+  vi.mocked(api.setTranscribePreset).mockResolvedValue(fakeView({ transcribe_preset: "groq", has_ai_key: true }));
+
+  await user.selectOptions(stt.getByLabelText("Service"), "Groq");
+  await vi.waitFor(() => expect(stt.getByLabelText("Service")).toHaveDisplayValue("Groq"));
+
+  expect(ai.getByText(aiResult)).toBeInTheDocument();
+});
+
+test("the transcription result goes away when the service or its model changes", async () => {
+  const user = userEvent.setup();
+  vi.mocked(api.checkTranscribe).mockRejectedValue("API error 401: bad key");
+  render(Accounts, { store: await loadedStore() });
+  const { stt } = await sections();
+  await user.click(stt.getByRole("button", { name: "Check" }));
+  await stt.findByText("API error 401: bad key");
+
+  await user.selectOptions(await stt.findByLabelText("File model"), "gpt-4o-transcribe");
+  expect(stt.queryByText("API error 401: bad key")).not.toBeInTheDocument();
+
+  await user.click(stt.getByRole("button", { name: "Check" }));
+  await stt.findByText("API error 401: bad key");
+  vi.mocked(api.setTranscribePreset).mockResolvedValue(fakeView({ transcribe_preset: "groq" }));
+  await user.selectOptions(stt.getByLabelText("Service"), "Groq");
+  await vi.waitFor(() => expect(stt.queryByText("API error 401: bad key")).not.toBeInTheDocument());
 });
 
 // ---- the keys
