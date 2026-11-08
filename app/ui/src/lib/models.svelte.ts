@@ -1,6 +1,7 @@
 // The Whisper models list: what is on disk, and how each download is going.
 import { api, errorText } from "./api";
 import type { DownloadEvent, ModelView } from "./api";
+import { tooSoonToCancel } from "./double-click";
 
 /** Where a model's download stands. A model with no download going on, finished or not, is `idle`. */
 export type Download =
@@ -17,6 +18,9 @@ export class ModelList {
   private downloads = $state<Record<string, Download>>({});
   private stopListening: (() => void) | undefined;
   private stopped = false;
+  /** Which download call of each model is the newest, and when it started. An older one has no say any more. */
+  private runs: Record<string, { number: number; startedAt: number }> = {};
+  private refreshes = 0;
 
   stateOf(id: string): Download {
     return this.downloads[id] ?? { state: "idle" };
@@ -40,35 +44,43 @@ export class ModelList {
   }
 
   async refresh(): Promise<void> {
+    // Answers can come in another order than the questions: only the newest one counts.
+    const mine = ++this.refreshes;
     try {
       const [rows, usage] = await Promise.all([api.listModels(), api.modelsDiskUsageMb()]);
+      if (mine !== this.refreshes) return;
       this.rows = rows;
       this.diskUsageMb = usage;
     } catch (e) {
-      this.error = errorText(e);
+      if (mine === this.refreshes) this.error = errorText(e);
     }
   }
 
   async download(id: string): Promise<void> {
+    const now = this.stateOf(id).state;
+    if (now === "running" || now === "cancelling") return;
     this.error = "";
+    const run = { number: (this.runs[id]?.number ?? 0) + 1, startedAt: Date.now() };
+    this.runs[id] = run;
     this.downloads[id] = { state: "running", done: 0, total: null };
     try {
       await api.downloadModel(id);
+      if (this.runs[id] !== run) return;
       // The last event comes first as a rule. If it didn't, the row must not stay stuck: the disk tells the truth.
-      const now = this.stateOf(id).state;
-      if (now === "running" || now === "cancelling") {
+      const after = this.stateOf(id).state;
+      if (after === "running" || after === "cancelling") {
         this.downloads[id] = { state: "idle" };
         await this.refresh();
       }
     } catch (e) {
-      this.downloads[id] = { state: "failed", error: errorText(e) };
+      if (this.runs[id] === run) this.downloads[id] = { state: "failed", error: errorText(e) };
     }
   }
 
   /** Asks the download to stop. The row shows "Cancelling…" until the `cancelled` event says it has. */
   async cancel(id: string): Promise<void> {
     const now = this.stateOf(id);
-    if (now.state !== "running") return;
+    if (now.state !== "running" || tooSoonToCancel(this.runs[id]?.startedAt)) return;
     this.downloads[id] = { state: "cancelling", done: now.done, total: now.total };
     try {
       await api.cancelDownload(id);

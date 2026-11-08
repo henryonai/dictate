@@ -20,8 +20,18 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.useRealTimers();
   setLanguage("en");
 });
+
+/** Only the clock is faked, so that a test decides how long ago something started. */
+function freezeTime() {
+  vi.useFakeTimers({ toFake: ["Date"] });
+}
+
+function passTime(ms: number) {
+  vi.setSystemTime(Date.now() + ms);
+}
 
 const lastSaved = () => vi.mocked(api.saveSettings).mock.lastCall?.[0];
 
@@ -94,11 +104,13 @@ test("Download starts it and shows a progress bar with Cancel", async () => {
 });
 
 test("Cancel shows Cancelling… (disabled) until the cancelled event arrives", async () => {
+  freezeTime();
   const user = userEvent.setup();
   vi.mocked(api.downloadModel).mockReturnValue(later<void>().promise);
   render(Speech, { store: await loadedStore() });
   const tinyRow = await row("Tiny");
   await user.click(tinyRow.getByRole("button", { name: "Download" }));
+  passTime(1000);
 
   await user.click(await tinyRow.findByRole("button", { name: "Cancel" }));
 
@@ -108,6 +120,22 @@ test("Cancel shows Cancelling… (disabled) until the cancelled event arrives", 
 
   backend.emitDownload({ id: "tiny", done: 15, total: 75, state: "cancelled" });
   expect(await tinyRow.findByRole("button", { name: "Download" })).toBeEnabled();
+});
+
+test("the second click of a double click on Download doesn't land on Cancel", async () => {
+  freezeTime();
+  const user = userEvent.setup();
+  vi.mocked(api.downloadModel).mockReturnValue(later<void>().promise);
+  render(Speech, { store: await loadedStore() });
+  const tinyRow = await row("Tiny");
+
+  await user.click(tinyRow.getByRole("button", { name: "Download" }));
+  // Cancel is where Download was, so the second click of the double click hits it.
+  await user.click(await tinyRow.findByRole("button", { name: "Cancel" }));
+
+  expect(api.cancelDownload).not.toHaveBeenCalled();
+  expect(tinyRow.getByRole("progressbar")).toBeInTheDocument();
+  expect(api.downloadModel).toHaveBeenCalledTimes(1);
 });
 
 test("a failed download shows the error and Retry", async () => {
@@ -241,7 +269,23 @@ test("Transcribe shows the error text when the file can't be transcribed", async
   ).toBeInTheDocument();
 });
 
+test("the second click of a double click on Transcribe doesn't land on Cancel", async () => {
+  freezeTime();
+  const user = userEvent.setup();
+  vi.mocked(api.transcribeWav).mockReturnValue(later<string>().promise);
+  render(Speech, { store: await loadedStore() });
+  await user.type(screen.getByLabelText("Path to a WAV file"), "a.wav");
+
+  await user.click(screen.getByRole("button", { name: "Transcribe" }));
+  await user.click(await screen.findByRole("button", { name: "Cancel" }));
+
+  expect(api.cancelTranscribe).not.toHaveBeenCalled();
+  expect(screen.getByText("Transcribing…")).toBeInTheDocument();
+  expect(api.transcribeWav).toHaveBeenCalledTimes(1);
+});
+
 test("a running transcription can be cancelled and says Cancelling… until it ends", async () => {
+  freezeTime();
   const user = userEvent.setup();
   const transcription = later<string>();
   vi.mocked(api.transcribeWav).mockReturnValue(transcription.promise);
@@ -250,6 +294,7 @@ test("a running transcription can be cancelled and says Cancelling… until it e
   await user.type(screen.getByLabelText("Path to a WAV file"), "a.wav");
   await user.click(screen.getByRole("button", { name: "Transcribe" }));
   expect(await screen.findByText("Transcribing…")).toBeInTheDocument();
+  passTime(1000);
 
   await user.click(screen.getByRole("button", { name: "Cancel" }));
   expect(api.cancelTranscribe).toHaveBeenCalledTimes(1);

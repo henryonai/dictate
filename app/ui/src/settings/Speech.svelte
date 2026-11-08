@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { api, errorText } from "../lib/api";
   import type { Engine } from "../lib/api";
+  import { tooSoonToCancel } from "../lib/double-click";
   import { t } from "../lib/i18n";
   import { ModelList } from "../lib/models.svelte";
   import type { SettingsStore } from "../lib/settings-store.svelte";
@@ -47,9 +48,12 @@
 
   let wavPath = $state("");
   let wav = $state<WavTest>({ state: "idle" });
+  let wavStartedAt: number | undefined;
   const wavBusy = $derived(wav.state === "running" || wav.state === "cancelling");
 
   async function transcribe() {
+    if (wavBusy) return;
+    wavStartedAt = Date.now();
     wav = { state: "running" };
     try {
       wav = { state: "done", text: await api.transcribeWav(wavPath.trim()) };
@@ -59,7 +63,7 @@
   }
 
   async function cancelTranscribe() {
-    if (wav.state !== "running") return;
+    if (wav.state !== "running" || tooSoonToCancel(wavStartedAt)) return;
     // It stops within a moment; the transcription call ends with its own result.
     wav = { state: "cancelling" };
     try {

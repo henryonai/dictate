@@ -15,7 +15,17 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
+
+/** Only the clock is faked, so that a test decides how long ago something started. */
+function freezeTime() {
+  vi.useFakeTimers({ toFake: ["Date"] });
+}
+
+function passTime(ms: number) {
+  vi.setSystemTime(Date.now() + ms);
+}
 
 function later<T>() {
   let resolve!: (value: T) => void;
@@ -78,9 +88,11 @@ describe("a download", () => {
   });
 
   test("keeps showing Cancelling until the cancelled event arrives", async () => {
+    freezeTime();
     const list = await started();
     vi.mocked(api.downloadModel).mockReturnValue(later<void>().promise);
     void list.download("tiny");
+    passTime(1000);
 
     await list.cancel("tiny");
     expect(api.cancelDownload).toHaveBeenCalledWith("tiny");
@@ -125,11 +137,86 @@ describe("a download", () => {
     expect(api.listModels).toHaveBeenCalled();
   });
 
+  test("a second call while it runs does nothing", async () => {
+    const list = await started();
+    vi.mocked(api.downloadModel).mockReturnValue(later<void>().promise);
+
+    void list.download("tiny");
+    void list.download("tiny");
+
+    expect(api.downloadModel).toHaveBeenCalledTimes(1);
+  });
+
+  test("a Cancel right after the start belongs to the double click that started it, and does nothing", async () => {
+    freezeTime();
+    const list = await started();
+    vi.mocked(api.downloadModel).mockReturnValue(later<void>().promise);
+    void list.download("tiny");
+
+    await list.cancel("tiny");
+    expect(api.cancelDownload).not.toHaveBeenCalled();
+    expect(list.stateOf("tiny").state).toBe("running");
+
+    passTime(1000);
+    await list.cancel("tiny");
+    expect(api.cancelDownload).toHaveBeenCalledWith("tiny");
+    expect(list.stateOf("tiny").state).toBe("cancelling");
+  });
+
+  test("the late end of an old download leaves a newer download of the model alone", async () => {
+    const list = await started();
+    const old = later<void>();
+    vi.mocked(api.downloadModel).mockReturnValueOnce(old.promise);
+    const first = list.download("tiny");
+
+    // The old one is over as far as the screen knows, and the person starts it again at once.
+    backend.emitDownload({ id: "tiny", done: 5, total: 75, state: "cancelled" });
+    vi.mocked(api.downloadModel).mockReturnValueOnce(later<void>().promise);
+    void list.download("tiny");
+    expect(list.stateOf("tiny").state).toBe("running");
+
+    old.resolve();
+    await first;
+    expect(list.stateOf("tiny").state).toBe("running");
+  });
+
+  test("nor does the late failure of an old download", async () => {
+    const list = await started();
+    const old = later<void>();
+    vi.mocked(api.downloadModel).mockReturnValueOnce(old.promise);
+    const first = list.download("tiny");
+
+    backend.emitDownload({ id: "tiny", done: 5, total: 75, state: "cancelled" });
+    vi.mocked(api.downloadModel).mockReturnValueOnce(later<void>().promise);
+    void list.download("tiny");
+
+    old.reject("The connection was lost");
+    await first;
+    expect(list.stateOf("tiny").state).toBe("running");
+  });
+
   test("events of one model leave the others alone", async () => {
     const list = await started();
     backend.emitDownload({ id: "base", done: 1, total: 2, state: "running" });
     expect(list.stateOf("base").state).toBe("running");
     expect(list.stateOf("tiny").state).toBe("idle");
+  });
+});
+
+describe("refreshing", () => {
+  test("an older answer that comes late doesn't replace a newer one", async () => {
+    const list = await started();
+    const slow = later<ModelView[]>();
+    vi.mocked(api.listModels).mockReturnValueOnce(slow.promise);
+    const older = list.refresh();
+
+    vi.mocked(api.listModels).mockResolvedValueOnce([{ ...tiny, downloaded: true }]);
+    await list.refresh();
+    expect(list.rows[0].downloaded).toBe(true);
+
+    slow.resolve([tiny]);
+    await older;
+    expect(list.rows[0].downloaded).toBe(true);
   });
 });
 
