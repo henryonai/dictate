@@ -185,7 +185,7 @@ fn canonical_lowercase(text: &str) -> String {
 }
 
 /// Trims what Foundation's `.whitespaces` does: spaces and tabs, but not line ends.
-fn trim_spaces(text: &str) -> &str {
+pub(crate) fn trim_spaces(text: &str) -> &str {
     text.trim_matches(|c: char| {
         c == '\t'
             || (c.is_whitespace()
