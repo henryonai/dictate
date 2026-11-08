@@ -3,7 +3,7 @@ import { api } from "./api";
 import type { SettingsView } from "./api";
 import { currentLanguage, setLanguage } from "./i18n";
 import { SettingsStore } from "./settings-store.svelte";
-import { fakeSettings, fakeView, stubApi } from "../test-helpers";
+import { fakeHotkeyStatus, fakeSettings, fakeView, stubApi } from "../test-helpers";
 
 beforeEach(() => {
   stubApi();
@@ -394,5 +394,73 @@ describe("the first load", () => {
     await again;
     expect(store.view?.hotkey).toBe("F9");
     expect(store.error).toBe("");
+  });
+});
+
+describe("the shortcut", () => {
+  test("asks the Rust side what the shortcut is when the settings load", async () => {
+    vi.mocked(api.hotkeyStatus).mockResolvedValue(fakeHotkeyStatus({ label: "⌃⌥Space" }));
+    const store = await loaded();
+    await vi.waitFor(() => expect(store.hotkey?.label).toBe("⌃⌥Space"));
+  });
+
+  test("goes on without the status when the Rust side can't tell it", async () => {
+    vi.mocked(api.hotkeyStatus).mockRejectedValue("no");
+    const store = await loaded();
+
+    expect(store.view?.hotkey).toBe("Ctrl+Alt+Space");
+    expect(store.hotkey).toBeNull();
+    expect(store.error).toBe("");
+  });
+
+  test("a changed shortcut is shown at once and its new status is asked for", async () => {
+    const store = await loaded();
+    const answer = later<ReturnType<typeof fakeView>>();
+    vi.mocked(api.setHotkey).mockReturnValue(answer.promise);
+    vi.mocked(api.hotkeyStatus).mockResolvedValue(fakeHotkeyStatus({ label: "F6" }));
+
+    const changing = store.setHotkey("F6");
+    expect(store.view?.hotkey).toBe("F6");
+
+    answer.resolve(fakeView({ hotkey: "F6" }));
+    expect(await changing).toBe("");
+    expect(api.setHotkey).toHaveBeenCalledWith("F6");
+    expect(store.hotkey?.label).toBe("F6");
+  });
+
+  test("a shortcut that is refused goes back, and the reason is the answer, not a banner", async () => {
+    const store = await loaded();
+    vi.mocked(api.setHotkey).mockRejectedValue("hotkey.taken");
+
+    expect(await store.setHotkey("F6")).toBe("hotkey.taken");
+
+    expect(store.view?.hotkey).toBe("Ctrl+Alt+Space");
+    expect(store.error).toBe("");
+  });
+
+  test("a refused shortcut leaves an error from before alone, and a later save still works", async () => {
+    const store = await loaded();
+    vi.mocked(api.saveSettings).mockRejectedValueOnce("disk full");
+    await store.update({ diarize: false });
+    vi.mocked(api.setHotkey).mockRejectedValue("hotkey.taken");
+
+    await store.setHotkey("F6");
+
+    expect(store.error).toBe("disk full");
+    await store.update({ diarize: false });
+    expect(store.error).toBe("");
+  });
+
+  test("hears the status that the Rust side sends by itself", async () => {
+    const { emitHotkey } = stubApi();
+    const store = await loaded();
+
+    const stop = await store.watchHotkey();
+    emitHotkey(fakeHotkeyStatus({ label: "Ctrl+Alt+D", backend: "portal" }));
+    expect(store.hotkey).toEqual(fakeHotkeyStatus({ label: "Ctrl+Alt+D", backend: "portal" }));
+
+    stop();
+    emitHotkey(fakeHotkeyStatus({ label: "F1" }));
+    expect(store.hotkey?.label).toBe("Ctrl+Alt+D");
   });
 });

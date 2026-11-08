@@ -1,10 +1,15 @@
 //! Test doubles the tests of several modules share.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
 use dictate_services::secrets::{Account, MemoryStore, SecretError, SecretStore};
+use tauri_plugin_global_shortcut::Shortcut;
+
+use crate::hotkey::Registry;
+use crate::state::lock;
 
 /// A key store in memory that counts how often it is asked for a key, and can take its time answering like a
 /// Keychain that waits for a prompt.
@@ -58,5 +63,47 @@ impl SecretStore for NoKeyring {
     }
     fn delete(&self, _: Account) -> Result<(), SecretError> {
         Err(SecretError::Unavailable)
+    }
+}
+
+/// The shortcuts of a desktop, in memory: which ones this app has registered, which ones another app owns (they
+/// can't be registered), and how often it was asked to register or let go of one.
+#[derive(Default)]
+pub struct FakeRegistry {
+    registered: Mutex<Vec<Shortcut>>,
+    owned_by_another_app: Mutex<Vec<Shortcut>>,
+    calls: AtomicUsize,
+}
+
+impl FakeRegistry {
+    /// Another app owns this shortcut: registering it fails.
+    pub fn refuse(&self, shortcut: Shortcut) {
+        lock(&self.owned_by_another_app).push(shortcut);
+    }
+
+    pub fn registered(&self) -> Vec<Shortcut> {
+        lock(&self.registered).clone()
+    }
+
+    pub fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+    }
+}
+
+impl Registry for FakeRegistry {
+    fn register(&self, shortcut: Shortcut) -> Result<(), String> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let mut registered = lock(&self.registered);
+        if lock(&self.owned_by_another_app).contains(&shortcut) || registered.contains(&shortcut) {
+            return Err("the shortcut is already registered".into());
+        }
+        registered.push(shortcut);
+        Ok(())
+    }
+
+    fn unregister(&self, shortcut: Shortcut) -> Result<(), String> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        lock(&self.registered).retain(|s| *s != shortcut);
+        Ok(())
     }
 }

@@ -3,6 +3,7 @@
 
 mod commands;
 mod config;
+mod hotkey;
 // Nothing calls the platform layer yet: the dictation controller (Task 10 of the dictation plan) will.
 #[allow(dead_code)]
 mod platform;
@@ -18,7 +19,9 @@ use dictate_services::secrets::KeyringStore;
 use dictate_services::settings::SettingsStore;
 use tauri::{Manager, RunEvent, WindowEvent};
 use tauri_plugin_autostart::MacosLauncher;
+use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
+use hotkey::HotkeyEvent;
 use state::AppState;
 
 /// How long quitting waits for downloads to write down what they have, so that they can be resumed.
@@ -28,18 +31,36 @@ fn main() {
     let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
         .try_init();
 
-    let app = tauri::Builder::default()
-        // A second launch ends here and shows the window of the first. This plugin must come first.
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            log::info!("Another launch was started: showing Settings");
-            tray::show_settings(app);
-        }))
+    // What the shortcut and `dictate --toggle` hear goes down this channel, to the dictation controller.
+    let (hotkey_tx, hotkey_rx) = unbounded_channel();
+    let toggle_tx = hotkey_tx.clone();
+
+    let builder = tauri::Builder::default()
+        // A second launch ends here: `dictate --toggle` toggles dictation, anything else shows the window of the
+        // first. This plugin must come first.
+        .plugin(tauri_plugin_single_instance::init(
+            move |app, args, _cwd| {
+                if hotkey::wants_toggle(&args) {
+                    log::info!("Another launch asked to toggle dictation");
+                    let _ = toggle_tx.send(HotkeyEvent::Toggle);
+                } else {
+                    log::info!("Another launch was started: showing Settings");
+                    tray::show_settings(app);
+                }
+            },
+        ))
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             None,
         ))
-        .plugin(tauri_plugin_opener::init())
-        .setup(setup)
+        .plugin(tauri_plugin_opener::init());
+    let builder = if hotkey::uses_global_plugin() {
+        builder.plugin(tauri_plugin_global_shortcut::Builder::new().build())
+    } else {
+        builder
+    };
+    let app = builder
+        .setup(move |app| setup(app, hotkey_tx, hotkey_rx))
         // Closing the window hides it: the app stays in the tray.
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
@@ -54,6 +75,8 @@ fn main() {
             commands::save_settings,
             commands::set_ai_provider,
             commands::set_transcribe_preset,
+            commands::set_hotkey,
+            commands::hotkey_status,
             commands::set_secret,
             commands::check_ai,
             commands::check_transcribe,
@@ -96,7 +119,11 @@ fn main() {
     });
 }
 
-fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+fn setup(
+    app: &mut tauri::App,
+    hotkey_tx: UnboundedSender<HotkeyEvent>,
+    hotkey_rx: UnboundedReceiver<HotkeyEvent>,
+) -> Result<(), Box<dyn std::error::Error>> {
     // No Dock icon: the app lives in the menu bar.
     #[cfg(target_os = "macos")]
     app.set_activation_policy(tauri::ActivationPolicy::Accessory);
@@ -113,6 +140,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         state::models_base_dir().ok_or("the system has no folder for the app's data")?;
     let models = state::open_model_dir(&models_base)?;
     let lang = tray::language_for(&store.get());
+    let accel = store.get().hotkey;
 
     let state = AppState::new(store, warning, Arc::new(KeyringStore::new()), models);
     // Ask the key store which keys exist once, now and off this thread: a locked Keychain waits for the user. The
@@ -123,11 +151,33 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     });
     app.manage(state);
     tray::create(app.handle(), lang)?;
+
+    let status = hotkey::start(app.handle(), &accel, hotkey_tx.clone());
+    match &status.error {
+        None => log::info!("The shortcut is {} ({:?})", status.label, status.backend),
+        Some(error) => log::warn!("The shortcut {} does not work: {error}", status.label),
+    }
+    log_hotkey_events(hotkey_rx);
+    // `dictate --toggle` that starts the app: dictation starts as soon as the controller is there to hear it.
+    if hotkey::wants_toggle(&std::env::args().collect::<Vec<_>>()) {
+        log::info!("Started with --toggle: toggling dictation");
+        let _ = hotkey_tx.send(HotkeyEvent::Toggle);
+    }
+
     if first_launch {
         log::info!("First launch: showing Settings");
         tray::show_settings(app.handle());
     }
     Ok(())
+}
+
+/// Until the dictation controller exists (Task 10 of the dictation plan), what the shortcut hears is only logged.
+fn log_hotkey_events(mut events: UnboundedReceiver<HotkeyEvent>) {
+    tauri::async_runtime::spawn(async move {
+        while let Some(event) = events.recv().await {
+            log::info!("Hotkey event: {event:?}");
+        }
+    });
 }
 
 #[cfg(test)]

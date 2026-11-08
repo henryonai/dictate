@@ -1,7 +1,7 @@
 // Shared by the tests only: settings as the Rust side sends them, and the api with every call stubbed.
 import { vi } from "vitest";
 import { api } from "./lib/api";
-import type { DownloadEvent, Settings, SettingsView } from "./lib/api";
+import type { DownloadEvent, HotkeyStatus, Settings, SettingsView } from "./lib/api";
 import { SettingsStore } from "./lib/settings-store.svelte";
 
 /** The defaults of `Settings::default()` on the Rust side. */
@@ -46,20 +46,28 @@ export function fakeView(overrides: Partial<SettingsView> = {}): SettingsView {
   };
 }
 
+/** What the Rust side says about the shortcut when it works. */
+export function fakeHotkeyStatus(overrides: Partial<HotkeyStatus> = {}): HotkeyStatus {
+  return { label: "Ctrl+Alt+Space", backend: "global", error: null, ...overrides };
+}
+
 export const EDIT_PRESET_IDS = ["clean", "formal", "concise", "bullets", "prompt", "email", "en", "vi"];
 
 /**
  * Stubs every call of `api` with a calm answer; a test changes the ones it cares about with
- * `vi.mocked(api.checkAi).mockRejectedValue(...)`. Returns a way to send `model-download` events.
+ * `vi.mocked(api.checkAi).mockRejectedValue(...)`. Returns a way to send `model-download` and `hotkey-status` events.
  */
 export function stubApi() {
   let listener: ((event: DownloadEvent) => void) | undefined;
+  let hotkeyListener: ((status: HotkeyStatus) => void) | undefined;
 
   vi.spyOn(api, "getSettings").mockResolvedValue(fakeView());
   vi.spyOn(api, "saveSettings").mockImplementation(async (settings) => fakeView(settings));
   vi.spyOn(api, "setAiProvider").mockImplementation(async (p) => fakeView({ ai_provider: p }));
   vi.spyOn(api, "setTranscribePreset").mockImplementation(async (p) => fakeView({ transcribe_preset: p }));
   vi.spyOn(api, "setSecret").mockResolvedValue(fakeView());
+  vi.spyOn(api, "setHotkey").mockImplementation(async (accel) => fakeView({ hotkey: accel }));
+  vi.spyOn(api, "hotkeyStatus").mockResolvedValue(fakeHotkeyStatus());
   vi.spyOn(api, "checkAi").mockResolvedValue("Connected: claude-haiku-5-5 answered.");
   vi.spyOn(api, "checkTranscribe").mockResolvedValue("Connected: whisper-1 accepted the test audio.");
   vi.spyOn(api, "listModels").mockResolvedValue([]);
@@ -87,7 +95,17 @@ export function stubApi() {
     };
   });
 
-  return { emitDownload: (event: DownloadEvent) => listener?.(event) };
+  vi.spyOn(api, "onHotkeyStatus").mockImplementation(async (handler) => {
+    hotkeyListener = handler;
+    return () => {
+      hotkeyListener = undefined;
+    };
+  });
+
+  return {
+    emitDownload: (event: DownloadEvent) => listener?.(event),
+    emitHotkey: (status: HotkeyStatus) => hotkeyListener?.(status),
+  };
 }
 
 /** A store that has loaded a view of the settings, as the window has after it opens. */

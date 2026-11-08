@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api } from "../lib/api";
 import { setLanguage } from "../lib/i18n";
 import en from "../locales/en.json";
-import { fakeView, stubApi } from "../test-helpers";
+import { fakeHotkeyStatus, fakeView, stubApi } from "../test-helpers";
 import Settings from "./Settings.svelte";
 
 beforeEach(() => {
@@ -146,6 +146,31 @@ test("says so when a change can't be saved", async () => {
   await user.click(await screen.findByRole("checkbox", { name: "Save recordings + transcripts" }));
 
   expect(await screen.findByRole("alert")).toHaveTextContent("Could not save: Could not save the settings: disk full");
+});
+
+test("follows what the Rust side says about the shortcut by itself, as when the desktop answers late", async () => {
+  const { emitHotkey } = stubApi();
+  render(Settings);
+  await screen.findAllByRole("tab");
+  await vi.waitFor(() => expect(api.onHotkeyStatus).toHaveBeenCalled());
+  expect(screen.getByLabelText("Shortcut")).toHaveValue("Ctrl+Alt+Space");
+
+  emitHotkey(fakeHotkeyStatus({ label: "Ctrl+Alt+D", backend: "portal" }));
+
+  expect(await screen.findByDisplayValue("Ctrl+Alt+D")).toBeInTheDocument();
+  expect(screen.getByText(/Your desktop manages this shortcut/)).toBeInTheDocument();
+});
+
+test("stops following the shortcut when the window goes", async () => {
+  const stop = vi.fn();
+  vi.mocked(api.onHotkeyStatus).mockResolvedValue(stop);
+  const { unmount } = render(Settings);
+  await screen.findAllByRole("tab");
+  await vi.waitFor(() => expect(api.onHotkeyStatus).toHaveBeenCalled());
+
+  unmount();
+
+  await vi.waitFor(() => expect(stop).toHaveBeenCalledTimes(1));
 });
 
 test.each(["en", "vi"] as const)("no text on screen is a key that has no translation (%s)", async (language) => {

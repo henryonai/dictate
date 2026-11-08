@@ -32,6 +32,7 @@ use tauri_plugin_opener::OpenerExt as _;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::{ai_config, local_model, transcribe_config};
+use crate::hotkey::{ChangeError, HotkeyStatus, Hotkeys, INVALID, TAKEN};
 use crate::state::{lock, AppState, Job, KeyFlags};
 use crate::tray;
 
@@ -192,8 +193,25 @@ fn set_transcribe_preset_inner(
     Ok(get_settings_view(store, keys))
 }
 
+/// Registers the shortcut and saves it. The errors that the person can do something about are keys of the UI's
+/// texts, which it translates; the rest is a sentence.
+fn set_hotkey_inner(
+    store: &SettingsStore,
+    keys: &KeyFlags,
+    hotkeys: &Hotkeys,
+    accel: &str,
+) -> Result<SettingsView, String> {
+    hotkeys.change(store, accel).map_err(|e| match e {
+        ChangeError::Invalid => INVALID.to_string(),
+        ChangeError::Taken => TAKEN.to_string(),
+        ChangeError::Save(e) => saving_failed(e),
+    })?;
+    Ok(get_settings_view(store, keys))
+}
+
 /// Saves `settings`. `apply_launch_at_login` is called, with the new value, only when that setting changes; if it
-/// fails nothing is saved, so the file never says something the system doesn't do.
+/// fails nothing is saved, so the file never says something the system doesn't do. The same goes for the shortcut,
+/// which only `set_hotkey` changes: what the window sends for it is ignored.
 fn save_settings_inner(
     store: &SettingsStore,
     keys: &KeyFlags,
@@ -205,7 +223,12 @@ fn save_settings_inner(
     if changed {
         apply_launch_at_login(settings.launch_at_login)?;
     }
-    if let Err(e) = store.update(|current| *current = settings) {
+    let saved = store.update(|current| {
+        let hotkey = std::mem::take(&mut current.hotkey);
+        *current = settings;
+        current.hotkey = hotkey;
+    });
+    if let Err(e) = saved {
         if changed {
             // Put the system back to what the file still says.
             let _ = apply_launch_at_login(before);
@@ -476,6 +499,31 @@ pub async fn set_transcribe_preset(
     blocking(move || set_transcribe_preset_inner(&state.settings, state.loaded_keys(), p)).await?
 }
 
+/// Changes the shortcut that starts dictation. The answer is the settings; the errors are `hotkey.invalid`,
+/// `hotkey.taken` (another app has the shortcut) or a sentence about the file.
+#[tauri::command]
+pub async fn set_hotkey(
+    state: State<'_, AppState>,
+    hotkeys: State<'_, Hotkeys>,
+    accel: String,
+) -> Result<SettingsView, String> {
+    let state = state.inner().clone();
+    let hotkeys = hotkeys.inner().clone();
+    let view = blocking({
+        let hotkeys = hotkeys.clone();
+        move || set_hotkey_inner(&state.settings, state.loaded_keys(), &hotkeys, &accel)
+    })
+    .await??;
+    log::info!("The shortcut is now {}", hotkeys.status().label);
+    Ok(view)
+}
+
+/// What the shortcut is and whether it works.
+#[tauri::command]
+pub async fn hotkey_status(hotkeys: State<'_, Hotkeys>) -> Result<HotkeyStatus, String> {
+    Ok(hotkeys.status())
+}
+
 /// `account` is `"ai"` or `"transcribe"`; an empty `value` deletes the key.
 #[tauri::command]
 pub async fn set_secret(
@@ -613,8 +661,9 @@ pub async fn open_meetings_folder(app: AppHandle) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hotkey::{Backend, Registry};
     use crate::state::{Job, KeyFlags};
-    use crate::test_support::{CountingStore, NoKeyring};
+    use crate::test_support::{CountingStore, FakeRegistry, NoKeyring};
     use dictate_services::presets::EDIT_PRESETS;
     use dictate_services::secrets::{Account, MemoryStore, SecretError};
     use dictate_services::settings::UiLanguage;
@@ -949,6 +998,96 @@ mod tests {
         assert!(err.starts_with("Could not save the settings"), "{err}");
         // Turned on, then back off: the system ends up as the file says.
         assert_eq!(*applied.lock().unwrap(), vec![true, false]);
+    }
+
+    // ---- the shortcut
+
+    fn registered_hotkeys(registry: &Arc<FakeRegistry>) -> Hotkeys {
+        let old = shortcut("Ctrl+Alt+Space");
+        registry.register(old).unwrap();
+        let status = HotkeyStatus {
+            label: "Ctrl+Alt+Space".into(),
+            backend: Backend::Global,
+            error: None,
+        };
+        Hotkeys::new(Some(registry.clone()), status, Some(old))
+    }
+
+    fn shortcut(accel: &str) -> tauri_plugin_global_shortcut::Shortcut {
+        accel.parse().unwrap()
+    }
+
+    #[test]
+    fn set_hotkey_rejects_garbage() {
+        let f = fixture();
+        let registry = Arc::new(FakeRegistry::default());
+        let hotkeys = registered_hotkeys(&registry);
+
+        for garbage in ["banana", "D", "", "Ctrl+Alt", "Ctrl+"] {
+            let err = set_hotkey_inner(&f.store, &f.keys, &hotkeys, garbage).unwrap_err();
+            assert_eq!(err, "hotkey.invalid", "{garbage:?}");
+        }
+
+        assert_eq!(f.store.get().hotkey, "Ctrl+Alt+Space");
+        assert_eq!(registry.registered(), vec![shortcut("Ctrl+Alt+Space")]);
+        assert_eq!(registry.calls(), 1, "only the registration of the start");
+    }
+
+    #[test]
+    fn set_hotkey_answers_with_the_view_that_has_the_new_shortcut() {
+        let f = fixture();
+        let registry = Arc::new(FakeRegistry::default());
+        let hotkeys = registered_hotkeys(&registry);
+
+        let view = set_hotkey_inner(&f.store, &f.keys, &hotkeys, "F6").unwrap();
+
+        assert_eq!(view.settings.hotkey, "F6");
+        assert_eq!(f.store.get().hotkey, "F6");
+        assert_eq!(registry.registered(), vec![shortcut("F6")]);
+    }
+
+    #[test]
+    fn set_hotkey_says_taken_for_a_shortcut_that_another_app_owns() {
+        let f = fixture();
+        let registry = Arc::new(FakeRegistry::default());
+        let hotkeys = registered_hotkeys(&registry);
+        registry.refuse(shortcut("F6"));
+
+        let err = set_hotkey_inner(&f.store, &f.keys, &hotkeys, "F6").unwrap_err();
+
+        assert_eq!(err, "hotkey.taken");
+        assert_eq!(f.store.get().hotkey, "Ctrl+Alt+Space");
+        assert_eq!(registry.registered(), vec![shortcut("Ctrl+Alt+Space")]);
+    }
+
+    #[test]
+    fn set_hotkey_tells_when_the_file_cannot_be_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let in_the_way = dir.path().join("in-the-way");
+        std::fs::write(&in_the_way, b"x").unwrap();
+        let (store, _) = SettingsStore::open(in_the_way.join("settings.json"));
+        let registry = Arc::new(FakeRegistry::default());
+        let hotkeys = registered_hotkeys(&registry);
+
+        let err = set_hotkey_inner(&store, &KeyFlags::default(), &hotkeys, "F6").unwrap_err();
+
+        assert!(err.starts_with("Could not save the settings"), "{err}");
+        assert_eq!(registry.registered(), vec![shortcut("Ctrl+Alt+Space")]);
+    }
+
+    #[test]
+    fn saving_the_settings_never_changes_the_shortcut() {
+        // Only `set_hotkey` does: it registers the shortcut, and a file that says another one would be a lie.
+        let f = fixture();
+        let mut stale = f.store.get();
+        stale.hotkey = "Ctrl+Shift+Z".into();
+        stale.vocabulary = "Dictate".into();
+
+        let view = save_settings_inner(&f.store, &f.keys, stale, |_| Ok(())).unwrap();
+
+        assert_eq!(view.settings.vocabulary, "Dictate");
+        assert_eq!(view.settings.hotkey, "Ctrl+Alt+Space");
+        assert_eq!(f.store.get().hotkey, "Ctrl+Alt+Space");
     }
 
     #[test]

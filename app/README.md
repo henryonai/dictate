@@ -2,7 +2,7 @@
 
 The desktop app, for macOS, Windows and Linux: a tray icon and a Settings window. It is built with [Tauri 2](https://tauri.app): a Rust shell in `src-tauri/` and a Svelte 5 + TypeScript interface in `ui/`.
 
-What there is so far is the app shell. Settings (language, AI provider, transcription service), API keys in the system's key store, the Whisper model downloads, the connection checks and a test transcription of a WAV file work. The hotkey is shown but can't be changed yet. Recording and dictation come next.
+What there is so far is the app shell. Settings (language, AI provider, transcription service), API keys in the system's key store, the Whisper model downloads, the connection checks and a test transcription of a WAV file work. The global shortcut (Ctrl+Alt+Space by default, ⌃⌥Space on the Mac) can be changed in Settings; for now it only reaches the log, because recording and dictation come next. `dictate --toggle` (also when the app isn't running yet) is what pressing the shortcut once will do. On a Wayland desktop the shortcut comes from the desktop's GlobalShortcuts portal (KDE Plasma, GNOME 48 and later, Hyprland); where there is none (Sway and other wlroots desktops), bind a shortcut in the desktop's own settings to run `dictate --toggle`.
 
 So far the app has only been run on macOS. Windows and Linux are compiled and tested by CI, but nobody has run the app there yet.
 

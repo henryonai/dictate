@@ -29,6 +29,8 @@ describe("each wrapper calls its command with the argument names the Rust side e
     ["setAiProvider", "set_ai_provider", { p: "openai" }, () => api.setAiProvider("openai")],
     ["setTranscribePreset", "set_transcribe_preset", { p: "groq" }, () => api.setTranscribePreset("groq")],
     ["setSecret", "set_secret", { account: "ai", value: "k" }, () => api.setSecret("ai", "k")],
+    ["setHotkey", "set_hotkey", { accel: "Ctrl+Alt+D" }, () => api.setHotkey("Ctrl+Alt+D")],
+    ["hotkeyStatus", "hotkey_status", undefined, () => api.hotkeyStatus()],
     ["checkAi", "check_ai", undefined, () => api.checkAi()],
     ["checkTranscribe", "check_transcribe", undefined, () => api.checkTranscribe()],
     ["listModels", "list_models", undefined, () => api.listModels()],
@@ -76,4 +78,16 @@ test("the model-download event reaches the listener, until it is removed", async
   stop();
   await emit("model-download", event);
   expect(heard).toHaveLength(1);
+});
+
+test("the hotkey-status event reaches the listener", async () => {
+  recordCalls();
+  const heard: unknown[] = [];
+  const stop = await api.onHotkeyStatus((status) => heard.push(status));
+
+  const status = { label: "Ctrl+Alt+D", backend: "portal", error: null };
+  await emit("hotkey-status", status);
+  expect(heard).toEqual([status]);
+
+  stop();
 });

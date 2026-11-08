@@ -1,9 +1,9 @@
-import { render, screen } from "@testing-library/svelte";
+import { fireEvent, render, screen } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api } from "../lib/api";
 import { setLanguage } from "../lib/i18n";
-import { loadedStore, stubApi } from "../test-helpers";
+import { fakeHotkeyStatus, loadedStore, stubApi } from "../test-helpers";
 import General from "./General.svelte";
 
 beforeEach(() => {
@@ -18,10 +18,87 @@ afterEach(() => {
 const lastSaved = () => vi.mocked(api.saveSettings).mock.lastCall?.[0];
 
 test("shows the stored shortcut and doesn't let it be typed over", async () => {
+  vi.mocked(api.hotkeyStatus).mockRejectedValue("not asked yet");
   render(General, { store: await loadedStore({ hotkey: "Ctrl+Shift+D" }) });
   const hotkey = screen.getByLabelText("Shortcut");
   expect(hotkey).toHaveValue("Ctrl+Shift+D");
   expect(hotkey).toHaveAttribute("readonly");
+});
+
+test("shows the shortcut as the Rust side writes it for this system", async () => {
+  vi.mocked(api.hotkeyStatus).mockResolvedValue(fakeHotkeyStatus({ label: "⌃⌥Space" }));
+  render(General, { store: await loadedStore() });
+
+  await vi.waitFor(() => expect(screen.getByLabelText("Shortcut")).toHaveValue("⌃⌥Space"));
+});
+
+test("a recorded shortcut is registered and saved by the Rust side, and shows when it worked", async () => {
+  const user = userEvent.setup();
+  vi.mocked(api.hotkeyStatus).mockResolvedValue(fakeHotkeyStatus());
+  render(General, { store: await loadedStore() });
+  await screen.findByDisplayValue("Ctrl+Alt+Space");
+
+  vi.mocked(api.hotkeyStatus).mockResolvedValue(fakeHotkeyStatus({ label: "Ctrl+Alt+D" }));
+  await user.click(screen.getByRole("button", { name: "Change…" }));
+  await fireEvent.keyDown(window, { code: "KeyD", ctrlKey: true, altKey: true });
+
+  expect(api.setHotkey).toHaveBeenCalledExactlyOnceWith("Ctrl+Alt+D");
+  expect(api.saveSettings).not.toHaveBeenCalled();
+  expect(await screen.findByDisplayValue("Ctrl+Alt+D")).toBeInTheDocument();
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
+test("recorder_shows_taken_error: a shortcut another app owns is refused and says so, and nothing changes", async () => {
+  const user = userEvent.setup();
+  vi.mocked(api.setHotkey).mockRejectedValue("hotkey.taken");
+  render(General, { store: await loadedStore() });
+
+  await user.click(screen.getByRole("button", { name: "Change…" }));
+  await fireEvent.keyDown(window, { code: "Space", ctrlKey: true, altKey: true });
+
+  expect(await screen.findByRole("alert")).toHaveTextContent("That shortcut is already used by another app. Try a different one.");
+  expect(screen.getByLabelText("Shortcut")).toHaveValue("Ctrl+Alt+Space");
+});
+
+test("a shortcut that was taken when the app started says so, and can be replaced", async () => {
+  const user = userEvent.setup();
+  vi.mocked(api.hotkeyStatus).mockResolvedValue(fakeHotkeyStatus({ backend: "none", error: "hotkey.taken" }));
+  render(General, { store: await loadedStore() });
+
+  expect(await screen.findByRole("alert")).toHaveTextContent("already used by another app");
+
+  vi.mocked(api.hotkeyStatus).mockResolvedValue(fakeHotkeyStatus({ label: "F6" }));
+  await user.click(screen.getByRole("button", { name: "Change…" }));
+  await fireEvent.keyDown(window, { code: "F6" });
+
+  await vi.waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+  expect(screen.getByLabelText("Shortcut")).toHaveValue("F6");
+});
+
+test("a desktop with no global shortcuts for apps says how to bind dictate --toggle, and has nothing to change", async () => {
+  vi.mocked(api.hotkeyStatus).mockResolvedValue(fakeHotkeyStatus({ backend: "none", error: "hotkey.wayland_unavailable" }));
+  render(General, { store: await loadedStore() });
+
+  expect(
+    await screen.findByText(
+      "Your desktop doesn't offer global shortcuts to apps. Bind a shortcut in your desktop settings to run: dictate --toggle",
+    ),
+  ).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Change…" })).not.toBeInTheDocument();
+});
+
+test("a shortcut that the desktop's portal binds is changed in the desktop, not here", async () => {
+  vi.mocked(api.hotkeyStatus).mockResolvedValue(fakeHotkeyStatus({ label: "Ctrl+Alt+D", backend: "portal" }));
+  render(General, { store: await loadedStore() });
+
+  expect(await screen.findByDisplayValue("Ctrl+Alt+D")).toBeInTheDocument();
+  expect(screen.getByText(/Your desktop manages this shortcut/)).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Change…" })).not.toBeInTheDocument();
+});
+
+test("tells how to run dictate --toggle", async () => {
+  render(General, { store: await loadedStore() });
+  expect(screen.getByText(/dictate --toggle/)).toBeInTheDocument();
 });
 
 test("changing the interface language saves it and switches the words at once", async () => {

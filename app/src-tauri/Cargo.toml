@@ -25,8 +25,12 @@ serde = { version = "1.0.229", features = ["derive"] }
 sys-locale = "0.3"
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-autostart = "2"
+# The global shortcut, with the press and the release of the key. Pinned: 2.4 and later need Rust 1.90.
+tauri-plugin-global-shortcut = "=2.3.2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-opener = "2"
+# The channel the shortcut and `dictate --toggle` send their events on, and the timer for the release of a key.
+tokio = { version = "1.54.1", default-features = false, features = ["sync", "time"] }
 tokio-util = { version = "0.7.20", default-features = false }
 
 # The platform layer (src/platform): the focused text field, the frontmost app, the permissions, and pasting into
@@ -62,6 +66,9 @@ windows = { version = "0.61.3", features = [
 ] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# The GlobalShortcuts portal, for Wayland sessions, where an app can't grab a key itself. Pinned: 0.13 needs Rust 1.87.
+ashpd = { version = "=0.12.3", default-features = false, features = ["tokio"] }
+futures-util = { version = "0.3.34", default-features = false }
 arboard = { version = "3.7.0", features = ["wayland-data-control"] }
 enigo = { version = "0.6.1", default-features = false, features = ["x11rb"] }
 x11rb = "0.13"

@@ -19,6 +19,11 @@
 
   onMount(() => {
     void store.load();
+    // The desktop may answer for the shortcut after the window opened.
+    const stopWatching = store.watchHotkey();
+    return () => {
+      void stopWatching.then((stop) => stop());
+    };
   });
 </script>
 

@@ -1,4 +1,4 @@
-// The commands of the Rust side and its `model-download` event, with their types. Nothing else in the UI calls
+// The commands of the Rust side and its `model-download` and `hotkey-status` events, with their types. Nothing else in the UI calls
 // `invoke`: when a command changes, this is the one place to follow it. Names and argument names mirror
 // app/src-tauri/src/commands.rs.
 import { invoke } from "@tauri-apps/api/core";
@@ -56,6 +56,18 @@ export interface SettingsView extends Settings {
   system_language: "en" | "vi";
 }
 
+/** How the shortcut is reached: grabbed by the app, bound by the desktop's portal (Wayland), or not at all. */
+export type HotkeyBackend = "global" | "portal" | "none";
+
+/** What the Rust side says about the shortcut. */
+export interface HotkeyStatus {
+  /** The shortcut as the person reads it: "⌃⌥Space" on the Mac, "Ctrl+Alt+Space" elsewhere. */
+  label: string;
+  backend: HotkeyBackend;
+  /** A key of the texts (`hotkey.taken`, `hotkey.invalid`, `hotkey.wayland_unavailable`) when the shortcut doesn't work. */
+  error: string | null;
+}
+
 export interface ModelView {
   id: string;
   size_mb: number;
@@ -89,6 +101,12 @@ export const api = {
   setTranscribePreset: (p: TranscribePreset) => invoke<SettingsView>("set_transcribe_preset", { p }),
   /** An empty `value` deletes the key. */
   setSecret: (account: Account, value: string) => invoke<SettingsView>("set_secret", { account, value }),
+  /**
+   * Registers the shortcut, then saves it. Rejects with a key of the texts when it can't be used (`hotkey.invalid`,
+   * `hotkey.taken`), else with a sentence about the file.
+   */
+  setHotkey: (accel: string) => invoke<SettingsView>("set_hotkey", { accel }),
+  hotkeyStatus: () => invoke<HotkeyStatus>("hotkey_status"),
   checkAi: () => invoke<string>("check_ai"),
   checkTranscribe: () => invoke<string>("check_transcribe"),
 
@@ -108,6 +126,9 @@ export const api = {
   /** In the system browser. The capability only allows https. */
   openUrl: (url: string) => openUrl(url),
 
+  /** Resolves with the function that stops listening. */
+  onHotkeyStatus: (handler: (status: HotkeyStatus) => void) =>
+    listen<HotkeyStatus>("hotkey-status", (event) => handler(event.payload)),
   /** Resolves with the function that stops listening. */
   onModelDownload: (handler: (event: DownloadEvent) => void) =>
     listen<DownloadEvent>("model-download", (event) => handler(event.payload)),
