@@ -6,8 +6,13 @@ license.workspace = true
 description = "Shared logic for Dictate: meetings library, transcript and summary parsing, search"
 
 [dependencies]
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+dirs = "7.0.0"
 fancy-regex = "0.20.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 unicode-normalization = "0.1.26"
 unicode-segmentation = "1.13.3"
+
+[dev-dependencies]
+tempfile = "3.27.0"
