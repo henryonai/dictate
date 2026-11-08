@@ -369,8 +369,18 @@ pub fn is_app(front: &AppId, wanted: &AppId) -> bool {
 pub enum WaylandTool {
     /// `wtype`: wlroots compositors, Hyprland and Sway (not GNOME).
     Wtype(PathBuf),
-    /// `ydotool`, with the socket of its daemon there: keys come in as a virtual device.
-    Ydotool(PathBuf),
+    /// `ydotool`, with the socket where its daemon listens: keys come in as a virtual device.
+    Ydotool { program: PathBuf, socket: PathBuf },
+}
+
+#[cfg(any(test, target_os = "linux"))]
+impl WaylandTool {
+    /// The executable to run.
+    pub fn program(&self) -> &std::path::Path {
+        match self {
+            WaylandTool::Wtype(program) | WaylandTool::Ydotool { program, .. } => program,
+        }
+    }
 }
 
 /// The file of `name` in the first directory of `path` that has one.
@@ -404,17 +414,28 @@ pub fn ydotool_sockets(
     places
 }
 
-/// `wtype` when it is there, else `ydotool` when its daemon is listening.
+/// `wtype` when it is there, else `ydotool` when its daemon is listening: `ydotool_socket` is the socket that
+/// exists, if one does.
 #[cfg(any(test, target_os = "linux"))]
 pub fn pick_wayland_tool(
     wtype: Option<PathBuf>,
     ydotool: Option<PathBuf>,
-    ydotool_listening: bool,
+    ydotool_socket: Option<PathBuf>,
 ) -> Option<WaylandTool> {
-    match (wtype, ydotool) {
-        (Some(wtype), _) => Some(WaylandTool::Wtype(wtype)),
-        (None, Some(ydotool)) if ydotool_listening => Some(WaylandTool::Ydotool(ydotool)),
+    match (wtype, ydotool, ydotool_socket) {
+        (Some(wtype), _, _) => Some(WaylandTool::Wtype(wtype)),
+        (None, Some(program), Some(socket)) => Some(WaylandTool::Ydotool { program, socket }),
         _ => None,
+    }
+}
+
+/// The variable that the tool is run with, if it needs one: `ydotool` looks for its daemon in a place of its own
+/// (`$YDOTOOL_SOCKET`, else `$XDG_RUNTIME_DIR`, else `/tmp`), which is not always the place where we found it.
+#[cfg(any(test, target_os = "linux"))]
+pub fn wayland_env(tool: &WaylandTool) -> Option<(&'static str, &std::path::Path)> {
+    match tool {
+        WaylandTool::Ydotool { socket, .. } => Some(("YDOTOOL_SOCKET", socket)),
+        WaylandTool::Wtype(_) => None,
     }
 }
 
@@ -429,10 +450,10 @@ pub fn wayland_args(tool: &WaylandTool, terminal: bool) -> Vec<&'static str> {
         }
         WaylandTool::Wtype(_) => vec!["-M", "ctrl", "v", "-m", "ctrl"],
         // Key codes of the kernel: 29 left Ctrl, 42 left Shift, 47 V; `:1` is down and `:0` is up.
-        WaylandTool::Ydotool(_) if terminal => {
+        WaylandTool::Ydotool { .. } if terminal => {
             vec!["key", "29:1", "42:1", "47:1", "47:0", "42:0", "29:0"]
         }
-        WaylandTool::Ydotool(_) => vec!["key", "29:1", "47:1", "47:0", "29:0"],
+        WaylandTool::Ydotool { .. } => vec!["key", "29:1", "47:1", "47:0", "29:0"],
     }
 }
 
@@ -1078,24 +1099,69 @@ mod tests {
         let wtype = PathBuf::from("/usr/bin/wtype");
         let ydotool = PathBuf::from("/usr/bin/ydotool");
         assert_eq!(
-            pick_wayland_tool(Some(wtype.clone()), Some(ydotool), true),
+            pick_wayland_tool(
+                Some(wtype.clone()),
+                Some(ydotool),
+                Some(PathBuf::from("/run/user/1000/.ydotool_socket"))
+            ),
             Some(WaylandTool::Wtype(wtype))
         );
     }
 
     #[test]
     fn ydotool_is_used_only_when_its_daemon_listens() {
-        let ydotool = PathBuf::from("/usr/bin/ydotool");
+        let program = PathBuf::from("/usr/bin/ydotool");
+        let socket = PathBuf::from("/run/user/1000/.ydotool_socket");
+        // The tool carries the socket that was found, so that it can be told where it is.
         assert_eq!(
-            pick_wayland_tool(None, Some(ydotool.clone()), true),
-            Some(WaylandTool::Ydotool(ydotool.clone()))
+            pick_wayland_tool(None, Some(program.clone()), Some(socket.clone())),
+            Some(WaylandTool::Ydotool {
+                program: program.clone(),
+                socket
+            })
         );
-        assert_eq!(pick_wayland_tool(None, Some(ydotool), false), None);
+        assert_eq!(pick_wayland_tool(None, Some(program), None), None);
     }
 
     #[test]
     fn no_tool_on_the_path_means_no_paste_on_wayland() {
-        assert_eq!(pick_wayland_tool(None, None, true), None);
+        assert_eq!(
+            pick_wayland_tool(
+                None,
+                None,
+                Some(PathBuf::from("/run/user/1000/.ydotool_socket"))
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn each_tool_runs_its_own_program() {
+        let wtype = WaylandTool::Wtype(PathBuf::from("/usr/bin/wtype"));
+        assert_eq!(wtype.program(), std::path::Path::new("/usr/bin/wtype"));
+        let ydotool = WaylandTool::Ydotool {
+            program: PathBuf::from("/usr/bin/ydotool"),
+            socket: PathBuf::from("/tmp/mine.sock"),
+        };
+        assert_eq!(ydotool.program(), std::path::Path::new("/usr/bin/ydotool"));
+    }
+
+    #[test]
+    fn ydotool_is_told_where_its_daemon_listens() {
+        // It looks in a place of its own otherwise, which is not always where the daemon was found.
+        let socket = PathBuf::from("/tmp/mine.sock");
+        let tool = WaylandTool::Ydotool {
+            program: PathBuf::from("ydotool"),
+            socket: socket.clone(),
+        };
+        assert_eq!(
+            wayland_env(&tool),
+            Some(("YDOTOOL_SOCKET", socket.as_path()))
+        );
+        assert_eq!(
+            wayland_env(&WaylandTool::Wtype(PathBuf::from("wtype"))),
+            None
+        );
     }
 
     #[test]
@@ -1113,7 +1179,10 @@ mod tests {
 
     #[test]
     fn ydotool_presses_the_key_codes_of_ctrl_v() {
-        let tool = WaylandTool::Ydotool(PathBuf::from("ydotool"));
+        let tool = WaylandTool::Ydotool {
+            program: PathBuf::from("ydotool"),
+            socket: PathBuf::from("/tmp/mine.sock"),
+        };
         // 29 is the left Ctrl, 42 the left Shift, 47 the V.
         assert_eq!(
             wayland_args(&tool, false),

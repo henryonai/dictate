@@ -19,8 +19,8 @@ use x11rb::rust_connection::RustConnection;
 
 use super::keys::press_paste;
 use super::paste::{
-    find_on_path, is_app, pick_wayland_tool, wayland_args, ydotool_sockets, KeySender, PasteError,
-    WaylandTool,
+    find_on_path, is_app, pick_wayland_tool, wayland_args, wayland_env, ydotool_sockets, KeySender,
+    PasteError,
 };
 use super::rules::{is_terminal, parse_wm_class, session, Os, Session};
 use super::{
@@ -264,15 +264,21 @@ fn wayland_paste(terminal: bool) -> Result<(), PasteError> {
         std::env::var("XDG_RUNTIME_DIR").ok().as_deref(),
         uid,
     );
-    let listening = sockets.iter().any(|socket| socket.exists());
+    let listening = sockets.into_iter().find(|socket| socket.exists());
     let tool = pick_wayland_tool(on_path("wtype"), on_path("ydotool"), listening)
         .ok_or(PasteError::NoWaylandTool)?;
-    let (WaylandTool::Wtype(program) | WaylandTool::Ydotool(program)) = &tool;
-    let mut child = Command::new(program)
+    let program = tool.program();
+    let mut command = Command::new(program);
+    command
         .args(wayland_args(&tool, terminal))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::null());
+    // ydotool looks for its daemon in a place of its own unless it is told where it was found.
+    if let Some((name, value)) = wayland_env(&tool) {
+        command.env(name, value);
+    }
+    let mut child = command
         .spawn()
         .map_err(|error| PasteError::Failed(format!("{}: {error}", program.display())))?;
     // A tool that hangs (a daemon that doesn't answer) must not hold the paste.
