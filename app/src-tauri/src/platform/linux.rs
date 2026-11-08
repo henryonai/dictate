@@ -147,7 +147,7 @@ fn x11_front() -> Option<Front> {
 
         // Some terminals name only the instance well ("gnome-terminal-server" is the instance of the class
         // "Gnome-terminal"), so both names are looked at.
-        let terminal = is_terminal(Os::Linux, &class) || is_terminal(Os::Linux, &instance);
+        let terminal = is_terminal(Os::current(), &class) || is_terminal(Os::current(), &instance);
         Some(Front {
             app: AppId { id: class, pid },
             terminal,

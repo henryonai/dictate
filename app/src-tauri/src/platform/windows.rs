@@ -12,6 +12,7 @@
 
 use std::ffi::c_void;
 use std::mem::size_of;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -34,10 +35,10 @@ use windows::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::Accessibility::{
-    CUIAutomation, IUIAutomation, IUIAutomation6, IUIAutomationElement, IUIAutomationTextPattern,
-    IUIAutomationTextPattern2, IUIAutomationTextRange, IUIAutomationValuePattern,
-    TextPatternRangeEndpoint_End, TextPatternRangeEndpoint_Start, TextUnit_Character,
-    UIA_TextPattern2Id, UIA_TextPatternId, UIA_ValuePatternId,
+    CUIAutomation, CUIAutomation8, IUIAutomation, IUIAutomation6, IUIAutomationElement,
+    IUIAutomationTextPattern, IUIAutomationTextPattern2, IUIAutomationTextRange,
+    IUIAutomationValuePattern, TextPatternRangeEndpoint_End, TextPatternRangeEndpoint_Start,
+    TextUnit_Character, UIA_TextPattern2Id, UIA_TextPatternId, UIA_ValuePatternId,
 };
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -46,8 +47,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use super::rules::{
-    accept_caret, caret_after, classify_uia, field_anchor, first_rect, is_terminal, on_any_screen,
-    pick_visible_frame, terminal_anchor, to_logical, Editable, Os, Screen,
+    accept_caret, bounded_text_len, caret_after, classify_uia, field_anchor, first_rect,
+    is_terminal, on_any_screen, pick_visible_frame, secure_read_outcome, terminal_anchor,
+    to_logical, Editable, Os, Screen, SecureOutcome, SecureRead,
 };
 use super::{
     AppId, FieldInfo, FieldLookup, FieldSnapshot, Permission, Platform, Rect, DEFAULT_SCREEN,
@@ -76,14 +78,14 @@ impl WindowsPlatform {
     /// Runs `work` on the UI Automation thread and waits [`UIA_TIMEOUT`] for its answer.
     fn ask<T: Send + 'static>(
         &self,
-        work: impl FnOnce(&IUIAutomation) -> Option<T> + Send + 'static,
+        work: impl FnOnce(&IUIAutomation, Instant) -> Option<T> + Send + 'static,
     ) -> Option<T> {
         let deadline = Instant::now() + UIA_TIMEOUT;
         let (answer, wait) = mpsc::sync_channel(1);
         let job: Job = Box::new(move |uia| {
             // The caller has gone when the thread was busy with a hung app for longer than it waited.
             if Instant::now() < deadline {
-                let _ = answer.send(work(uia));
+                let _ = answer.send(work(uia, deadline));
             }
         });
         self.jobs.send(job).ok()?;
@@ -91,12 +93,22 @@ impl WindowsPlatform {
     }
 }
 
+/// The `IUIAutomation` of this thread. `CUIAutomation8` is the class of Windows 8 and later, whose object has the
+/// newer interfaces (`IUIAutomation6`, with the timeouts); the first class is the fallback.
+fn automation() -> Option<IUIAutomation> {
+    // SAFETY: plain calls with a class id.
+    unsafe {
+        CoCreateInstance(&CUIAutomation8, None, CLSCTX_INPROC_SERVER)
+            .or_else(|_| CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER))
+    }
+    .ok()
+}
+
 /// The UI Automation thread: starts COM, makes the one `IUIAutomation` and answers the questions in turn.
 fn serve(queue: mpsc::Receiver<Job>) {
     // SAFETY: COM is started once on this thread, and ended on it after the last use.
     let com = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
-    let uia: Option<IUIAutomation> =
-        unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER) }.ok();
+    let uia = automation();
     if let Some(uia) = &uia {
         // Windows 10 1809 and later: a call to a hung app fails after the same time that the caller waits.
         if let Ok(uia) = uia.cast::<IUIAutomation6>() {
@@ -111,7 +123,10 @@ fn serve(queue: mpsc::Receiver<Job>) {
     for job in queue {
         // A job that is dropped drops its channel, and the caller sees that there is no answer.
         if let Some(uia) = &uia {
-            job(uia);
+            // A job that panics must not end the thread: every later question would then go unanswered.
+            if catch_unwind(AssertUnwindSafe(|| job(uia))).is_err() {
+                log::warn!("A UI Automation question panicked");
+            }
         }
     }
     drop(uia);
@@ -131,7 +146,7 @@ impl Platform for WindowsPlatform {
     }
 
     fn focused_field(&self) -> FieldLookup {
-        self.ask(|uia| Some(lookup(uia)))
+        self.ask(|uia, _| Some(lookup(uia)))
             .unwrap_or(FieldLookup::Unknown)
     }
 
@@ -445,7 +460,7 @@ fn lookup(uia: &IUIAutomation) -> FieldLookup {
         id: front.exe.clone(),
         pid: Some(front.pid),
     };
-    if is_terminal(Os::Windows, &front.exe) {
+    if is_terminal(Os::current(), &front.exe) {
         // The prompt is a grid of characters, not a text element: whatever has the focus takes typing.
         return FieldLookup::Field(FieldInfo {
             anchor: window_anchor(&front, &screens),
@@ -462,10 +477,17 @@ fn lookup(uia: &IUIAutomation) -> FieldLookup {
         let Ok(control_type) = field.CurrentControlType() else {
             return FieldLookup::Unknown;
         };
-        let is_password = field
-            .CurrentIsPassword()
-            .map(|password| password.as_bool())
-            .unwrap_or(false);
+        // A password field must never be taken for a text field: a failed read is not "no password".
+        let password = field.CurrentIsPassword();
+        let read = if password.is_ok() {
+            SecureRead::Answered
+        } else {
+            SecureRead::Failed
+        };
+        if secure_read_outcome(read) == SecureOutcome::NoField {
+            return FieldLookup::NoField;
+        }
+        let is_password = password.map(|password| password.as_bool()).unwrap_or(false);
         let value = field
             .GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
             .ok();
@@ -494,22 +516,33 @@ fn lookup(uia: &IUIAutomation) -> FieldLookup {
     }
 }
 
+/// How many characters of the text of a field are read to tell whether a paste landed. A longer text isn't read
+/// whole (a document of a megabyte would take more than the time there is): it has no snapshot, and the landing
+/// check is left out.
+const TEXT_CAP: i32 = 50_000;
+
 /// The text length and the selection of the focused field, from its text pattern. The selection starts where
-/// the text before it ends. A control without a text pattern has none to read.
-fn snapshot(uia: &IUIAutomation) -> Option<FieldSnapshot> {
+/// the text before it ends. A control without a text pattern, or with more than [`TEXT_CAP`] characters, has
+/// none to read.
+fn snapshot(uia: &IUIAutomation, deadline: Instant) -> Option<FieldSnapshot> {
+    // Every read is asked for at most `TEXT_CAP` characters, and none starts after the time is up.
+    let in_time = || (Instant::now() < deadline).then_some(());
+    let cap = TEXT_CAP as usize;
     // SAFETY: calls on the focused element, which is ours.
     unsafe {
         let field = uia.GetFocusedElement().ok()?;
         let pattern: IUIAutomationTextPattern =
             field.GetCurrentPatternAs(UIA_TextPatternId).ok()?;
         let document = pattern.DocumentRange().ok()?;
-        let len = document.GetText(-1).ok()?.len();
+        in_time()?;
+        let len = bounded_text_len(document.GetText(TEXT_CAP).ok()?.len(), cap)?;
         let selections = pattern.GetSelection().ok()?;
         if selections.Length().ok()? < 1 {
             return None;
         }
         let selection = selections.GetElement(0).ok()?;
-        let sel_len = selection.GetText(-1).ok()?.len();
+        in_time()?;
+        let sel_len = bounded_text_len(selection.GetText(TEXT_CAP).ok()?.len(), cap)?;
         let before = document.Clone().ok()?;
         before
             .MoveEndpointByRange(
@@ -518,7 +551,8 @@ fn snapshot(uia: &IUIAutomation) -> Option<FieldSnapshot> {
                 TextPatternRangeEndpoint_Start,
             )
             .ok()?;
-        let sel_loc = before.GetText(-1).ok()?.len();
+        in_time()?;
+        let sel_loc = bounded_text_len(before.GetText(TEXT_CAP).ok()?.len(), cap)?;
         Some(FieldSnapshot {
             len,
             sel_loc,

@@ -1,7 +1,8 @@
 //! The decisions of the platform layer that need no operating system: which apps are terminals, which focused
 //! elements take text, which caret rectangles to believe, which session a Linux desktop runs and which screen
 //! a point is on. The OS files read the facts and ask these functions what they mean, so that the rules are
-//! tested on every system.
+//! tested on every system. A helper that only one system uses is compiled for that system and for the tests,
+//! which run on every system: it is tested everywhere and is dead code nowhere.
 
 use super::Rect;
 
@@ -75,6 +76,7 @@ pub fn is_terminal(os: Os, app_id: &str) -> bool {
 }
 
 /// Whether the focused element takes text.
+#[cfg(any(test, target_os = "macos", target_os = "windows"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Editable {
     Yes,
@@ -84,13 +86,16 @@ pub enum Editable {
 }
 
 /// The AX subrole of a password field.
+#[cfg(any(test, target_os = "macos"))]
 const AX_SECURE_FIELD: &str = "AXSecureTextField";
 /// The AX roles of the elements that take text.
+#[cfg(any(test, target_os = "macos"))]
 const AX_TEXT_ROLES: &[&str] = &["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"];
 
 /// Whether an element of the macOS Accessibility API takes text. A password field never does, whatever its role.
 /// A text role does. Any other element (Chromium and Electron text, a custom editor) does when its value can be
 /// set and a selection says there is a caret.
+#[cfg(any(test, target_os = "macos"))]
 pub fn classify_ax(
     role: &str,
     subrole: &str,
@@ -108,18 +113,63 @@ pub fn classify_ax(
 
 /// Whether the element that an app says has the focus is the app itself, which Electron apps answer while they have
 /// no accessibility tree to look into: the app doesn't say where the focus is, so there is nothing to classify.
+#[cfg(any(test, target_os = "macos"))]
 pub fn ax_focus_is_the_app(role: &str) -> bool {
     role == "AXApplication"
 }
 
+/// How the read of the fact "this is a password field" (the AX subrole, the UIA `IsPassword` property) went. Each
+/// system builds the variants that its own read can give.
+#[allow(dead_code)]
+#[cfg(any(test, target_os = "macos", target_os = "windows"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecureRead {
+    /// The system answered.
+    Answered,
+    /// The element has no such fact (AX says no value or no such attribute): it is not marked as a password field.
+    Unsupported,
+    /// The read failed for another reason: whether this is a password field can't be known.
+    Failed,
+}
+
+/// What to do after reading the password fact.
+#[cfg(any(test, target_os = "macos", target_os = "windows"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecureOutcome {
+    /// Go on and ask the other rules.
+    Classify,
+    /// Stop: there is no field to write into.
+    NoField,
+}
+
+/// The rule that keeps a password field from ever being written into: a read that failed is not "no", it is "don't
+/// know", and text is never written when it isn't known that the field is no password field.
+#[cfg(any(test, target_os = "macos", target_os = "windows"))]
+pub fn secure_read_outcome(read: SecureRead) -> SecureOutcome {
+    match read {
+        SecureRead::Answered | SecureRead::Unsupported => SecureOutcome::Classify,
+        SecureRead::Failed => SecureOutcome::NoField,
+    }
+}
+
+/// The length of the text of a field that was read up to `cap` units: the real length when the read ended before
+/// the cap, nothing when it may have been cut off. A long text isn't read whole to tell whether a paste landed.
+#[cfg(any(test, target_os = "windows"))]
+pub fn bounded_text_len(len: usize, cap: usize) -> Option<usize> {
+    (len < cap).then_some(len)
+}
+
 /// UI Automation control type ids (`UIA_EditControlTypeId` and `UIA_DocumentControlTypeId`).
+#[cfg(any(test, target_os = "windows"))]
 pub const UIA_EDIT: i32 = 50004;
+#[cfg(any(test, target_os = "windows"))]
 pub const UIA_DOCUMENT: i32 = 50030;
 
 /// Whether an element of Windows UI Automation takes text. `has_value` and `has_text` say whether it offers the
 /// value and the text pattern, and `read_only` is what the value pattern says (false without one). A password
 /// field never takes text, a read-only one neither. An edit control does, a document when it has text to read,
 /// and any other control when its value can be written and it has text.
+#[cfg(any(test, target_os = "windows"))]
 pub fn classify_uia(
     control_type: i32,
     is_password: bool,
@@ -144,10 +194,12 @@ pub fn classify_uia(
 }
 
 /// Whether a rectangle of a caret is believable: a line of text is neither a dot nor a whole page.
+#[cfg(any(test, target_os = "macos", target_os = "windows"))]
 pub fn accept_caret(r: &Rect) -> bool {
     (2.0..=120.0).contains(&r.h)
 }
 
+#[cfg(any(test, target_os = "linux"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Session {
     MacOS,
@@ -157,12 +209,14 @@ pub enum Session {
 }
 
 /// The session this process runs in, read through `env` (the process environment, or a fake of it).
+#[cfg(any(test, target_os = "linux"))]
 pub fn session(env: &dyn Fn(&str) -> Option<String>) -> Session {
     session_for(Os::current(), env)
 }
 
 /// The session on `os`. On Linux it is Wayland when `XDG_SESSION_TYPE` says so or a compositor socket is set
 /// (`WAYLAND_DISPLAY`), else X11. A variable that is set to nothing counts as not set.
+#[cfg(any(test, target_os = "linux"))]
 pub fn session_for(os: Os, env: &dyn Fn(&str) -> Option<String>) -> Session {
     match os {
         Os::Mac => Session::MacOS,
@@ -188,6 +242,7 @@ pub struct Screen {
 }
 
 /// A rectangle given from the bottom left of the primary screen (as AppKit does), from the top left.
+#[cfg(any(test, target_os = "macos"))]
 pub fn flip_y(r: Rect, primary_height: f64) -> Rect {
     Rect {
         y: primary_height - r.y - r.h,
@@ -222,6 +277,7 @@ fn distance_to(r: &Rect, x: f64, y: f64) -> f64 {
 }
 
 /// Whether any part of the rectangle is on a screen: a caret that scrolled out of sight has no place to show.
+#[cfg(any(test, target_os = "macos", target_os = "windows"))]
 pub fn on_any_screen(screens: &[Screen], r: &Rect) -> bool {
     screens.iter().any(|s| {
         r.x < s.frame.x + s.frame.w
@@ -233,6 +289,7 @@ pub fn on_any_screen(screens: &[Screen], r: &Rect) -> bool {
 
 /// Whether the macOS app is a browser built on Chromium, which builds its accessibility tree for a client only
 /// when told that one is there.
+#[cfg(any(test, target_os = "macos"))]
 pub fn is_chromium_browser(bundle_id: &str) -> bool {
     const CHROMIUM_BROWSERS: &[&str] = &[
         "com.google.Chrome",
@@ -251,6 +308,7 @@ pub fn is_chromium_browser(bundle_id: &str) -> bool {
 
 /// The anchor of a terminal, which has no caret to ask for: near the bottom left of its window, where the prompt
 /// usually is.
+#[cfg(any(test, target_os = "macos", target_os = "windows"))]
 pub fn terminal_anchor(window: &Rect) -> Rect {
     Rect {
         x: window.x + 24.0,
@@ -261,6 +319,7 @@ pub fn terminal_anchor(window: &Rect) -> Rect {
 }
 
 /// The field itself as the anchor, when it is small enough (a chat box) for that to say where the caret is.
+#[cfg(any(test, target_os = "macos", target_os = "windows"))]
 pub fn field_anchor(field: &Rect) -> Option<Rect> {
     (field.h > 0.0 && field.h <= 160.0).then_some(Rect {
         w: field.w.max(1.0),
@@ -270,6 +329,7 @@ pub fn field_anchor(field: &Rect) -> Option<Rect> {
 
 /// The caret as the right edge of the character before it, for the apps that give no rectangle for an empty
 /// range.
+#[cfg(any(test, target_os = "macos", target_os = "windows"))]
 pub fn caret_after(character: &Rect) -> Rect {
     Rect {
         x: character.x + character.w,
@@ -280,6 +340,7 @@ pub fn caret_after(character: &Rect) -> Rect {
 
 /// The first rectangle of what UI Automation gives for a text range: groups of four numbers, left, top, width
 /// and height, one for each line the range covers.
+#[cfg(any(test, target_os = "windows"))]
 pub fn first_rect(values: &[f64]) -> Option<Rect> {
     match values.first_chunk::<4>()? {
         &[x, y, w, h] if [x, y, w, h].iter().all(|v| v.is_finite()) => Some(Rect { x, y, w, h }),
@@ -288,6 +349,7 @@ pub fn first_rect(values: &[f64]) -> Option<Rect> {
 }
 
 /// A rectangle in physical pixels as logical points on a screen that scales by `scale`.
+#[cfg(any(test, target_os = "windows", target_os = "linux"))]
 pub fn to_logical(r: Rect, scale: f64) -> Rect {
     if !(scale.is_finite() && scale > 0.0) {
         return r;
@@ -302,6 +364,7 @@ pub fn to_logical(r: Rect, scale: f64) -> Rect {
 
 /// The window class of an X11 window from its `WM_CLASS` property: the instance name and the class name, each
 /// ended by a 0 byte. One name alone is both.
+#[cfg(any(test, target_os = "linux"))]
 pub fn parse_wm_class(raw: &[u8]) -> Option<(String, String)> {
     let mut names = raw
         .split(|byte| *byte == 0)
@@ -710,5 +773,35 @@ mod tests {
         assert!(!ax_focus_is_the_app("AXTextField"));
         assert!(!ax_focus_is_the_app("AXWindow"));
         assert!(!ax_focus_is_the_app(""));
+    }
+
+    #[test]
+    fn a_failed_read_of_the_password_flag_is_no_field() {
+        // The password rule fails closed: an error is not an answer.
+        assert_eq!(
+            secure_read_outcome(SecureRead::Failed),
+            SecureOutcome::NoField
+        );
+    }
+
+    #[test]
+    fn an_element_without_the_password_flag_is_classified_normally() {
+        assert_eq!(
+            secure_read_outcome(SecureRead::Unsupported),
+            SecureOutcome::Classify
+        );
+        assert_eq!(
+            secure_read_outcome(SecureRead::Answered),
+            SecureOutcome::Classify
+        );
+    }
+
+    #[test]
+    fn a_text_read_up_to_its_cap_has_no_known_length() {
+        assert_eq!(bounded_text_len(0, 50_000), Some(0));
+        assert_eq!(bounded_text_len(49_999, 50_000), Some(49_999));
+        // The read stopped at the cap: the text may go on.
+        assert_eq!(bounded_text_len(50_000, 50_000), None);
+        assert_eq!(bounded_text_len(70_000, 50_000), None);
     }
 }

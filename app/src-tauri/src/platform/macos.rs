@@ -30,8 +30,8 @@ use objc2_core_foundation::{
 
 use super::rules::{
     accept_caret, ax_focus_is_the_app, caret_after, classify_ax, field_anchor, flip_y,
-    is_chromium_browser, is_terminal, on_any_screen, pick_visible_frame, terminal_anchor, Editable,
-    Os, Screen,
+    is_chromium_browser, is_terminal, on_any_screen, pick_visible_frame, secure_read_outcome,
+    terminal_anchor, Editable, Os, Screen, SecureOutcome, SecureRead,
 };
 use super::{
     run_with_timeout, AppId, FieldInfo, FieldLookup, FieldSnapshot, Permission, Platform, Rect,
@@ -55,23 +55,28 @@ impl MacPlatform {
         MacPlatform { app }
     }
 
-    /// Runs `work` on a thread of its own, which first reads the frontmost app on the main thread. `None` when
-    /// the answer takes longer than [`ASK_TIMEOUT`], when Accessibility isn't granted or when `work` fails.
+    /// Reads the frontmost app on the caller's thread, then runs `work` on a thread of its own. `None` when the
+    /// answer takes longer than [`ASK_TIMEOUT`] in all, when Accessibility isn't granted or when `work` fails.
+    ///
+    /// The desktop is read here and not on the worker: on the main thread (where the global shortcut handler
+    /// runs) the read happens at once, whereas a worker's request would queue behind the very thread that
+    /// waits for the worker.
     fn ask_app<T: Send + 'static>(
         &self,
         work: impl FnOnce(&Front, &[Screen], Instant) -> Result<T, Fail> + Send + 'static,
     ) -> Option<T> {
-        let app = self.app.clone();
-        run_with_timeout(ASK_TIMEOUT, move || {
-            let deadline = Instant::now() + ASK_TIMEOUT;
-            // SAFETY: a call with no arguments.
-            if !unsafe { AXIsProcessTrusted() } {
-                return None;
-            }
-            let desktop = ask_main(&app, deadline, read_desktop)?;
-            let front = desktop.front?;
-            work(&front, &desktop.screens, deadline).ok()
-        })
+        let deadline = Instant::now() + ASK_TIMEOUT;
+        // SAFETY: a call with no arguments.
+        if !unsafe { AXIsProcessTrusted() } {
+            return None;
+        }
+        let desktop = ask_main(&self.app, deadline, read_desktop)?;
+        let front = desktop.front?;
+        let screens = desktop.screens;
+        run_with_timeout(
+            deadline.saturating_duration_since(Instant::now()),
+            move || work(&front, &screens, deadline).ok(),
+        )
         .flatten()
     }
 }
@@ -141,23 +146,33 @@ impl Platform for MacPlatform {
         let done = Arc::new(Mutex::new(Some(done)));
         let on_main = done.clone();
         let queued = self.app.run_on_main_thread(move || {
-            let handler = RcBlock::new(move |granted: Bool| {
-                if let Some(done) = on_main.lock().ok().and_then(|mut done| done.take()) {
-                    done(granted.as_bool());
-                }
-            });
-            // SAFETY: the media type is a constant of the framework and the block takes one BOOL.
-            if let Some(audio) = unsafe { AVMediaTypeAudio } {
-                unsafe {
-                    AVCaptureDevice::requestAccessForMediaType_completionHandler(audio, &handler)
-                };
-            }
+            // SAFETY: the media type is a constant of the framework.
+            let Some(audio) = (unsafe { AVMediaTypeAudio }) else {
+                finish(&on_main, false);
+                return;
+            };
+            let handler = {
+                let on_main = on_main.clone();
+                RcBlock::new(move |granted: Bool| finish(&on_main, granted.as_bool()))
+            };
+            // SAFETY: the block takes one BOOL.
+            unsafe {
+                AVCaptureDevice::requestAccessForMediaType_completionHandler(audio, &handler)
+            };
         });
         if queued.is_err() {
-            if let Some(done) = done.lock().ok().and_then(|mut done| done.take()) {
-                done(false);
-            }
+            finish(&done, false);
         }
+    }
+}
+
+/// What waits for the answer to a request for the microphone.
+type Done = Box<dyn FnOnce(bool) + Send>;
+
+/// Gives the answer to whoever asked, once.
+fn finish(done: &Mutex<Option<Done>>, granted: bool) {
+    if let Some(done) = done.lock().ok().and_then(|mut done| done.take()) {
+        done(granted);
     }
 }
 
@@ -285,6 +300,15 @@ fn fail_from(code: i32, took: Duration) -> Fail {
 /// app not saying anything.
 fn means_no_focus(code: i32) -> bool {
     code == AXError::NoValue.0 || code == AXError::AttributeUnsupported.0
+}
+
+/// How a failed read of the subrole (the password fact) is to be taken.
+fn secure_read_of(code: i32) -> SecureRead {
+    if code == AXError::NoValue.0 || code == AXError::AttributeUnsupported.0 {
+        SecureRead::Unsupported
+    } else {
+        SecureRead::Failed
+    }
 }
 
 /// Keeps a failure of "no such value" as an answer (`None`) and passes a hung app on.
@@ -546,11 +570,12 @@ fn is_the_app(element: &AXUIElement, deadline: Instant) -> bool {
 /// R4: the text field that has the focus in the frontmost app.
 fn lookup(front: &Front, screens: &[Screen], deadline: Instant) -> Result<FieldLookup, Fail> {
     let app = front.app_id();
-    let terminal = is_terminal(Os::Mac, &front.id);
+    let terminal = is_terminal(Os::current(), &front.id);
     let root = app_element(front.pid);
     if terminal {
         // The prompt is a grid of characters, not a text element: whatever has the focus takes typing.
-        let anchor = window_anchor(&root, screens, deadline)?;
+        // A hung terminal is still a terminal: it only has no anchor.
+        let anchor = window_anchor(&root, screens, deadline).ok().flatten();
         return Ok(FieldLookup::Field(FieldInfo {
             app,
             terminal,
@@ -567,7 +592,15 @@ fn lookup(front: &Front, screens: &[Screen], deadline: Instant) -> Result<FieldL
     if ax_focus_is_the_app(&role) {
         return Ok(FieldLookup::Unknown);
     }
-    let subrole = absent(string(&field, "AXSubrole", deadline))?.unwrap_or_default();
+    // A password field must never be taken for a text field: a subrole that can't be read is not "no subrole".
+    let subrole = match string(&field, "AXSubrole", deadline) {
+        Ok(subrole) => subrole,
+        Err(Fail::Hung) => return Err(Fail::Hung),
+        Err(Fail::Error(code)) => match secure_read_outcome(secure_read_of(code)) {
+            SecureOutcome::Classify => String::new(),
+            SecureOutcome::NoField => return Ok(FieldLookup::NoField),
+        },
+    };
     let has_selection = absent(selected_range(&field, deadline))?.is_some();
     let settable = is_settable(&field, "AXValue");
     match classify_ax(&role, &subrole, settable, has_selection) {
@@ -588,7 +621,7 @@ fn lookup(front: &Front, screens: &[Screen], deadline: Instant) -> Result<FieldL
 
 /// The text length and the selection of the focused field. A terminal has none to read.
 fn snapshot(front: &Front, _screens: &[Screen], deadline: Instant) -> Result<FieldSnapshot, Fail> {
-    if is_terminal(Os::Mac, &front.id) {
+    if is_terminal(Os::current(), &front.id) {
         return Err(Fail::Error(AXError::NoValue.0));
     }
     let root = app_element(front.pid);
@@ -663,5 +696,25 @@ mod tests {
             permission_from(AVAuthorizationStatus::NotDetermined),
             Permission::NotDetermined
         );
+    }
+
+    #[test]
+    fn only_no_value_or_no_attribute_means_that_there_is_no_subrole() {
+        assert_eq!(secure_read_of(AXError::NoValue.0), SecureRead::Unsupported);
+        assert_eq!(
+            secure_read_of(AXError::AttributeUnsupported.0),
+            SecureRead::Unsupported
+        );
+        // Any other failure doesn't say that the field is no password field.
+        for error in [
+            AXError::CannotComplete,
+            AXError::Failure,
+            AXError::IllegalArgument,
+            AXError::InvalidUIElement,
+            AXError::NotImplemented,
+            AXError::APIDisabled,
+        ] {
+            assert_eq!(secure_read_of(error.0), SecureRead::Failed, "{error:?}");
+        }
     }
 }

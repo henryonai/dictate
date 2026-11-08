@@ -11,12 +11,18 @@ pub mod rules;
 #[cfg(target_os = "windows")]
 mod windows;
 
-use std::sync::{mpsc, Arc};
+#[cfg(any(test, target_os = "macos", target_os = "linux"))]
+use std::sync::mpsc;
+use std::sync::Arc;
+#[cfg(any(test, target_os = "macos", target_os = "linux"))]
 use std::thread;
+#[cfg(any(test, target_os = "macos", target_os = "linux"))]
 use std::time::Duration;
 
 /// How long the caller of a question to the OS waits at most. Another app can hang, and it answers slowly or not
-/// at all: dictation then goes on without the answer, so that the hotkey never freezes.
+/// at all: dictation then goes on without the answer, so that the hotkey never freezes. (Windows has its own,
+/// shorter time, for UI Automation.)
+#[cfg(any(test, target_os = "macos", target_os = "linux"))]
 pub const ASK_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// The visible frame of a screen when the OS doesn't say what the screens are.
@@ -55,7 +61,8 @@ pub struct FieldInfo {
     pub anchor: Option<Rect>,
 }
 
-/// What looking for the focused field found.
+/// What looking for the focused field found. Linux never finds `NoField`: it can't tell.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum FieldLookup {
     Field(FieldInfo),
@@ -73,6 +80,8 @@ pub struct FieldSnapshot {
     pub sel_len: usize,
 }
 
+// Each system builds the answers it can give: only Windows and Linux say `NotNeeded`, only macOS the others.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Permission {
     Granted,
@@ -84,7 +93,8 @@ pub enum Permission {
 
 /// What dictation asks the system about the place it writes to. Every question may take a few hundred
 /// milliseconds when the app that has the focus is slow, and none takes longer than [`ASK_TIMEOUT`]: the answer is
-/// then "don't know". The questions can be asked from any thread.
+/// then "don't know". The questions can be asked from any thread, the main thread included (the global shortcut
+/// handler runs there): a question asked on the main thread doesn't wait for the main thread.
 pub trait Platform: Send + Sync {
     /// The app that has the focus, or `None` when the system doesn't say (Wayland has no such question).
     fn frontmost_app(&self) -> Option<AppId>;
@@ -130,6 +140,7 @@ pub fn current(app: &tauri::AppHandle) -> Arc<dyn Platform> {
 
 /// The visible frame of a screen as Tauri knows the monitors, for the systems that have no question of their own
 /// for it (Linux). Asks the main thread, where Tauri reads the monitors.
+#[cfg(target_os = "linux")]
 fn tauri_screen(app: &tauri::AppHandle, near: Option<(f64, f64)>) -> Rect {
     let (answer, wait) = mpsc::sync_channel(1);
     let handle = app.clone();
@@ -155,6 +166,7 @@ fn tauri_screen(app: &tauri::AppHandle, near: Option<(f64, f64)>) -> Rect {
 }
 
 /// A monitor in logical points: Tauri reports physical pixels.
+#[cfg(target_os = "linux")]
 fn monitor_screen(monitor: &tauri::window::Monitor) -> rules::Screen {
     let scale = monitor.scale_factor();
     let frame = Rect {
@@ -178,6 +190,7 @@ fn monitor_screen(monitor: &tauri::window::Monitor) -> rules::Screen {
 
 /// Runs `job` on a thread of its own and waits `timeout` for its answer. `None` when it takes longer (the thread
 /// then finishes on its own and its answer is dropped), or when it panics.
+#[cfg(any(test, target_os = "macos", target_os = "linux"))]
 pub fn run_with_timeout<T: Send + 'static>(
     timeout: Duration,
     job: impl FnOnce() -> T + Send + 'static,
