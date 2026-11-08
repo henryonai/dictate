@@ -6,4 +6,6 @@ license.workspace = true
 description = "Shared logic for Dictate: meetings library, transcript and summary parsing, search"
 
 [dependencies]
+fancy-regex = "0.20.0"
 unicode-normalization = "0.1.26"
+unicode-segmentation = "1.13.3"
