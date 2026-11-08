@@ -146,8 +146,11 @@ impl AppState {
 }
 
 /// The folder of the Whisper models below the OS data directory, created when it is missing.
+///
+/// It is `whisper-models` and not `models`: on macOS `Dictate/models` is the same folder as the Swift app's
+/// `Dictate/Models`, and that one holds the Swift app's files.
 pub fn open_model_dir(data_dir: &Path) -> io::Result<ModelDir> {
-    let root = data_dir.join("Dictate").join("models");
+    let root = data_dir.join("Dictate").join("whisper-models");
     fs::create_dir_all(&root)?;
     Ok(ModelDir::new(root))
 }
@@ -276,10 +279,15 @@ mod tests {
     }
 
     #[test]
-    fn the_model_folder_is_dictate_models_below_the_data_dir_and_is_created() {
+    fn the_model_folder_is_dictate_whisper_models_below_the_data_dir_and_is_created() {
         let dir = tempfile::tempdir().unwrap();
         let models = open_model_dir(dir.path()).unwrap();
-        assert_eq!(models.root(), dir.path().join("Dictate").join("models"));
+        // Not `Dictate/models`: macOS compares names without regard to case, so that would be the folder
+        // `Dictate/Models` of the Swift app, which keeps its own files there.
+        assert_eq!(
+            models.root(),
+            dir.path().join("Dictate").join("whisper-models")
+        );
         assert!(models.root().is_dir());
         // A second start finds it there.
         assert!(open_model_dir(dir.path()).is_ok());
