@@ -28,8 +28,11 @@ impl Account {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SecretError {
-    /// No usable credential store, e.g. Linux without a Secret Service, or one that is locked.
+    /// No usable credential store, e.g. one that is locked or whose keychain is missing.
     Unavailable,
+    /// The credential store failed at runtime: a Linux without a Secret Service to talk to, but as well a prompt
+    /// that the user denied or cancelled. Holds what the platform said, which tells these apart.
+    PlatformFailure(String),
     Other(String),
 }
 
@@ -37,6 +40,10 @@ impl fmt::Display for SecretError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             SecretError::Unavailable => f.write_str("No system keyring available"),
+            SecretError::PlatformFailure(detail) => write!(
+                f,
+                "No system keyring available, or access to it was denied ({detail})"
+            ),
             SecretError::Other(message) => f.write_str(message),
         }
     }
@@ -68,9 +75,8 @@ fn entry(a: Account) -> Result<keyring::Entry, SecretError> {
 
 fn map_error(e: keyring::Error) -> SecretError {
     match e {
-        keyring::Error::NoStorageAccess(_) | keyring::Error::PlatformFailure(_) => {
-            SecretError::Unavailable
-        }
+        keyring::Error::NoStorageAccess(_) => SecretError::Unavailable,
+        keyring::Error::PlatformFailure(detail) => SecretError::PlatformFailure(detail.to_string()),
         other => SecretError::Other(other.to_string()),
     }
 }
@@ -154,12 +160,22 @@ mod tests {
             map_error(keyring::Error::NoStorageAccess(platform_error("locked"))),
             SecretError::Unavailable
         );
+    }
+
+    #[test]
+    fn a_platform_failure_keeps_what_the_platform_said() {
+        let err = map_error(keyring::Error::PlatformFailure(platform_error(
+            "no secret service on the bus",
+        )));
         assert_eq!(
-            map_error(keyring::Error::PlatformFailure(platform_error(
-                "no secret service on the bus"
-            ))),
-            SecretError::Unavailable
+            err,
+            SecretError::PlatformFailure("no secret service on the bus".into())
         );
+        // Not the flat text of an unavailable keyring: it may as well be a prompt that was denied.
+        let text = err.to_string();
+        assert!(text.starts_with("No system keyring available"), "{text}");
+        assert!(text.contains("no secret service on the bus"), "{text}");
+        assert_ne!(text, SecretError::Unavailable.to_string());
     }
 
     #[test]

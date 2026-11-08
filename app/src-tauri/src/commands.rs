@@ -160,7 +160,11 @@ fn set_secret_inner(
     } else {
         secrets.set(account, value)
     };
-    stored.map_err(|e| e.to_string())?;
+    stored.map_err(|e| {
+        // The platform's own words, for whoever looks at the log; the key is never in them.
+        log::warn!("Could not change the {} key: {e}", account.name());
+        e.to_string()
+    })?;
     Ok(get_settings_view(store, secrets))
 }
 
@@ -707,6 +711,25 @@ mod tests {
         }
     }
 
+    /// A key store whose platform refuses: what the Keychain does when the user denies its prompt.
+    struct DeniedKeyring;
+
+    impl SecretStore for DeniedKeyring {
+        fn get(&self, _: Account) -> Result<Option<String>, SecretError> {
+            Err(denied())
+        }
+        fn set(&self, _: Account, _: &str) -> Result<(), SecretError> {
+            Err(denied())
+        }
+        fn delete(&self, _: Account) -> Result<(), SecretError> {
+            Err(denied())
+        }
+    }
+
+    fn denied() -> SecretError {
+        SecretError::PlatformFailure("The user denied the Keychain prompt (-25293)".into())
+    }
+
     // ---- the settings view and the keys
 
     #[test]
@@ -829,6 +852,18 @@ mod tests {
         assert_eq!(err, "No system keyring available");
         let err = set_secret_inner(&f.store, &NoKeyring, "ai", "").unwrap_err();
         assert_eq!(err, "No system keyring available");
+    }
+
+    #[test]
+    fn set_secret_tells_what_the_platform_said_when_it_refuses() {
+        let f = fixture();
+        let err = set_secret_inner(&f.store, &DeniedKeyring, "ai", AI_KEY).unwrap_err();
+        assert!(err.starts_with("No system keyring available"), "{err}");
+        assert!(
+            err.contains("The user denied the Keychain prompt (-25293)"),
+            "{err}"
+        );
+        assert!(!err.contains(AI_KEY), "{err}");
     }
 
     // ---- saving settings
