@@ -142,5 +142,21 @@
   "accounts.get_key": "Get a key",
   "accounts.footer_openrouter": "OpenRouter has no speech-to-text endpoint: the audio goes to a model that can listen (Gemini), which returns the transcript.",
   "accounts.footer_models": "Used when the API is chosen in the Speech recognition tab: the file model for files, the dictation model for dictation.",
-  "accounts.keys_note": "All keys are stored in your system's credential store, never written to files."
+  "accounts.keys_note": "All keys are stored in your system's credential store, never written to files.",
+  "panel.listening": "Listening",
+  "panel.finishing": "Finishing…",
+  "panel.writing": "Writing…",
+  "panel.editing": "Editing: {style}…",
+  "panel.rewriting": "Rewriting: {style}…",
+  "panel.retranscribing": "Re-transcribing with {model}…",
+  "panel.retranscribing_editing": "Re-transcribing and editing with {model}…",
+  "panel.hint_toggle": "{hotkey} to finish",
+  "panel.hint_hold": "Release {hotkey} to finish",
+  "panel.hint_write_now": "{hotkey}: write it as is",
+  "panel.cancel": "Cancel",
+  "panel.stop": "Stop",
+  "panel.caption_toggle": "{hotkey} or ↩ to stop · Esc to cancel",
+  "panel.caption_hold": "Release {hotkey} to stop · Esc to cancel",
+  "panel.language_tooltip": "Change recognition language",
+  "panel.other_languages": "Other languages"
 }

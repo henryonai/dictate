@@ -4,6 +4,9 @@
 mod commands;
 mod config;
 mod hotkey;
+// Nothing sends a panel state yet: the dictation controller (Task 10 of the dictation plan) will.
+#[allow(dead_code)]
+mod panel;
 // Nothing calls the platform layer yet: the dictation controller (Task 10 of the dictation plan) will.
 #[allow(dead_code)]
 mod platform;
@@ -54,6 +57,9 @@ fn main() {
             None,
         ))
         .plugin(tauri_plugin_opener::init());
+    // The bubble is a panel of AppKit: this is what lets Tauri turn its window into one.
+    #[cfg(target_os = "macos")]
+    let builder = builder.plugin(tauri_nspanel::init());
     let builder = if hotkey::uses_global_plugin() {
         builder.plugin(tauri_plugin_global_shortcut::Builder::new().build())
     } else {
@@ -91,6 +97,12 @@ fn main() {
             commands::edit_presets,
             commands::transcribe_presets,
             commands::open_meetings_folder,
+            panel::dictation_languages,
+            panel::dictation_stop,
+            panel::dictation_cancel,
+            panel::dictation_set_language,
+            panel::panel_language,
+            panel::panel_resized,
         ])
         .build(tauri::generate_context!())
         .expect("the Dictate app could not start");
@@ -152,6 +164,10 @@ fn setup(
     });
     app.manage(state);
     tray::create(app.handle(), lang)?;
+    panel::create(app.handle())?;
+    // A debug build can cycle fixture states through the panels, to look at them without the controller.
+    #[cfg(debug_assertions)]
+    panel::demo::start(app.handle());
 
     let status = hotkey::start(app.handle(), &accel, hotkey_tx.clone());
     match &status.error {

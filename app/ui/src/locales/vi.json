@@ -142,5 +142,21 @@
   "accounts.get_key": "Lấy API key",
   "accounts.footer_openrouter": "OpenRouter không có API speech-to-text riêng: audio được gửi cho model nghe được (Gemini), model trả về transcript.",
   "accounts.footer_models": "Dùng khi chọn API ở tab Nhận dạng giọng nói: model cho file và model cho đọc chính tả.",
-  "accounts.keys_note": "Mọi key được lưu trong kho khoá của hệ điều hành, không ghi ra file."
+  "accounts.keys_note": "Mọi key được lưu trong kho khoá của hệ điều hành, không ghi ra file.",
+  "panel.listening": "Đang nghe",
+  "panel.finishing": "Đang xong…",
+  "panel.writing": "Đang viết…",
+  "panel.editing": "Đang sửa: {style}…",
+  "panel.rewriting": "Đang viết lại: {style}…",
+  "panel.retranscribing": "Chép lại bằng {model}…",
+  "panel.retranscribing_editing": "Chép lại & sửa bằng {model}…",
+  "panel.hint_toggle": "{hotkey} để xong",
+  "panel.hint_hold": "Thả {hotkey} để xong",
+  "panel.hint_write_now": "{hotkey}: viết luôn, không sửa",
+  "panel.cancel": "Huỷ",
+  "panel.stop": "Dừng",
+  "panel.caption_toggle": "{hotkey} hoặc ↩ để dừng · Esc huỷ",
+  "panel.caption_hold": "Thả {hotkey} để dừng · Esc huỷ",
+  "panel.language_tooltip": "Đổi ngôn ngữ nhận dạng",
+  "panel.other_languages": "Ngôn ngữ khác"
 }

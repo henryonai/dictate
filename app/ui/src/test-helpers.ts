@@ -3,6 +3,7 @@ import { vi } from "vitest";
 import { api } from "./lib/api";
 import type { DownloadEvent, HotkeyStatus, Settings, SettingsView } from "./lib/api";
 import { SettingsStore } from "./lib/settings-store.svelte";
+import type { PanelState } from "./panel/state";
 
 /** The defaults of `Settings::default()` on the Rust side. */
 export function fakeSettings(overrides: Partial<Settings> = {}): Settings {
@@ -134,4 +135,63 @@ export function passTime(ms: number) {
 /** The wall clock is set back, as a time sync or a person does; the clock that only goes forward isn't affected. */
 export function setWallClockBack(ms: number) {
   vi.setSystemTime(Date.now() - ms);
+}
+
+/** A panel state as the Rust side sends it for a toggle-mode dictation that has just begun in a text field. */
+export function fakePanelState(overrides: Partial<PanelState> = {}): PanelState {
+  return {
+    view: "bubble",
+    phase: "recording",
+    committed: "",
+    partial: "",
+    level: 0,
+    language: "en-US",
+    durationS: 0,
+    hotkey: "⌃⌥Space",
+    pushToTalk: false,
+    working: null,
+    text: "",
+    original: null,
+    style: null,
+    notice: null,
+    fromChip: false,
+    canWrite: true,
+    accessibilityMissing: false,
+    ...overrides,
+  };
+}
+
+/** The 8 favourites and 24 others of `dictate_services::dictation::lang`. */
+export const FAVOURITE_LANGUAGES = ["en-US", "vi-VN", "en-GB", "ja-JP", "ko-KR", "zh-CN", "fr-FR", "de-DE"];
+export const OTHER_LANGUAGES = [
+  "es-ES", "it-IT", "pt-BR", "pt-PT", "nl-NL", "pl-PL", "ru-RU", "uk-UA", "tr-TR", "id-ID", "ms-MY", "th-TH",
+  "hi-IN", "ar-SA", "he-IL", "el-GR", "cs-CZ", "sv-SE", "da-DK", "fi-FI", "nb-NO", "hu-HU", "ro-RO", "zh-TW",
+];
+
+/**
+ * Stubs the calls of the two panel windows. Returns a way to send `panel-state` events, as the Rust side does, and
+ * the stopper that the listener hands back.
+ */
+export function stubPanelApi() {
+  let listener: ((state: PanelState) => void) | undefined;
+  const stopListening = vi.fn(() => {
+    listener = undefined;
+  });
+  vi.spyOn(api, "dictationLanguages").mockResolvedValue({
+    favourites: FAVOURITE_LANGUAGES,
+    others: OTHER_LANGUAGES,
+  });
+  vi.spyOn(api, "dictationStop").mockResolvedValue();
+  vi.spyOn(api, "dictationCancel").mockResolvedValue();
+  vi.spyOn(api, "dictationSetLanguage").mockResolvedValue();
+  vi.spyOn(api, "panelResized").mockResolvedValue();
+  vi.spyOn(api, "panelLanguage").mockResolvedValue("en");
+  vi.spyOn(api, "onPanelState").mockImplementation(async (handler) => {
+    listener = handler;
+    return stopListening;
+  });
+  return {
+    emitState: (state: PanelState) => listener?.(state),
+    stopListening,
+  };
 }

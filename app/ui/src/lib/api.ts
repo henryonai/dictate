@@ -4,6 +4,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import type { PanelState } from "../panel/state";
 
 export type UiLanguage = "system" | "en" | "vi";
 export type Engine = "whisper" | "api";
@@ -88,6 +89,12 @@ export interface EditPresetView {
   instruction: string;
 }
 
+/** The languages of the dictation menu: the favourites first, then the ones under "Other languages". */
+export interface DictationLanguages {
+  favourites: string[];
+  others: string[];
+}
+
 export interface TranscribePresetView {
   id: TranscribePreset;
   models: string[];
@@ -131,9 +138,27 @@ export const api = {
   /** In the system browser. The capability only allows https. */
   openUrl: (url: string) => openUrl(url),
 
+  // The two floating windows of dictation (the bubble and the card).
+  /** The BCP-47 codes of the language menu, in the order it shows them. */
+  dictationLanguages: () => invoke<DictationLanguages>("dictation_languages"),
+  /** The Stop button, Return and (in hold mode) nothing else: stops the recording. */
+  dictationStop: () => invoke<void>("dictation_stop"),
+  /** The cross of the bubble and Esc in the pill: drops the dictation. */
+  dictationCancel: () => invoke<void>("dictation_cancel"),
+  /** Saves the language of the dictation and applies it to what is said from now on. */
+  dictationSetLanguage: (lang: string) => invoke<void>("dictation_set_language", { lang }),
+  /** What the page now measures, in CSS pixels: the Rust side sizes the window to it and places it. `label` is the window. */
+  panelResized: (label: string, width: number, height: number) =>
+    invoke<void>("panel_resized", { label, width, height }),
+  /** The language of the UI the settings ask for, which the panels speak. */
+  panelLanguage: () => invoke<"en" | "vi">("panel_language"),
+
   /** Resolves with the function that stops listening. */
   onHotkeyStatus: (handler: (status: HotkeyStatus) => void) =>
     listen<HotkeyStatus>("hotkey-status", (event) => handler(event.payload)),
+  /** Both panel windows hear every state. Resolves with the function that stops listening. */
+  onPanelState: (handler: (state: PanelState) => void) =>
+    listen<PanelState>("panel-state", (event) => handler(event.payload)),
   /** Resolves with the function that stops listening. */
   onModelDownload: (handler: (event: DownloadEvent) => void) =>
     listen<DownloadEvent>("model-download", (event) => handler(event.payload)),

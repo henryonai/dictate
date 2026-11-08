@@ -2,7 +2,7 @@ import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { emit } from "@tauri-apps/api/event";
 import { afterEach, describe, expect, test } from "vitest";
 import { api } from "./api";
-import { fakeSettings } from "../test-helpers";
+import { fakePanelState, fakeSettings } from "../test-helpers";
 
 type Call = { cmd: string; args: unknown };
 
@@ -44,6 +44,12 @@ describe("each wrapper calls its command with the argument names the Rust side e
     ["editPresets", "edit_presets", undefined, () => api.editPresets()],
     ["transcribePresets", "transcribe_presets", undefined, () => api.transcribePresets()],
     ["openMeetingsFolder", "open_meetings_folder", undefined, () => api.openMeetingsFolder()],
+    ["dictationLanguages", "dictation_languages", undefined, () => api.dictationLanguages()],
+    ["dictationStop", "dictation_stop", undefined, () => api.dictationStop()],
+    ["dictationCancel", "dictation_cancel", undefined, () => api.dictationCancel()],
+    ["dictationSetLanguage", "dictation_set_language", { lang: "vi-VN" }, () => api.dictationSetLanguage("vi-VN")],
+    ["panelResized", "panel_resized", { label: "bubble", width: 428, height: 100 }, () => api.panelResized("bubble", 428, 100)],
+    ["panelLanguage", "panel_language", undefined, () => api.panelLanguage()],
     ["openUrl", "plugin:opener|open_url", { url: "https://example.com/keys" }, () => api.openUrl("https://example.com/keys")],
   ];
 
@@ -91,4 +97,18 @@ test("the hotkey-status event reaches the listener", async () => {
   expect(heard).toEqual([status]);
 
   stop();
+});
+
+test("the panel-state event reaches the listener, until it is removed", async () => {
+  recordCalls();
+  const heard: unknown[] = [];
+  const stop = await api.onPanelState((state) => heard.push(state));
+
+  const state = fakePanelState({ view: "pill", durationS: 12 });
+  await emit("panel-state", state);
+  expect(heard).toEqual([state]);
+
+  stop();
+  await emit("panel-state", state);
+  expect(heard).toHaveLength(1);
 });

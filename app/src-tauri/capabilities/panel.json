@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "panel",
+  "description": "What the floating dictation windows may do: hear the state they draw.",
+  "windows": ["bubble", "card"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+}
