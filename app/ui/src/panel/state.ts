@@ -51,6 +51,8 @@ export interface PanelState {
   style: string | null;
   notice: Notice | null;
   fromChip: boolean;
+  /** The card opens with its box for a custom request open: the chip's "Custom request…". */
+  openCustom: boolean;
   canWrite: boolean;
   accessibilityMissing: boolean;
 }
@@ -72,6 +74,7 @@ export const HIDDEN_STATE: PanelState = {
   style: null,
   notice: null,
   fromChip: false,
+  openCustom: false,
   canWrite: false,
   accessibilityMissing: false,
 };
@@ -81,10 +84,10 @@ export function isPanelView(view: string | null): view is "bubble" | "card" {
   return view === "bubble" || view === "card";
 }
 
-/** The shapes each window draws. */
+/** The shapes each window draws, as `View::window` on the Rust side sends them: the window that never takes the focus has the bubble and the chip. */
 export const VIEWS_OF: Record<"bubble" | "card", PanelViewName[]> = {
-  bubble: ["bubble"],
-  card: ["pill"],
+  bubble: ["bubble", "chip"],
+  card: ["pill", "card"],
 };
 
 // ---- The waveform -------------------------------------------------------------------------------------------------
@@ -175,4 +178,79 @@ export function bubbleHint(state: PanelState): string | null {
 /** The line under the pill: how to stop and how to cancel. */
 export function pillCaption(state: PanelState): string {
   return t(state.pushToTalk ? "panel.caption_hold" : "panel.caption_toggle", { hotkey: state.hotkey });
+}
+
+// ---- The chip -----------------------------------------------------------------------------------------------------
+
+/** A notice in words: the text of its key, with the error that is behind it where the text has a place for it. */
+export function noticeText(notice: Notice): string {
+  return t(`notice.${notice.key}`, { detail: notice.detail ?? "" });
+}
+
+/** What the chip says: the notice, else "Original" when the text is the one that was heard, else the style, else "Written". */
+export function chipTitle(state: PanelState): string {
+  if (state.notice) return noticeText(state.notice);
+  if (state.original !== null && state.original === state.text) return t("chip.original");
+  if (state.style) return styleTitle(state.style);
+  return t("chip.written");
+}
+
+/** The styles of the ⋯ menu, in the order of the Swift app. */
+export const CHIP_STYLES: readonly string[] = ["concise", "email", "bullets", "formal", "prompt", "en", "vi", "clean"];
+
+/** The styles the menu offers: all of them, but the one the text is in already. */
+export function chipMenuStyles(current: string | null): string[] {
+  return CHIP_STYLES.filter((style) => style !== current);
+}
+
+// ---- The card -----------------------------------------------------------------------------------------------------
+
+/** The five buttons of the card, which Cmd (Ctrl) and 1 to 5 press. */
+export const CARD_STYLES: readonly string[] = ["clean", "concise", "email", "bullets", "en"];
+
+/** The rest of the styles, in the "More" menu. */
+export const CARD_MORE_STYLES: readonly string[] = ["formal", "prompt", "vi"];
+
+/** The header of the card: what the AI is doing, where the text comes from, or that it is there to edit or copy. */
+export function cardHeader(state: PanelState): string {
+  if (state.phase === "refining") {
+    const style = state.working?.style ?? state.style;
+    return style ? t("card.header_refining", { style: styleTitle(style) }) : t("card.header_refining_plain");
+  }
+  if (state.fromChip) return t("card.header_from_chip");
+  if (state.style) return t("card.header_edited", { style: styleTitle(state.style) });
+  return t("card.header_done");
+}
+
+/** The right of the header: how long it was said and in what language, and only the language when there is no time. */
+export function cardMeta(state: PanelState, ui: Language): string {
+  const language = languageName(state.language, ui);
+  return state.durationS > 0 ? `${formatTimer(state.durationS)} · ${language}` : language;
+}
+
+/** What a key press says, as much as the shortcuts of the card look at. */
+export type KeyLike = Pick<KeyboardEvent, "key" | "code" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey">;
+
+export type CardShortcut = { kind: "style"; style: string } | { kind: "undo" } | { kind: "confirm" } | { kind: "discard" };
+
+/** Whether this is a Mac, where the shortcuts use Cmd. The other systems use Ctrl. */
+export function onMac(): boolean {
+  return /mac|iphone|ipad/i.test(navigator.platform || navigator.userAgent);
+}
+
+/**
+ * What a key press means in the card: Cmd (Ctrl) and 1 to 5 run a style, with Alt and Z undo, with Return confirm; Esc
+ * discards. Keys are told by `code` (the key on the keyboard): with Alt held the letter of the key is another one.
+ */
+export function cardShortcut(press: KeyLike, mac: boolean): CardShortcut | null {
+  if (press.key === "Escape") return { kind: "discard" };
+  const mod = mac ? press.metaKey && !press.ctrlKey : press.ctrlKey && !press.metaKey;
+  if (!mod) return null;
+  if (press.altKey) {
+    return press.code === "KeyZ" && !press.shiftKey ? { kind: "undo" } : null;
+  }
+  if (press.shiftKey) return null;
+  if (press.key === "Enter") return { kind: "confirm" };
+  const digit = /^Digit([1-5])$/.exec(press.code);
+  return digit ? { kind: "style", style: CARD_STYLES[Number(digit[1]) - 1] } : null;
 }

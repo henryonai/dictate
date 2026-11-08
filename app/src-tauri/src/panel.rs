@@ -1,10 +1,12 @@
 //! The floating windows of dictation: two windows with one page (`panel.html`), where they go, and what they are
 //! told.
 //!
-//! `bubble` sits next to the text field the text will be written into. It never takes the focus, so that the
-//! person goes on typing in the field: on macOS it is a non-activating panel that can never become the key window,
-//! elsewhere a window that refuses focus. `card` is the other one: the pill while dictating with no field to write
-//! to, and (later) the review card. It does take the focus, for Return, Esc and typing.
+//! `bubble` sits next to the text field the text will be written into: the live text, what happens to it, and the
+//! result chip. It never takes the focus, so that the person goes on typing in the field: on macOS it is a
+//! non-activating panel that can never become the key window, elsewhere a window that refuses focus. `card` is the
+//! other one: the pill while dictating with no field to write to, and the review card. It does take the focus, for
+//! Return, Esc and typing (on macOS a non-activating panel that can become the key window, so that it opens over a
+//! full-screen app without a change of Space).
 //!
 //! The controller sends one [`PanelState`] to both windows with [`emit_state`], which shows the window of its view
 //! and hides the other. The page measures what it draws and tells the Rust side with `panel_resized`, which sizes
@@ -28,7 +30,7 @@ use crate::tray;
 
 /// The window next to the text field. It is also the name the page is opened with (`?view=bubble`).
 pub const BUBBLE: &str = "bubble";
-/// The window that takes the focus.
+/// The window that takes the focus: the pill and the review card.
 pub const CARD: &str = "card";
 const WINDOWS: [&str; 2] = [BUBBLE, CARD];
 /// The event that carries a [`PanelState`] to both windows.
@@ -218,6 +220,8 @@ pub struct PanelState {
     pub style: Option<String>,
     pub notice: Option<Notice>,
     pub from_chip: bool,
+    /// The card opens with its custom request box open: the chip's "Custom request…".
+    pub open_custom: bool,
     pub can_write: bool,
     pub accessibility_missing: bool,
 }
@@ -241,6 +245,7 @@ impl PanelState {
             style: None,
             notice: None,
             from_chip: false,
+            open_custom: false,
             can_write: false,
             accessibility_missing: false,
         }
@@ -487,7 +492,9 @@ fn create_bubble(app: &AppHandle) -> tauri::Result<()> {
 /// it is shown with `orderFrontRegardless` and nothing else.
 #[cfg(target_os = "macos")]
 fn create_bubble(app: &AppHandle) -> tauri::Result<()> {
-    use tauri_nspanel::{tauri_panel, CollectionBehavior, PanelBuilder, PanelLevel, StyleMask};
+    use tauri_nspanel::{
+        tauri_panel, CollectionBehavior, PanelBuilder, PanelLevel, StyleMask, TrackingAreaOptions,
+    };
 
     tauri_panel! {
         panel!(BubblePanel {
@@ -496,10 +503,22 @@ fn create_bubble(app: &AppHandle) -> tauri::Result<()> {
                 can_become_main_window: false,
                 is_floating_panel: true
             }
+            // The page of a window that is never the key window gets no mouse movement, so that the chip can't tell
+            // that the mouse is over it: the window watches for the mouse itself, whichever app is active.
+            with: {
+                tracking_area: {
+                    options: TrackingAreaOptions::new()
+                        .active_always()
+                        .mouse_entered_and_exited(),
+                    auto_resize: true
+                }
+            }
         })
+
+        panel_event!(BubbleEvents {})
     }
 
-    PanelBuilder::<_, BubblePanel>::new(app, BUBBLE)
+    let panel = PanelBuilder::<_, BubblePanel>::new(app, BUBBLE)
         .url(WebviewUrl::App("panel.html?view=bubble".into()))
         .level(PanelLevel::Floating)
         .style_mask(StyleMask::empty().nonactivating_panel())
@@ -519,14 +538,59 @@ fn create_bubble(app: &AppHandle) -> tauri::Result<()> {
                 .focusable(false)
         })
         .build()?;
+
+    let events = BubbleEvents::new();
+    let (entered, left) = (app.clone(), app.clone());
+    events.on_mouse_entered(move |_| chip_hover(&entered, true));
+    events.on_mouse_exited(move |_| chip_hover(&left, false));
+    // The panel keeps the handler for as long as it lives.
+    panel.set_event_handler(Some(events.as_ref()));
     Ok(())
 }
 
+/// Windows and Linux: a window that takes the focus, for Return, Esc and typing.
+#[cfg(not(target_os = "macos"))]
 fn create_card(app: &AppHandle) -> tauri::Result<()> {
     let url = WebviewUrl::App("panel.html?view=card".into());
     floating(WebviewWindowBuilder::new(app, CARD, url), CARD_START)
         .focusable(true)
         .focused(false)
+        .build()?;
+    Ok(())
+}
+
+/// macOS: a panel that can become the key window, for Return, Esc and typing, and that stays out of the way of the
+/// full-screen apps. A plain window shown over a full-screen app takes the person to the Space of this app, which
+/// has no full-screen app in it. A panel on every Space and "auxiliary" to full-screen windows opens right there.
+/// Clicking it doesn't activate the app by itself (the style of a panel that is for a tool, not for a document);
+/// `show_now` makes the app active when the card is shown, for the keys that belong to the active app.
+#[cfg(target_os = "macos")]
+fn create_card(app: &AppHandle) -> tauri::Result<()> {
+    use tauri_nspanel::{tauri_panel, CollectionBehavior, PanelBuilder, PanelLevel, StyleMask};
+
+    tauri_panel! {
+        panel!(CardPanel {
+            config: {
+                can_become_key_window: true,
+                can_become_main_window: false,
+                is_floating_panel: true
+            }
+        })
+    }
+
+    PanelBuilder::<_, CardPanel>::new(app, CARD)
+        .url(WebviewUrl::App("panel.html?view=card".into()))
+        .level(PanelLevel::Floating)
+        .style_mask(StyleMask::empty().nonactivating_panel())
+        .collection_behavior(
+            CollectionBehavior::new()
+                .can_join_all_spaces()
+                .full_screen_auxiliary(),
+        )
+        .transparent(true)
+        .has_shadow(false)
+        .hides_on_deactivate(false)
+        .with_window(|window| floating(window, CARD_START).focused(false).focusable(true))
         .build()?;
     Ok(())
 }
@@ -637,16 +701,31 @@ fn on_main_thread(app: &AppHandle, work: impl FnOnce(&AppHandle) + Send + 'stati
 }
 
 /// On the main thread. The bubble is shown, never made the key window; the card is shown and takes the focus.
+///
+/// The card also makes this app the active one. A key panel of an app that isn't active gets the letters that are typed,
+/// but the shortcuts with Cmd (the card's ⌘1 to ⌘5, ⌘↩, and ⌘C and ⌘V in its box) belong to the active app, and
+/// they were lost. A panel on every Space that is auxiliary to full-screen windows opens over a full-screen app
+/// all the same.
+#[cfg(target_os = "macos")]
 fn show_now(app: &AppHandle, label: &'static str) {
-    #[cfg(target_os = "macos")]
-    if label == BUBBLE {
-        use tauri_nspanel::ManagerExt;
-        match app.get_webview_panel(BUBBLE) {
-            Ok(panel) => panel.show(),
-            Err(e) => log::warn!("There is no bubble panel to show: {e:?}"),
+    use tauri_nspanel::ManagerExt;
+    match app.get_webview_panel(label) {
+        Ok(panel) if label == CARD => {
+            panel.show_and_make_key();
+            if let Some(window) = app.get_webview_window(label) {
+                if let Err(e) = window.set_focus() {
+                    log::warn!("Could not focus the {label} window: {e}");
+                }
+            }
         }
-        return;
+        Ok(panel) => panel.show(),
+        Err(e) => log::warn!("There is no {label} panel to show: {e:?}"),
     }
+}
+
+/// On the main thread. The bubble is shown, never made the key window; the card is shown and takes the focus.
+#[cfg(not(target_os = "macos"))]
+fn show_now(app: &AppHandle, label: &'static str) {
     let Some(window) = app.get_webview_window(label) else {
         log::warn!("There is no {label} window to show");
         return;
@@ -662,16 +741,18 @@ fn show_now(app: &AppHandle, label: &'static str) {
 }
 
 /// On the main thread.
+#[cfg(target_os = "macos")]
 fn hide_now(app: &AppHandle, label: &'static str) {
-    #[cfg(target_os = "macos")]
-    if label == BUBBLE {
-        use tauri_nspanel::ManagerExt;
-        match app.get_webview_panel(BUBBLE) {
-            Ok(panel) => panel.hide(),
-            Err(e) => log::warn!("There is no bubble panel to hide: {e:?}"),
-        }
-        return;
+    use tauri_nspanel::ManagerExt;
+    match app.get_webview_panel(label) {
+        Ok(panel) => panel.hide(),
+        Err(e) => log::warn!("There is no {label} panel to hide: {e:?}"),
     }
+}
+
+/// On the main thread.
+#[cfg(not(target_os = "macos"))]
+fn hide_now(app: &AppHandle, label: &'static str) {
     let Some(window) = app.get_webview_window(label) else {
         return;
     };
@@ -784,6 +865,96 @@ pub async fn dictation_cancel() -> Result<(), String> {
 #[tauri::command]
 pub async fn dictation_set_language(lang: String) -> Result<(), String> {
     log::info!("The panel asked to change the dictation language to {lang}");
+    Ok(())
+}
+
+// The commands of the result chip and the review card. Like the three above they only say that they were asked until the
+// controller answers them. None of them logs a text: what was dictated is the person's own.
+
+/// The chip's menu and the card's style buttons: write the text again in this style (a preset id), as fresh text at
+/// the caret from the chip, in the box of the card from the card.
+#[tauri::command]
+pub async fn dictation_rewrite(style: String) -> Result<(), String> {
+    log::info!("The panel asked to rewrite the text as {style}");
+    Ok(())
+}
+
+/// The custom request of the card: write the text again as these words say.
+#[tauri::command]
+pub async fn dictation_custom(instruction: String) -> Result<(), String> {
+    log::info!(
+        "The panel asked for a custom edit ({} characters)",
+        instruction.chars().count()
+    );
+    Ok(())
+}
+
+/// The chip's "Edit…" (`custom` false) and "Custom request…" (`custom` true): open the review card on what was written.
+#[tauri::command]
+pub async fn dictation_open_card(custom: bool) -> Result<(), String> {
+    log::info!("The panel asked to open the card (custom request: {custom})");
+    Ok(())
+}
+
+/// Put the text on the clipboard: "Copy" of the chip and of the card, "Copy & close" of the card.
+#[tauri::command]
+pub async fn dictation_copy(text: String) -> Result<(), String> {
+    log::info!(
+        "The panel asked to copy {} characters",
+        text.chars().count()
+    );
+    Ok(())
+}
+
+/// The card's box has this text now: what a style button, "Copy" or "Paste into field" acts on.
+#[tauri::command]
+pub async fn dictation_card_text(text: String) -> Result<(), String> {
+    log::debug!("The card's text is {} characters", text.chars().count());
+    Ok(())
+}
+
+/// The card's "Undo": the text before the AI edit is in the box again.
+#[tauri::command]
+pub async fn dictation_undo() -> Result<(), String> {
+    log::info!("The panel asked to undo the edit");
+    Ok(())
+}
+
+/// The card opened from the chip: hide it and paste this text as fresh text.
+#[tauri::command]
+pub async fn dictation_paste_card(text: String) -> Result<(), String> {
+    log::info!(
+        "The panel asked to paste {} characters from the card",
+        text.chars().count()
+    );
+    Ok(())
+}
+
+/// The mouse is over the chip or has left it: the chip stays while it is over. On Windows and Linux the page says it,
+/// on macOS the window does (see `create_bubble`).
+#[tauri::command]
+pub async fn dictation_chip_hover(app: AppHandle, hovering: bool) -> Result<(), String> {
+    chip_hover(&app, hovering);
+    Ok(())
+}
+
+/// Where the mouse coming over the chip and leaving it arrives, from the page or from the window. For the controller
+/// to answer.
+pub fn chip_hover(_app: &AppHandle, hovering: bool) {
+    log::debug!("The mouse is over the chip: {hovering}");
+}
+
+/// The chip's menu opened or closed: the chip stays while it is open.
+#[tauri::command]
+pub async fn dictation_menu_open(open: bool) -> Result<(), String> {
+    log::debug!("The chip's menu is open: {open}");
+    Ok(())
+}
+
+/// The card's "Grant access…": show the system's prompt for the Accessibility permission.
+#[tauri::command]
+pub async fn dictation_grant_accessibility() -> Result<(), String> {
+    log::info!("The panel asked for the Accessibility permission");
     Ok(())
 }
 
@@ -919,6 +1090,7 @@ mod tests {
                 detail: Some("401".into()),
             }),
             from_chip: true,
+            open_custom: true,
             can_write: true,
             accessibility_missing: true,
         }
@@ -949,6 +1121,7 @@ mod tests {
                 "style": "concise",
                 "notice": { "key": "api_failed", "detail": "401" },
                 "fromChip": true,
+                "openCustom": true,
                 "canWrite": true,
                 "accessibilityMissing": true
             })
@@ -1039,6 +1212,16 @@ mod tests {
             "allow-dictation-stop",
             "allow-dictation-cancel",
             "allow-dictation-set-language",
+            "allow-dictation-rewrite",
+            "allow-dictation-custom",
+            "allow-dictation-open-card",
+            "allow-dictation-copy",
+            "allow-dictation-card-text",
+            "allow-dictation-undo",
+            "allow-dictation-paste-card",
+            "allow-dictation-chip-hover",
+            "allow-dictation-menu-open",
+            "allow-dictation-grant-accessibility",
             "allow-panel-language",
             "allow-panel-resized",
         ];

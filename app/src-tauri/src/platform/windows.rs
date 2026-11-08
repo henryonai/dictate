@@ -10,15 +10,18 @@
 //! UI Automation and the window functions give physical pixels. [`Rect`] has logical points, so each rectangle
 //! is divided by the scale of the screen it is on.
 
+use std::cell::RefCell;
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::{mpsc, Mutex, PoisonError};
+use std::sync::{mpsc, Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use windows::core::{Interface, BOOL, PWSTR};
-use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, POINT, RECT};
+use windows::Win32::Foundation::{
+    CloseHandle, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
+};
 use windows::Win32::Graphics::Gdi::{
     ClientToScreen, EnumDisplayMonitors, GetMonitorInfoW, MonitorFromPoint, HDC, HMONITOR,
     MONITORINFO, MONITOR_DEFAULTTONEAREST,
@@ -28,13 +31,14 @@ use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
     SAFEARRAY,
 };
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Ole::{
     SafeArrayAccessData, SafeArrayDestroy, SafeArrayGetLBound, SafeArrayGetUBound,
     SafeArrayUnaccessData,
 };
 use windows::Win32::System::Threading::{
-    GetCurrentProcess, OpenProcess, OpenProcessToken, QueryFullProcessImageNameW,
-    PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    GetCurrentProcess, GetCurrentProcessId, GetCurrentThreadId, OpenProcess, OpenProcessToken,
+    QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::Accessibility::{
     CUIAutomation, CUIAutomation8, IUIAutomation, IUIAutomation6, IUIAutomationElement,
@@ -47,11 +51,15 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetCursorPos, GetForegroundWindow, GetGUIThreadInfo, GetWindowRect, GetWindowThreadProcessId,
-    GUITHREADINFO, MONITORINFOF_PRIMARY,
+    CallNextHookEx, GetAncestor, GetCursorPos, GetForegroundWindow, GetGUIThreadInfo, GetMessageW,
+    GetWindowRect, GetWindowThreadProcessId, PeekMessageW, PostThreadMessageW, SetWindowsHookExW,
+    UnhookWindowsHookEx, WindowFromPoint, GA_ROOT, GUITHREADINFO, HC_ACTION, HHOOK,
+    MONITORINFOF_PRIMARY, MSG, MSLLHOOKSTRUCT, PM_NOREMOVE, WH_KEYBOARD_LL, WH_MOUSE_LL,
+    WM_KEYDOWN, WM_LBUTTONDOWN, WM_QUIT, WM_RBUTTONDOWN, WM_SYSKEYDOWN, WM_USER,
 };
 
 use super::keys::press_paste;
+use super::monitor::{is_press_message, InputMonitor, Listener};
 use super::paste::{blocked_by_uipi, is_app, KeySender, PasteError};
 use super::rules::{
     accept_caret, bounded_text_len, caret_after, classify_uia, field_anchor, first_rect,
@@ -628,6 +636,207 @@ impl KeySender for WindowsKeys {
             .last_post
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+// ---- The keyboard and the mouse ------------------------------------------------------------------------------
+
+// `is_press_message` has the numbers of the system's headers: they must be the ones the `windows` crate has.
+const _: () = {
+    assert!(WM_KEYDOWN == 0x0100);
+    assert!(WM_SYSKEYDOWN == 0x0104);
+    assert!(WM_LBUTTONDOWN == 0x0201);
+    assert!(WM_RBUTTONDOWN == 0x0204);
+};
+
+/// How long `start` waits for the thread of the hooks to say that they are in.
+const HOOKS_WAIT: Duration = Duration::from_secs(2);
+
+/// What a hook tells the thread that dispatches: a key went down, or a mouse button did, at this point of the screen.
+#[derive(Debug, Clone, Copy)]
+enum Press {
+    Key,
+    Click { x: i32, y: i32 },
+}
+
+thread_local! {
+    /// Where the hooks put what they hear. The hook procedures are called on the thread that installed the hooks, which
+    /// is the one this belongs to, so that they need no lock. It does no more than send: Windows drops a hook whose
+    /// procedure is slow (about 300 ms), so everything else happens on another thread.
+    static HEARD: RefCell<Option<mpsc::Sender<Press>>> = const { RefCell::new(None) };
+}
+
+fn heard(press: Press) {
+    // Without a listener, or while the thread goes away, there is nobody to tell.
+    let _ = HEARD.try_with(|heard| {
+        if let Ok(heard) = heard.try_borrow() {
+            if let Some(heard) = heard.as_ref() {
+                let _ = heard.send(press);
+            }
+        }
+    });
+}
+
+unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if code == HC_ACTION as i32 && is_press_message(wparam.0 as u32) {
+        heard(Press::Key);
+    }
+    // SAFETY: the next hook gets what this one got.
+    unsafe { CallNextHookEx(None, code, wparam, lparam) }
+}
+
+unsafe extern "system" fn mouse_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if code == HC_ACTION as i32 && is_press_message(wparam.0 as u32) {
+        // SAFETY: for a low-level mouse hook, `lparam` points to an `MSLLHOOKSTRUCT` for the length of the call.
+        let at = unsafe { (*(lparam.0 as *const MSLLHOOKSTRUCT)).pt };
+        heard(Press::Click { x: at.x, y: at.y });
+    }
+    // SAFETY: the next hook gets what this one got.
+    unsafe { CallNextHookEx(None, code, wparam, lparam) }
+}
+
+/// Hears the keys and the mouse buttons that go down in every app with two low-level hooks. The hooks live on a thread
+/// of their own that runs a message loop, as Windows needs, and what they hear is sent on to a second thread that checks
+/// it and calls the handler: the hook procedures themselves do nothing slow. A click on one of our own windows (the chip
+/// itself) is not reported, as macOS doesn't report it either.
+pub struct WindowsMonitor {
+    listener: Arc<Listener>,
+    /// The thread of the hooks, while they are installed.
+    hooks: Mutex<Option<u32>>,
+}
+
+impl WindowsMonitor {
+    pub fn new() -> WindowsMonitor {
+        WindowsMonitor {
+            listener: Arc::new(Listener::default()),
+            hooks: Mutex::new(None),
+        }
+    }
+}
+
+impl InputMonitor for WindowsMonitor {
+    fn start(&self, on_input: Box<dyn Fn() + Send + Sync>) {
+        self.listener.set(on_input);
+        let mut hooks = self.hooks.lock().unwrap_or_else(PoisonError::into_inner);
+        if hooks.is_none() {
+            *hooks = install_hooks(self.listener.clone());
+            if hooks.is_none() {
+                self.listener.clear();
+            }
+        }
+    }
+
+    fn stop(&self) {
+        // The handler is gone at once; the thread of the hooks is told to leave and takes them out on its way.
+        self.listener.clear();
+        let thread = self
+            .hooks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(thread) = thread {
+            // SAFETY: a message to a thread by its id. It fails, harmlessly, when the thread is gone already.
+            let _ = unsafe { PostThreadMessageW(thread, WM_QUIT, WPARAM(0), LPARAM(0)) };
+        }
+    }
+}
+
+/// Starts the thread of the hooks and the one that dispatches, and gives the id of the first when the hooks are in.
+fn install_hooks(listener: Arc<Listener>) -> Option<u32> {
+    let (heard_tx, heard_rx) = mpsc::channel();
+    let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+    thread::Builder::new()
+        .name("input-hooks".into())
+        .spawn(move || run_hooks(heard_tx, ready_tx))
+        .ok()?;
+    let thread = ready_rx.recv_timeout(HOOKS_WAIT).ok().flatten()?;
+    // It ends when the thread of the hooks does: the channel is closed then.
+    let dispatched = thread::Builder::new()
+        .name("input-dispatch".into())
+        .spawn(move || {
+            for press in heard_rx {
+                if !is_ours(press) {
+                    listener.report();
+                }
+            }
+        });
+    if dispatched.is_err() {
+        // SAFETY: as in `stop`.
+        let _ = unsafe { PostThreadMessageW(thread, WM_QUIT, WPARAM(0), LPARAM(0)) };
+        return None;
+    }
+    Some(thread)
+}
+
+/// The thread of the hooks: installs them, tells `ready` the id of the thread (`None` when a hook can't be installed),
+/// and runs the message loop until it is told to quit.
+fn run_hooks(heard_tx: mpsc::Sender<Press>, ready: mpsc::SyncSender<Option<u32>>) {
+    HEARD.with(|heard| *heard.borrow_mut() = Some(heard_tx));
+    // A message queue is made for the thread by looking into it, so that a quit message sent at once isn't lost.
+    let mut message = MSG::default();
+    // SAFETY: `message` is a buffer for the call.
+    let _ = unsafe { PeekMessageW(&mut message, None, WM_USER, WM_USER, PM_NOREMOVE) };
+
+    let hooks = set_hooks();
+    // SAFETY: a call with no arguments.
+    let thread = unsafe { GetCurrentThreadId() };
+    let _ = ready.send(hooks.as_ref().map(|_| thread));
+    if let Some((keyboard, mouse)) = hooks {
+        // SAFETY: `message` is a buffer for the call. 0 is the quit message, and -1 an error: both end the loop.
+        while unsafe { GetMessageW(&mut message, None, 0, 0) }.0 > 0 {}
+        // SAFETY: the hooks that were installed above, taken out once.
+        unsafe {
+            let _ = UnhookWindowsHookEx(keyboard);
+            let _ = UnhookWindowsHookEx(mouse);
+        }
+    }
+    // The dispatcher has nothing more to wait for.
+    let _ = HEARD.try_with(|heard| heard.borrow_mut().take());
+}
+
+fn set_hooks() -> Option<(HHOOK, HHOOK)> {
+    // SAFETY: the module of this process, which the procedures are in.
+    let module = unsafe { GetModuleHandleW(None) }.ok()?;
+    let module = Some(HINSTANCE(module.0));
+    // SAFETY: both procedures have the signature of a hook, and live as long as the process.
+    let keyboard = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_hook), module, 0) };
+    let mouse = unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook), module, 0) };
+    match (keyboard, mouse) {
+        (Ok(keyboard), Ok(mouse)) => Some((keyboard, mouse)),
+        (keyboard, mouse) => {
+            log::warn!("Could not hook the keyboard and the mouse: {keyboard:?} {mouse:?}");
+            // SAFETY: the hook that was installed, if one was.
+            unsafe {
+                if let Ok(hook) = keyboard {
+                    let _ = UnhookWindowsHookEx(hook);
+                }
+                if let Ok(hook) = mouse {
+                    let _ = UnhookWindowsHookEx(hook);
+                }
+            }
+            None
+        }
+    }
+}
+
+/// Whether the press was on one of this app's windows: a click on the chip. The window under the point is asked on the
+/// dispatching thread, where a window that doesn't answer holds up nothing else; the page of a window is a child window
+/// of the process of the webview, so the top-level window is the one asked about.
+fn is_ours(press: Press) -> bool {
+    let Press::Click { x, y } = press else {
+        return false;
+    };
+    // SAFETY: plain calls with a point and the handles that the system gave.
+    unsafe {
+        let under = WindowFromPoint(POINT { x, y });
+        if under.is_invalid() {
+            return false;
+        }
+        let top = GetAncestor(under, GA_ROOT);
+        let window = if top.is_invalid() { under } else { top };
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(window, Some(&mut pid));
+        pid == GetCurrentProcessId()
     }
 }
 

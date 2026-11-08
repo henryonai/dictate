@@ -71,6 +71,33 @@ test("each window shows only its own views: the state goes to both, and the othe
   expect(card.container.querySelector(".bubble, .pill")).toBeNull();
 });
 
+test("the bubble window shows the chip for a state of the chip view, and the card window the card for the card view", async () => {
+  const bubble = await renderPanel("bubble");
+  act(() => panel.emitState(fakePanelState({ view: "chip", phase: "written", text: "Hello there." })));
+  expect(await screen.findByText("Written")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "More actions" })).toBeInTheDocument();
+  expect(bubble.container.querySelector(".card")).toBeNull();
+  cleanup();
+
+  const card = await renderPanel("card");
+  act(() => panel.emitState(fakePanelState({ view: "card", phase: "review", text: "Hello there." })));
+  expect(await screen.findByRole("textbox", { name: "The dictated text" })).toHaveValue("Hello there.");
+  expect(card.container.querySelector(".chip")).toBeNull();
+});
+
+test("the chip is not drawn by the card window, nor the card by the bubble window", async () => {
+  const bubble = await renderPanel("bubble");
+  act(() => panel.emitState(fakePanelState({ view: "card", phase: "review", text: "Hello there." })));
+  await Promise.resolve();
+  expect(bubble.container.querySelector(".card, .chip")).toBeNull();
+  cleanup();
+
+  const card = await renderPanel("card");
+  act(() => panel.emitState(fakePanelState({ view: "chip", phase: "written", text: "Hello there." })));
+  await Promise.resolve();
+  expect(card.container.querySelector(".card, .chip")).toBeNull();
+});
+
 test("the card window shows the pill for a state of the pill view", async () => {
   await renderPanel("card");
   act(() => panel.emitState(fakePanelState({ view: "pill", durationS: 65 })));

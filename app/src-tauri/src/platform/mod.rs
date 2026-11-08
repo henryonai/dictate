@@ -12,6 +12,7 @@ mod keys;
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
+pub mod monitor;
 pub mod paste;
 pub mod rules;
 #[cfg(target_os = "windows")]
@@ -172,6 +173,26 @@ pub fn current_keys(app: &tauri::AppHandle) -> Arc<dyn paste::KeySender> {
     {
         let _ = app;
         Arc::new(linux::LinuxKeys::new())
+    }
+}
+
+/// What hears the keys and the mouse buttons that go down in other apps, which hides the result chip. `app` is the way
+/// to the main thread, where macOS keeps its monitor.
+pub fn current_monitor(app: &tauri::AppHandle) -> Arc<dyn monitor::InputMonitor> {
+    #[cfg(target_os = "macos")]
+    {
+        Arc::new(macos::MacMonitor::new(app.clone()))
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = app;
+        Arc::new(windows::WindowsMonitor::new())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // X11 and Wayland have no way that every desktop allows: the chip goes by its timer and by the app in front.
+        let _ = app;
+        Arc::new(monitor::NoMonitor)
     }
 }
 

@@ -24,11 +24,21 @@ const COMMANDS: &[&str] = &[
     "edit_presets",
     "transcribe_presets",
     "open_meetings_folder",
-    // The bubble and the card.
+    // The bubble, the chip and the card.
     "dictation_languages",
     "dictation_stop",
     "dictation_cancel",
     "dictation_set_language",
+    "dictation_rewrite",
+    "dictation_custom",
+    "dictation_open_card",
+    "dictation_copy",
+    "dictation_card_text",
+    "dictation_undo",
+    "dictation_paste_card",
+    "dictation_chip_hover",
+    "dictation_menu_open",
+    "dictation_grant_accessibility",
     "panel_language",
     "panel_resized",
 ];

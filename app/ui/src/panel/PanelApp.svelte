@@ -3,6 +3,8 @@
   import { api } from "../lib/api";
   import { setLanguage } from "../lib/i18n";
   import Bubble from "./Bubble.svelte";
+  import Card from "./Card.svelte";
+  import Chip from "./Chip.svelte";
   import Pill from "./Pill.svelte";
   import { HIDDEN_STATE, isPanelView, VIEWS_OF, type PanelState } from "./state";
 
@@ -105,8 +107,12 @@
   <div class="stage" bind:this={stage}>
     {#if current.view === "bubble"}
       <Bubble panel={current} />
+    {:else if current.view === "chip"}
+      <Chip panel={current} />
     {:else if current.view === "pill"}
       <Pill panel={current} />
+    {:else if current.view === "card"}
+      <Card panel={current} />
     {/if}
   </div>
 {/if}

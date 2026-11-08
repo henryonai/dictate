@@ -9,6 +9,7 @@
 //! Accessibility rectangles are in points from the top left of the primary screen, like [`Rect`], so they need no
 //! conversion; AppKit's are from the bottom left and are flipped.
 
+use std::cell::RefCell;
 use std::ptr::NonNull;
 use std::sync::{mpsc, Arc, Mutex, PoisonError};
 use std::thread;
@@ -16,10 +17,10 @@ use std::time::{Duration, Instant};
 
 use block2::RcBlock;
 use objc2::rc::Retained;
-use objc2::runtime::{Bool, ProtocolObject};
+use objc2::runtime::{AnyObject, Bool, ProtocolObject};
 use objc2::MainThreadMarker;
 use objc2_app_kit::{
-    NSApplicationActivationOptions, NSEvent, NSPasteboard, NSPasteboardItem,
+    NSApplicationActivationOptions, NSEvent, NSEventMask, NSPasteboard, NSPasteboardItem,
     NSPasteboardTypeString, NSPasteboardWriting, NSRunningApplication, NSScreen, NSWorkspace,
 };
 use objc2_application_services::{
@@ -36,6 +37,7 @@ use objc2_core_graphics::{
 };
 use objc2_foundation::{NSArray, NSData, NSString};
 
+use super::monitor::{InputMonitor, Listener};
 use super::paste::{ChangeMark, ClipSnapshot, Clipboard, KeySender, PasteError, PasteboardItem};
 use super::rules::{
     accept_caret, ax_focus_is_the_app, caret_after, classify_ax, field_anchor, flip_y,
@@ -880,6 +882,78 @@ fn modifiers_held(flags: CGEventFlags) -> bool {
             | CGEventFlags::MaskAlternate
             | CGEventFlags::MaskShift,
     )
+}
+
+// ---- The keyboard and the mouse ------------------------------------------------------------------------------
+
+/// Hears the keys that go down and the mouse buttons that go down in other apps, through a global event monitor of
+/// AppKit. The monitor doesn't hear what goes to this app (a click on the chip is no reason to hide it), it hears the
+/// keys only while the Accessibility permission is granted, which dictation asks for, and it never says which key.
+pub struct MacMonitor {
+    app: tauri::AppHandle,
+    listener: Arc<Listener>,
+}
+
+impl MacMonitor {
+    pub fn new(app: tauri::AppHandle) -> MacMonitor {
+        MacMonitor {
+            app,
+            listener: Arc::new(Listener::default()),
+        }
+    }
+}
+
+thread_local! {
+    /// What AppKit gave back for the monitor. It is made and removed on the main thread, which is where this is kept.
+    static INSTALLED: RefCell<Option<Retained<AnyObject>>> = const { RefCell::new(None) };
+}
+
+impl InputMonitor for MacMonitor {
+    fn start(&self, on_input: Box<dyn Fn() + Send + Sync>) {
+        self.listener.set(on_input);
+        let listener = self.listener.clone();
+        let queued = self
+            .app
+            .run_on_main_thread(move || install_monitor(&listener));
+        if queued.is_err() {
+            self.listener.clear();
+        }
+    }
+
+    fn stop(&self) {
+        // The handler is gone at once, whatever the main thread is busy with.
+        self.listener.clear();
+        let _ = self.app.run_on_main_thread(remove_monitor);
+    }
+}
+
+/// On the main thread. One monitor serves every start: it reports to whatever the listener has.
+fn install_monitor(listener: &Arc<Listener>) {
+    INSTALLED.with(|installed| {
+        let mut installed = installed.borrow_mut();
+        if installed.is_some() {
+            return;
+        }
+        let listener = listener.clone();
+        let heard = RcBlock::new(move |_event: NonNull<NSEvent>| listener.report());
+        *installed = NSEvent::addGlobalMonitorForEventsMatchingMask_handler(
+            NSEventMask::KeyDown | NSEventMask::LeftMouseDown | NSEventMask::RightMouseDown,
+            &heard,
+        );
+        if installed.is_none() {
+            log::warn!("The system did not give a monitor for the keyboard and the mouse");
+        }
+    });
+}
+
+/// On the main thread.
+fn remove_monitor() {
+    INSTALLED.with(|installed| {
+        if let Some(monitor) = installed.borrow_mut().take() {
+            // SAFETY: this is the object that `addGlobalMonitorForEventsMatchingMask:handler:` returned.
+            unsafe { NSEvent::removeMonitor(&monitor) };
+        }
+    });
 }
 
 #[cfg(test)]

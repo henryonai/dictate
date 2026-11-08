@@ -354,8 +354,7 @@ pub fn choose_restore(contents: &Contents) -> Restore {
 }
 
 /// Whether `front`, the app that the system says is in front, is the app `wanted`: by the process when both are
-/// known, else by the name.
-#[cfg(any(test, target_os = "windows", target_os = "linux"))]
+/// known, else by the name. The result chip uses it on every system to tell whether the app of its field is still in front.
 pub fn is_app(front: &AppId, wanted: &AppId) -> bool {
     match (front.pid, wanted.pid) {
         (Some(front), Some(wanted)) => front == wanted,

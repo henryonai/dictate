@@ -10,6 +10,16 @@
     "allow-dictation-stop",
     "allow-dictation-cancel",
     "allow-dictation-set-language",
+    "allow-dictation-rewrite",
+    "allow-dictation-custom",
+    "allow-dictation-open-card",
+    "allow-dictation-copy",
+    "allow-dictation-card-text",
+    "allow-dictation-undo",
+    "allow-dictation-paste-card",
+    "allow-dictation-chip-hover",
+    "allow-dictation-menu-open",
+    "allow-dictation-grant-accessibility",
     "allow-panel-language",
     "allow-panel-resized"
   ]

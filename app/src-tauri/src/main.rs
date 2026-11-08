@@ -3,6 +3,9 @@
 
 mod commands;
 mod config;
+// Nothing calls the chip's rules yet: the dictation controller (Task 10 of the dictation plan) will.
+#[allow(dead_code)]
+mod dictation;
 mod hotkey;
 // Nothing sends a panel state yet: the dictation controller (Task 10 of the dictation plan) will.
 #[allow(dead_code)]
@@ -112,6 +115,16 @@ fn main() {
             panel::dictation_stop,
             panel::dictation_cancel,
             panel::dictation_set_language,
+            panel::dictation_rewrite,
+            panel::dictation_custom,
+            panel::dictation_open_card,
+            panel::dictation_copy,
+            panel::dictation_card_text,
+            panel::dictation_undo,
+            panel::dictation_paste_card,
+            panel::dictation_chip_hover,
+            panel::dictation_menu_open,
+            panel::dictation_grant_accessibility,
             panel::panel_language,
             panel::panel_resized,
         ])
@@ -243,11 +256,21 @@ mod tests {
     ];
 
     /// The commands of the two floating windows.
-    const PANEL_COMMANDS: [&str; 6] = [
+    const PANEL_COMMANDS: [&str; 16] = [
         "dictation_languages",
         "dictation_stop",
         "dictation_cancel",
         "dictation_set_language",
+        "dictation_rewrite",
+        "dictation_custom",
+        "dictation_open_card",
+        "dictation_copy",
+        "dictation_card_text",
+        "dictation_undo",
+        "dictation_paste_card",
+        "dictation_chip_hover",
+        "dictation_menu_open",
+        "dictation_grant_accessibility",
         "panel_language",
         "panel_resized",
     ];

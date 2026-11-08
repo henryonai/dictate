@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
+import { CARD_MORE_STYLES, CARD_STYLES, CHIP_STYLES } from "../panel/state";
 import en from "./en.json";
 import vi from "./vi.json";
 
@@ -28,6 +29,12 @@ describe("what the Rust side lists, the UI has words for", () => {
         expect(locale[`models.note.${id}`], `models.note.${id}`).toBeTruthy();
       }
     }
+  });
+
+  test("the chip menu, and the card's buttons with More, offer each of the edit presets once", () => {
+    const ids = idsIn("presets.rs", "pub static EDIT_PRESETS");
+    expect([...CHIP_STYLES].sort()).toEqual([...ids].sort());
+    expect([...CARD_STYLES, ...CARD_MORE_STYLES].sort()).toEqual([...ids].sort());
   });
 
   test("every edit preset has a title in both locales", () => {

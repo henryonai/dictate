@@ -147,6 +147,28 @@ export const api = {
   dictationCancel: () => invoke<void>("dictation_cancel"),
   /** Saves the language of the dictation and applies it to what is said from now on. */
   dictationSetLanguage: (lang: string) => invoke<void>("dictation_set_language", { lang }),
+
+  // The result chip and the review card.
+  /** Writes the text again in a style (a preset id): as fresh text at the caret from the chip, in the box of the card from the card. */
+  dictationRewrite: (style: string) => invoke<void>("dictation_rewrite", { style }),
+  /** Writes the text again as the words of a custom request say. */
+  dictationCustom: (instruction: string) => invoke<void>("dictation_custom", { instruction }),
+  /** Opens the review card on what was written: "Edit…" (`custom` false) and "Custom request…" (`custom` true) of the chip. */
+  dictationOpenCard: (custom: boolean) => invoke<void>("dictation_open_card", { custom }),
+  /** Puts the text on the clipboard. */
+  dictationCopy: (text: string) => invoke<void>("dictation_copy", { text }),
+  /** The card's box holds this text now, so that a style, "Copy" or "Paste into field" acts on what is in it. */
+  dictationCardText: (text: string) => invoke<void>("dictation_card_text", { text }),
+  /** Puts the text from before the AI edit back in the card. */
+  dictationUndo: () => invoke<void>("dictation_undo"),
+  /** The card opened from the chip: hides it and pastes the text in the field as fresh text. */
+  dictationPasteCard: (text: string) => invoke<void>("dictation_paste_card", { text }),
+  /** The mouse is over the chip or has left it: the chip stays while it is over. */
+  dictationChipHover: (hovering: boolean) => invoke<void>("dictation_chip_hover", { hovering }),
+  /** The menu of the chip opened or closed: the chip stays while it is open. */
+  dictationMenuOpen: (open: boolean) => invoke<void>("dictation_menu_open", { open }),
+  /** The system's prompt for the Accessibility permission (macOS). */
+  dictationGrantAccessibility: () => invoke<void>("dictation_grant_accessibility"),
   /** What the page now measures, in CSS pixels: the Rust side sizes the window to it and places it. `label` is the window. */
   panelResized: (label: string, width: number, height: number) =>
     invoke<void>("panel_resized", { label, width, height }),
