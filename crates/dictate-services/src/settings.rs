@@ -10,8 +10,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use serde::de::DeserializeOwned;
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 
 use crate::presets::{AiProvider, TranscribePreset};
 
@@ -40,7 +39,6 @@ pub enum UiLanguage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    #[serde(deserialize_with = "lenient")]
     pub ui_language: UiLanguage,
     /// BCP-47 locale for dictation, e.g. `en-US`.
     pub dictation_language: String,
@@ -52,7 +50,6 @@ pub struct Settings {
     pub auto_write: bool,
     pub save_recordings: bool,
     pub launch_at_login: bool,
-    #[serde(deserialize_with = "lenient")]
     pub ai_provider: AiProvider,
     pub ai_base_url: String,
     pub ai_model: String,
@@ -60,14 +57,11 @@ pub struct Settings {
     pub summary_model: String,
     pub vocabulary: String,
     pub default_edit_preset: String,
-    #[serde(deserialize_with = "lenient")]
     pub dictation_engine: Engine,
-    #[serde(deserialize_with = "lenient")]
     pub file_engine: Engine,
     /// A Whisper model name; `None` = the recommended one for this machine.
     pub whisper_model: Option<String>,
     pub diarize: bool,
-    #[serde(deserialize_with = "lenient")]
     pub transcribe_preset: TranscribePreset,
     pub transcribe_base_url: String,
     /// Model for file transcripts.
@@ -76,16 +70,6 @@ pub struct Settings {
     pub dictation_model: String,
     /// ISO-639-1 code for file transcripts; empty = detect it.
     pub transcribe_language: String,
-}
-
-/// An unknown or malformed value becomes the type's default instead of failing the whole file.
-fn lenient<'de, D, T>(deserializer: D) -> Result<T, D::Error>
-where
-    D: Deserializer<'de>,
-    T: DeserializeOwned + Default,
-{
-    let value = serde_json::Value::deserialize(deserializer)?;
-    Ok(T::deserialize(value).unwrap_or_default())
 }
 
 impl Default for Settings {
@@ -250,10 +234,10 @@ impl SettingsStore {
     /// Load the file. A missing file is normal (defaults, no warning).
     ///
     /// A file that isn't valid JSON, or isn't a JSON object, gives all defaults plus a warning. A
-    /// field that can't be read (say `"auto_refine": "yes"`) falls back to its own default while
-    /// every other field is kept, again with a warning. In both cases the file is first copied to
-    /// `<name>.bak` so nothing the user typed is lost. Unknown fields are ignored and unknown enum
-    /// values silently become their default.
+    /// field that can't be read (say `"auto_refine": "yes"`, or `"ai_provider": "gemini"`, a value
+    /// the type doesn't know) falls back to its own default while every other field is kept, again
+    /// with a warning. In both cases the file is first copied to `<name>.bak` so nothing the user
+    /// typed is lost. Unknown fields are ignored.
     pub fn open(path: PathBuf) -> (SettingsStore, Option<LoadWarning>) {
         let (settings, warning) = match fs::read(&path) {
             Ok(bytes) => match parse(&bytes) {
@@ -807,18 +791,14 @@ mod tests {
     }
 
     #[test]
-    fn unknown_values_use_defaults() {
+    fn unknown_values_use_defaults_and_are_reported() {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(
-            dir.path().join("settings.json"),
-            r#"{"ai_provider":"gemini","auto_refine":false,"transcribe_preset":7,
+        let original = r#"{"ai_provider":"gemini","auto_refine":false,"transcribe_preset":7,
                 "dictation_engine":null,"file_engine":"apple","ui_language":"fr",
-                "vocabulary":"Dictate"}"#,
-        )
-        .unwrap();
+                "vocabulary":"Dictate"}"#;
+        fs::write(dir.path().join("settings.json"), original).unwrap();
 
         let (store, warning) = store_in(&dir);
-        assert!(warning.is_none());
         let s = store.get();
         assert_eq!(s.ai_provider, AiProvider::Anthropic);
         assert!(!s.auto_refine);
@@ -828,6 +808,44 @@ mod tests {
         assert_eq!(s.ui_language, UiLanguage::System);
         assert_eq!(s.vocabulary, "Dictate");
         assert_eq!(s.ai_base_url, "https://api.anthropic.com");
+
+        // Like any other field that cannot be read: named in the warning, and the file kept as it was.
+        let warning = warning.expect("unknown values are reported");
+        for field in [
+            "ai_provider",
+            "transcribe_preset",
+            "dictation_engine",
+            "file_engine",
+            "ui_language",
+        ] {
+            assert!(warning.message.contains(field), "{field} not named");
+        }
+        for field in ["auto_refine", "vocabulary"] {
+            assert!(!warning.message.contains(field), "{field} wrongly named");
+        }
+        assert_eq!(warning.backup, Some(dir.path().join("settings.json.bak")));
+        assert_eq!(
+            fs::read_to_string(dir.path().join("settings.json.bak")).unwrap(),
+            original
+        );
+    }
+
+    #[test]
+    fn a_known_value_of_an_enum_is_no_reason_for_a_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("settings.json"),
+            r#"{"ai_provider":"openai","dictation_engine":"api","ui_language":"vi",
+                "transcribe_preset":"groq"}"#,
+        )
+        .unwrap();
+        let (store, warning) = store_in(&dir);
+        assert!(warning.is_none());
+        let s = store.get();
+        assert_eq!(s.ai_provider, AiProvider::OpenAi);
+        assert_eq!(s.dictation_engine, Engine::Api);
+        assert_eq!(s.ui_language, UiLanguage::Vi);
+        assert_eq!(s.transcribe_preset, TranscribePreset::Groq);
     }
 
     #[test]
