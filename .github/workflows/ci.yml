@@ -26,10 +26,14 @@ jobs:
         with:
           components: rustfmt, clippy
       # whisper.cpp is built from source: it needs cmake and a C++ compiler, and its bindings need libclang. The
-      # macOS and Windows runners have them; this makes sure the Linux one does.
-      - name: Install the whisper.cpp build tools
+      # macOS and Windows runners have them; this makes sure the Linux one does. The rest is what the Tauri app
+      # links against: the web view, the tray icon and the keyboard helper library.
+      - name: Install the Linux build dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y cmake libclang-dev
+        run: >
+          sudo apt-get update && sudo apt-get install -y
+          cmake libclang-dev
+          libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --all

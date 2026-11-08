@@ -1,0 +1,11 @@
+{
+  "name": "dictate-app-tools",
+  "private": true,
+  "description": "Tauri CLI for the Dictate app. The web UI is the package in ui/.",
+  "scripts": {
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.4"
+  }
+}
