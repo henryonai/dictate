@@ -10,6 +10,7 @@ description = "Services for the Dictate app: settings, secrets, AI and transcrip
 base64 = "0.22.1"
 dictate-core = { path = "../dictate-core" }
 dirs = "7.0.0"
+hound = "3.5.1"
 keyring = "3.6.3"
 reqwest = { version = "0.12.28", default-features = false, features = ["json", "multipart", "rustls-tls", "stream"] }
 serde = { version = "1.0.229", features = ["derive"] }
@@ -18,11 +19,16 @@ serde_json = "1.0.154"
 sysinfo = { version = "0.36.1", default-features = false, features = ["system"] }
 tokio = { version = "1.54.1", features = ["fs", "io-util", "time"] }
 tokio-util = { version = "0.7.20", default-features = false }
+# whisper-rs 0.16 needs Rust 1.88: stay on 0.15 until the minimum Rust version moves up.
+# log_backend sends whisper.cpp's logging to the `log` crate instead of stderr.
+whisper-rs = { version = "0.15.1", features = ["log_backend"] }
 
 # keyring has no default credential stores: pick the native one for each OS.
 # On Linux the pure-Rust Secret Service client avoids a libdbus build dependency.
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3.6.3", features = ["apple-native"] }
+# Whisper runs on the GPU through Metal here; the other systems use the CPU.
+whisper-rs = { version = "0.15.1", features = ["metal"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3.6.3", features = ["windows-native"] }
