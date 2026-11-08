@@ -204,3 +204,25 @@ test("Open meetings folder shows the error text when it can't", async () => {
 
   expect(await screen.findByText("Could not create /nowhere: denied")).toBeInTheDocument();
 });
+
+test("the shortcut is paused while the recorder listens and goes on after", async () => {
+  const user = userEvent.setup();
+  render(General, { store: await loadedStore() });
+
+  await user.click(screen.getByRole("button", { name: "Change…" }));
+  expect(api.hotkeyRecording).toHaveBeenLastCalledWith(true);
+
+  await fireEvent.keyDown(window, { code: "Escape" });
+  await vi.waitFor(() => expect(api.hotkeyRecording).toHaveBeenLastCalledWith(false));
+});
+
+test("a pause that can't be asked for doesn't break the recorder", async () => {
+  const user = userEvent.setup();
+  vi.mocked(api.hotkeyRecording).mockRejectedValue("no");
+  render(General, { store: await loadedStore() });
+
+  await user.click(screen.getByRole("button", { name: "Change…" }));
+  await fireEvent.keyDown(window, { code: "F6" });
+
+  await vi.waitFor(() => expect(api.setHotkey).toHaveBeenCalledWith("F6"));
+});

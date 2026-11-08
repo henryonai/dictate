@@ -107,6 +107,11 @@ export const api = {
    */
   setHotkey: (accel: string) => invoke<SettingsView>("set_hotkey", { accel }),
   hotkeyStatus: () => invoke<HotkeyStatus>("hotkey_status"),
+  /**
+   * The recorder listens for a new shortcut (`true`) or stopped (`false`). While it listens the current shortcut
+   * doesn't start a dictation; the Rust side ends the pause by itself after a minute.
+   */
+  hotkeyRecording: (active: boolean) => invoke<void>("hotkey_recording", { active }),
   checkAi: () => invoke<string>("check_ai"),
   checkTranscribe: () => invoke<string>("check_transcribe"),
 

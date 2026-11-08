@@ -31,6 +31,7 @@ describe("each wrapper calls its command with the argument names the Rust side e
     ["setSecret", "set_secret", { account: "ai", value: "k" }, () => api.setSecret("ai", "k")],
     ["setHotkey", "set_hotkey", { accel: "Ctrl+Alt+D" }, () => api.setHotkey("Ctrl+Alt+D")],
     ["hotkeyStatus", "hotkey_status", undefined, () => api.hotkeyStatus()],
+    ["hotkeyRecording", "hotkey_recording", { active: true }, () => api.hotkeyRecording(true)],
     ["checkAi", "check_ai", undefined, () => api.checkAi()],
     ["checkTranscribe", "check_transcribe", undefined, () => api.checkTranscribe()],
     ["listModels", "list_models", undefined, () => api.listModels()],

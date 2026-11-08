@@ -77,6 +77,7 @@ fn main() {
             commands::set_transcribe_preset,
             commands::set_hotkey,
             commands::hotkey_status,
+            commands::hotkey_recording,
             commands::set_secret,
             commands::check_ai,
             commands::check_transcribe,

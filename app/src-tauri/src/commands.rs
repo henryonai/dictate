@@ -518,6 +518,14 @@ pub async fn set_hotkey(
     Ok(view)
 }
 
+/// The recorder in Settings starts (`true`) or stops (`false`) listening for a new shortcut. While it listens the
+/// current shortcut doesn't start a dictation; the pause ends by itself after a minute.
+#[tauri::command]
+pub async fn hotkey_recording(hotkeys: State<'_, Hotkeys>, active: bool) -> Result<(), String> {
+    hotkeys.set_recording(active);
+    Ok(())
+}
+
 /// What the shortcut is and whether it works.
 #[tauri::command]
 pub async fn hotkey_status(hotkeys: State<'_, Hotkeys>) -> Result<HotkeyStatus, String> {
@@ -661,7 +669,7 @@ pub async fn open_meetings_folder(app: AppHandle) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hotkey::{Backend, Registry};
+    use crate::hotkey::{Backend, Gate, Registry};
     use crate::state::{Job, KeyFlags};
     use crate::test_support::{CountingStore, FakeRegistry, NoKeyring};
     use dictate_services::presets::EDIT_PRESETS;
@@ -673,6 +681,8 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
     use std::thread;
+    use std::time::Duration;
+    use tokio::sync::mpsc::unbounded_channel;
 
     const AI_KEY: &str = "sk-ai-secret-123";
     const STT_KEY: &str = "sk-stt-secret-456";
@@ -1010,7 +1020,8 @@ mod tests {
             backend: Backend::Global,
             error: None,
         };
-        Hotkeys::new(Some(registry.clone()), status, Some(old))
+        let gate = Gate::shared(Duration::ZERO, unbounded_channel().0);
+        Hotkeys::new(Some(registry.clone()), gate, status, Some(old))
     }
 
     fn shortcut(accel: &str) -> tauri_plugin_global_shortcut::Shortcut {
@@ -1023,7 +1034,15 @@ mod tests {
         let registry = Arc::new(FakeRegistry::default());
         let hotkeys = registered_hotkeys(&registry);
 
-        for garbage in ["banana", "D", "", "Ctrl+Alt", "Ctrl+"] {
+        for garbage in [
+            "banana",
+            "D",
+            "",
+            "Ctrl+Alt",
+            "Ctrl+",
+            "Shift+D",
+            "Shift+Space",
+        ] {
             let err = set_hotkey_inner(&f.store, &f.keys, &hotkeys, garbage).unwrap_err();
             assert_eq!(err, "hotkey.invalid", "{garbage:?}");
         }

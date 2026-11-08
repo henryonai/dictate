@@ -17,12 +17,13 @@ describe("the accelerator of a key press", () => {
   });
 
   test("the Command key is Super, as the shortcut plugin spells it", () => {
-    expect(acceleratorFromKeydown(press("KeyD", { metaKey: true, shiftKey: true }))).toBe("Super+Shift+D");
+    expect(acceleratorFromKeydown(press("KeyD", { metaKey: true, shiftKey: true }))).toBe("Shift+Super+D");
+    expect(acceleratorFromKeydown(press("KeyD", { metaKey: true }))).toBe("Super+D");
   });
 
-  test("modifiers come in one order, whichever way they were pressed", () => {
+  test("modifiers come in one order, whichever way they were pressed: Ctrl, Alt, Shift, Super (⌃⌥⇧⌘ on the Mac)", () => {
     const all = press("KeyK", { metaKey: true, ctrlKey: true, altKey: true, shiftKey: true });
-    expect(acceleratorFromKeydown(all)).toBe("Super+Ctrl+Alt+Shift+K");
+    expect(acceleratorFromKeydown(all)).toBe("Ctrl+Alt+Shift+Super+K");
   });
 
   test("a function key needs no modifier", () => {
@@ -36,6 +37,17 @@ describe("the accelerator of a key press", () => {
     expect(acceleratorFromKeydown(press("KeyD"))).toBeNull();
     expect(acceleratorFromKeydown(press("Digit5"))).toBeNull();
     expect(acceleratorFromKeydown(press("Space"))).toBeNull();
+  });
+
+  test("Shift is no modifier for this: Shift+D would take every capital D from typing", () => {
+    expect(acceleratorFromKeydown(press("KeyD", { shiftKey: true }))).toBeNull();
+    expect(acceleratorFromKeydown(press("Space", { shiftKey: true }))).toBeNull();
+    expect(acceleratorFromKeydown(press("Digit5", { shiftKey: true }))).toBeNull();
+  });
+
+  test("Shift with Ctrl, Alt or Super is fine", () => {
+    expect(acceleratorFromKeydown(press("KeyD", { shiftKey: true, ctrlKey: true }))).toBe("Ctrl+Shift+D");
+    expect(acceleratorFromKeydown(press("KeyD", { shiftKey: true, altKey: true }))).toBe("Alt+Shift+D");
   });
 
   test("a modifier by itself is ignored: the user is still on the way to the key", () => {

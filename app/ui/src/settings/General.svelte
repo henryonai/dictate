@@ -25,6 +25,12 @@
 
   const dictationLanguages = () => DICTATION_LANGUAGES.map((code) => ({ value: code, label: t(`lang.${code}`) }));
 
+  // While the recorder listens, the shortcut that is set must not start a dictation. If the Rust side can't be asked, the
+  // recorder works as well; the pause ends there by itself.
+  function pauseHotkey(active: boolean) {
+    api.hotkeyRecording(active).catch(() => {});
+  }
+
   async function openMeetingsFolder() {
     folderError = "";
     try {
@@ -68,6 +74,7 @@
     label={hotkeyLabel}
     canChange={hotkeyChangeable}
     onrecord={(accelerator) => store.setHotkey(accelerator)}
+    onlistening={pauseHotkey}
   />
   {#if hotkey?.error === "hotkey.wayland_unavailable"}
     <p class="hint">{t(hotkey.error)}</p>

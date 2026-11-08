@@ -68,6 +68,7 @@ export function stubApi() {
   vi.spyOn(api, "setSecret").mockResolvedValue(fakeView());
   vi.spyOn(api, "setHotkey").mockImplementation(async (accel) => fakeView({ hotkey: accel }));
   vi.spyOn(api, "hotkeyStatus").mockResolvedValue(fakeHotkeyStatus());
+  vi.spyOn(api, "hotkeyRecording").mockResolvedValue();
   vi.spyOn(api, "checkAi").mockResolvedValue("Connected: claude-haiku-5-5 answered.");
   vi.spyOn(api, "checkTranscribe").mockResolvedValue("Connected: whisper-1 accepted the test audio.");
   vi.spyOn(api, "listModels").mockResolvedValue([]);

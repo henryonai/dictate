@@ -1,16 +1,24 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import { acceleratorFromKeydown } from "../lib/accelerator";
   import { errorText } from "../lib/api";
   import { t } from "../lib/i18n";
 
   // The shortcut as it reads, a button to change it and, while it listens, the keys that make the new one.
   // `onrecord` hands the new accelerator over and resolves with "" when it was taken, else with why it wasn't:
-  // a key of the texts (`hotkey.taken`) or a sentence.
+  // a key of the texts (`hotkey.taken`) or a sentence. `onlistening` tells when it starts and stops listening, so that
+  // the shortcut that is set now doesn't start a dictation meanwhile.
   let {
     label,
     canChange = true,
     onrecord,
-  }: { label: string; canChange?: boolean; onrecord: (accelerator: string) => Promise<string> } = $props();
+    onlistening,
+  }: {
+    label: string;
+    canChange?: boolean;
+    onrecord: (accelerator: string) => Promise<string>;
+    onlistening?: (active: boolean) => void;
+  } = $props();
 
   const id = $props.id();
 
@@ -36,8 +44,10 @@
 
   // While it listens, every key goes to the recorder: the window listens, not a field, because a key press can't be
   // told apart from typing anywhere else. Leaving the window ends it: the next keys are another app's.
+  // Whatever ends the listening (a key, Cancel, the window blurring, the window going away) ends it here, once.
   $effect(() => {
     if (!listening) return;
+    untrack(() => onlistening?.(true));
     const hear = (event: KeyboardEvent) => {
       event.preventDefault();
       event.stopPropagation();
@@ -57,6 +67,7 @@
     return () => {
       window.removeEventListener("keydown", hear, true);
       window.removeEventListener("blur", stop);
+      onlistening?.(false);
     };
   });
 </script>

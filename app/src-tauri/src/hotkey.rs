@@ -13,9 +13,7 @@ use serde::Serialize;
 #[cfg(target_os = "linux")]
 use tauri::Emitter;
 use tauri::{AppHandle, Manager};
-#[cfg(any(test, target_os = "linux"))]
-use tauri_plugin_global_shortcut::Modifiers;
-use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::state::lock;
@@ -86,6 +84,12 @@ impl HotkeyFilter {
         Some(due)
     }
 
+    /// Forgets that the key is down, and any release that waits. Whether the key was thought to be down.
+    pub fn reset(&mut self) -> bool {
+        self.release_due = None;
+        std::mem::take(&mut self.down)
+    }
+
     /// Whether a release that was waiting has come due: the key is up.
     pub fn poll(&mut self, now: Instant) -> bool {
         match self.release_due {
@@ -146,6 +150,8 @@ pub trait Registry: Send + Sync {
 #[derive(Clone)]
 pub struct Hotkeys {
     registry: Option<Arc<dyn Registry>>,
+    /// Where the keys of the shortcut go through: Settings pauses it, the controller can reset it.
+    gate: Arc<Mutex<Gate>>,
     state: Arc<Mutex<State>>,
 }
 
@@ -157,17 +163,33 @@ struct State {
 impl Hotkeys {
     pub fn new(
         registry: Option<Arc<dyn Registry>>,
+        gate: Arc<Mutex<Gate>>,
         status: HotkeyStatus,
         registered: Option<Shortcut>,
     ) -> Hotkeys {
         Hotkeys {
             registry,
+            gate,
             state: Arc::new(Mutex::new(State { status, registered })),
         }
     }
 
     pub fn status(&self) -> HotkeyStatus {
         lock(&self.state).status.clone()
+    }
+
+    /// Forgets that the key is down. For the controller to call when it finds that a release was lost: until then
+    /// the key counts as held, and every later press is taken for a repeat.
+    // Nothing calls it before the dictation controller lands (Task 10); remove the attribute then.
+    #[allow(dead_code)]
+    pub fn reset(&self) {
+        lock(&self.gate).reset();
+    }
+
+    /// Settings is recording a new shortcut: while it is, the keys are not sent on, so that a press of the old
+    /// shortcut doesn't start a dictation. It ends by itself after a while, in case nobody says it is over.
+    pub fn set_recording(&self, active: bool) {
+        lock(&self.gate).set_recording(active, Instant::now());
     }
 
     /// Changes the status as the desktop's portal tells things. The new status.
@@ -229,11 +251,12 @@ fn label_of(accel: &str) -> String {
     display_hotkey(accel, cfg!(target_os = "macos"))
 }
 
-/// The accelerator as a shortcut, when Dictate can use it: modifiers, then one key; and at least one modifier unless
-/// the key is a function key, so that a shortcut can't swallow a letter in every app.
+/// The accelerator as a shortcut, when Dictate can use it: modifiers, then one key; and Ctrl, Alt or Super with it
+/// unless the key is a function key. Shift doesn't count: Shift+D would take every capital D from typing in every
+/// app, and a letter with no modifier every D.
 pub fn parse_accelerator(accel: &str) -> Result<Shortcut, ChangeError> {
     let shortcut = Shortcut::from_str(accel).map_err(|_| ChangeError::Invalid)?;
-    if shortcut.mods.is_empty() && !is_function_key(&shortcut) {
+    if shortcut.mods.difference(Modifiers::SHIFT).is_empty() && !is_function_key(&shortcut) {
         return Err(ChangeError::Invalid);
     }
     Ok(shortcut)
@@ -300,10 +323,15 @@ fn portal_trigger(shortcut: &Shortcut) -> Option<String> {
     Some(parts.join("+"))
 }
 
+/// How long Settings may keep the keys from being sent on while it listens for a new shortcut.
+const RECORDING_LIMIT: Duration = Duration::from_secs(60);
+
 /// The events of the keys, in order: the filter and the channel behind one lock.
-struct Gate {
+pub struct Gate {
     filter: HotkeyFilter,
     tx: UnboundedSender<HotkeyEvent>,
+    /// While Settings records a shortcut, until when at the latest.
+    recording_until: Option<Instant>,
 }
 
 impl Gate {
@@ -311,11 +339,52 @@ impl Gate {
         Gate {
             filter: HotkeyFilter::new(debounce),
             tx,
+            recording_until: None,
+        }
+    }
+
+    /// A gate that the handlers of the shortcut and [`Hotkeys`] share.
+    pub fn shared(debounce: Duration, tx: UnboundedSender<HotkeyEvent>) -> Arc<Mutex<Gate>> {
+        Arc::new(Mutex::new(Gate::new(debounce, tx)))
+    }
+
+    /// Forgets that the key is down; see [`Hotkeys::reset`].
+    fn reset(&mut self) {
+        self.filter.reset();
+    }
+
+    /// Settings starts or ends the recording of a shortcut. Starting while the key is down ends that press: its
+    /// release would be dropped, and a hold-to-talk dictation would never stop.
+    fn set_recording(&mut self, active: bool, now: Instant) {
+        if active {
+            if self.filter.reset() {
+                self.send(HotkeyEvent::Released);
+            }
+            self.recording_until = Some(now + RECORDING_LIMIT);
+        } else {
+            self.recording_until = None;
+            self.filter.reset();
+        }
+    }
+
+    /// Whether Settings is recording a shortcut. The pause ends at the limit by itself, so that a recorder that
+    /// never says it is done (a window that went away) can't leave the shortcut dead.
+    fn recording(&mut self, now: Instant) -> bool {
+        match self.recording_until {
+            Some(until) if now < until => true,
+            Some(_) => {
+                self.recording_until = None;
+                false
+            }
+            None => false,
         }
     }
 
     /// The key went down. A release that came due before is sent first: it was a real one.
     fn pressed(&mut self, now: Instant) {
+        if self.recording(now) {
+            return;
+        }
         self.tick(now);
         if self.filter.on_pressed(now) {
             self.send(HotkeyEvent::Pressed);
@@ -324,6 +393,9 @@ impl Gate {
 
     /// The key went up. When the release can't be told from a repeat yet: the time to call `tick` at.
     fn released(&mut self, now: Instant) -> Option<Instant> {
+        if self.recording(now) {
+            return None;
+        }
         self.tick(now);
         let due = self.filter.on_released(now)?;
         if due > now {
@@ -445,10 +517,10 @@ pub fn start(app: &AppHandle, accel: &str, tx: UnboundedSender<HotkeyEvent>) -> 
 
 /// The shortcut is grabbed through the plugin (macOS, Windows and X11).
 fn start_global(app: &AppHandle, accel: &str, tx: UnboundedSender<HotkeyEvent>) -> Hotkeys {
-    let gate = Arc::new(Mutex::new(Gate::new(release_debounce(), tx)));
+    let gate = Gate::shared(release_debounce(), tx);
     let registry = Arc::new(PluginRegistry {
         app: app.clone(),
-        gate,
+        gate: Arc::clone(&gate),
     });
     let label = label_of(accel);
     let (registered, status) = match parse_accelerator(accel) {
@@ -468,7 +540,7 @@ fn start_global(app: &AppHandle, accel: &str, tx: UnboundedSender<HotkeyEvent>) 
             }
         },
     };
-    Hotkeys::new(Some(registry), status, registered)
+    Hotkeys::new(Some(registry), gate, status, registered)
 }
 
 /// The shortcut is the desktop's (Wayland): the app asks the portal to bind it and hears it from there. The portal can
@@ -476,13 +548,13 @@ fn start_global(app: &AppHandle, accel: &str, tx: UnboundedSender<HotkeyEvent>) 
 /// when the desktop answers.
 #[cfg(target_os = "linux")]
 fn start_portal(app: &AppHandle, accel: &str, tx: UnboundedSender<HotkeyEvent>) -> Hotkeys {
-    let gate = Arc::new(Mutex::new(Gate::new(Duration::ZERO, tx)));
+    let gate = Gate::shared(Duration::ZERO, tx);
     let status = HotkeyStatus {
         label: label_of(accel),
         backend: Backend::Portal,
         error: None,
     };
-    let hotkeys = Hotkeys::new(None, status, None);
+    let hotkeys = Hotkeys::new(None, Arc::clone(&gate), status, None);
     let preferred = parse_accelerator(accel)
         .ok()
         .and_then(|shortcut| portal_trigger(&shortcut));
@@ -565,7 +637,7 @@ mod tests {
     use crate::test_support::FakeRegistry;
     use dictate_services::dictation::lang::display_hotkey;
     use std::str::FromStr;
-    use tokio::sync::mpsc::unbounded_channel;
+    use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 
     const MS: fn(u64) -> Duration = Duration::from_millis;
 
@@ -652,6 +724,33 @@ mod tests {
     }
 
     #[test]
+    fn hotkey_filter_reset_forgets_a_press_whose_release_was_lost() {
+        let t = Instant::now();
+        let mut filter = HotkeyFilter::new(Duration::ZERO);
+        assert!(!filter.reset(), "nothing was down");
+
+        assert!(filter.on_pressed(t));
+        // The release never came, so every press is taken for a repeat.
+        assert!(!filter.on_pressed(t + MS(1000)));
+
+        assert!(filter.reset(), "it was thought to be down");
+        assert!(filter.on_pressed(t + MS(2000)));
+    }
+
+    #[test]
+    fn hotkey_filter_reset_also_drops_a_release_that_waits() {
+        let t = Instant::now();
+        let mut filter = HotkeyFilter::new(X11_RELEASE_DEBOUNCE);
+        filter.on_pressed(t);
+        let due = filter.on_released(t + MS(10)).unwrap();
+
+        assert!(filter.reset());
+
+        assert!(!filter.poll(due), "the release was forgotten, not sent");
+        assert!(filter.on_pressed(due + MS(5)));
+    }
+
+    #[test]
     fn hotkey_filter_a_second_release_while_one_waits_changes_nothing() {
         let t = Instant::now();
         let mut filter = HotkeyFilter::new(X11_RELEASE_DEBOUNCE);
@@ -724,6 +823,82 @@ mod tests {
     }
 
     #[test]
+    fn gate_sends_nothing_while_the_recorder_listens() {
+        let t = Instant::now();
+        let (tx, mut rx) = unbounded_channel();
+        let mut gate = Gate::new(Duration::ZERO, tx);
+
+        gate.set_recording(true, t);
+        gate.pressed(t + MS(10));
+        assert_eq!(gate.released(t + MS(20)), None);
+        assert!(
+            rx.try_recv().is_err(),
+            "the keys of the old shortcut are not heard"
+        );
+
+        gate.set_recording(false, t + MS(30));
+        gate.pressed(t + MS(40));
+        assert_eq!(rx.try_recv(), Ok(HotkeyEvent::Pressed), "and are again");
+    }
+
+    #[test]
+    fn gate_listens_again_by_itself_when_nobody_says_the_recording_is_over() {
+        let t = Instant::now();
+        let (tx, mut rx) = unbounded_channel();
+        let mut gate = Gate::new(Duration::ZERO, tx);
+
+        gate.set_recording(true, t);
+        gate.pressed(t + RECORDING_LIMIT - MS(1));
+        assert!(rx.try_recv().is_err(), "still recording");
+
+        gate.pressed(t + RECORDING_LIMIT);
+        assert_eq!(rx.try_recv(), Ok(HotkeyEvent::Pressed), "the pause ran out");
+    }
+
+    #[test]
+    fn gate_ends_a_press_that_is_still_going_when_the_recording_starts() {
+        let t = Instant::now();
+        let (tx, mut rx) = unbounded_channel();
+        let mut gate = Gate::new(Duration::ZERO, tx);
+        gate.pressed(t);
+        assert_eq!(rx.try_recv(), Ok(HotkeyEvent::Pressed));
+
+        // The release would be dropped; without this a hold-to-talk dictation would never stop.
+        gate.set_recording(true, t + MS(100));
+
+        assert_eq!(rx.try_recv(), Ok(HotkeyEvent::Released));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn gate_does_not_invent_a_release_when_no_key_is_down() {
+        let t = Instant::now();
+        let (tx, mut rx) = unbounded_channel();
+        let mut gate = Gate::new(Duration::ZERO, tx);
+
+        gate.set_recording(true, t);
+        gate.set_recording(false, t + MS(10));
+
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn gate_counts_the_next_press_again_after_a_reset() {
+        let t = Instant::now();
+        let (tx, mut rx) = unbounded_channel();
+        let mut gate = Gate::new(Duration::ZERO, tx);
+        gate.pressed(t);
+        assert_eq!(rx.try_recv(), Ok(HotkeyEvent::Pressed));
+        gate.pressed(t + MS(1000));
+        assert!(rx.try_recv().is_err(), "the release was lost: a repeat");
+
+        gate.reset();
+        gate.pressed(t + MS(2000));
+
+        assert_eq!(rx.try_recv(), Ok(HotkeyEvent::Pressed));
+    }
+
+    #[test]
     fn a_release_that_waits_for_a_repeat_is_sent_by_the_timer() {
         let (tx, mut rx) = unbounded_channel();
         let gate = Arc::new(Mutex::new(Gate::new(MS(100), tx)));
@@ -765,6 +940,10 @@ mod tests {
             "F6",
             "F24",
             "Shift+F1",
+            "Shift+F12",
+            "Ctrl+Shift+D",
+            "Shift+Super+D",
+            "Alt+Shift+Space",
         ] {
             assert!(parse_accelerator(accel).is_ok(), "{accel}");
         }
@@ -773,7 +952,20 @@ mod tests {
     #[test]
     fn garbage_and_keys_that_would_swallow_typing_are_refused() {
         for accel in [
-            "", "banana", "Ctrl+", "+D", "Ctrl+Alt", "Ctrl+D+E", "D", "Space", "Shift+", "5",
+            "",
+            "banana",
+            "Ctrl+",
+            "+D",
+            "Ctrl+Alt",
+            "Ctrl+D+E",
+            "D",
+            "Space",
+            "Shift+",
+            "5",
+            // Shift on its own is no modifier for this: Shift+D would swallow every capital D.
+            "Shift+D",
+            "Shift+Space",
+            "Shift+5",
         ] {
             assert!(
                 matches!(parse_accelerator(accel), Err(ChangeError::Invalid)),
@@ -812,7 +1004,7 @@ mod tests {
     #[test]
     fn every_key_the_recorder_can_produce_is_one_the_plugin_reads() {
         for key in recorder_keys() {
-            let accel = format!("Super+Ctrl+Alt+Shift+{key}");
+            let accel = format!("Ctrl+Alt+Shift+Super+{key}");
             assert!(parse_accelerator(&accel).is_ok(), "{accel}");
         }
     }
@@ -866,6 +1058,13 @@ mod tests {
         store: SettingsStore,
         registry: Arc<FakeRegistry>,
         hotkeys: Hotkeys,
+        /// What the controller would hear.
+        events: UnboundedReceiver<HotkeyEvent>,
+    }
+
+    /// A gate with nobody to hear it, and no wait for the release of a key.
+    fn quiet_gate() -> Arc<Mutex<Gate>> {
+        Gate::shared(Duration::ZERO, unbounded_channel().0)
     }
 
     /// The default shortcut registered, as after a good start.
@@ -880,13 +1079,46 @@ mod tests {
             backend: Backend::Global,
             error: None,
         };
-        let hotkeys = Hotkeys::new(Some(registry.clone()), status, Some(old));
+        let (tx, events) = unbounded_channel();
+        let gate = Gate::shared(Duration::ZERO, tx);
+        let hotkeys = Hotkeys::new(Some(registry.clone()), gate, status, Some(old));
         Changing {
             _dir: dir,
             store,
             registry,
             hotkeys,
+            events,
         }
+    }
+
+    #[test]
+    fn the_controller_can_reset_a_key_whose_release_was_lost() {
+        let mut c = changing();
+        let gate = Arc::clone(&c.hotkeys.gate);
+        key_event(&gate, true, Instant::now());
+        assert_eq!(c.events.try_recv(), Ok(HotkeyEvent::Pressed));
+        key_event(&gate, true, Instant::now());
+        assert!(c.events.try_recv().is_err(), "taken for a repeat");
+
+        c.hotkeys.reset();
+
+        key_event(&gate, true, Instant::now());
+        assert_eq!(c.events.try_recv(), Ok(HotkeyEvent::Pressed));
+    }
+
+    #[test]
+    fn settings_recording_a_shortcut_keeps_the_old_one_from_dictating() {
+        let mut c = changing();
+        let gate = Arc::clone(&c.hotkeys.gate);
+
+        c.hotkeys.set_recording(true);
+        key_event(&gate, true, Instant::now());
+        key_event(&gate, false, Instant::now());
+        assert!(c.events.try_recv().is_err());
+
+        c.hotkeys.set_recording(false);
+        key_event(&gate, true, Instant::now());
+        assert_eq!(c.events.try_recv(), Ok(HotkeyEvent::Pressed));
     }
 
     #[test]
@@ -975,7 +1207,7 @@ mod tests {
             backend: Backend::Unavailable,
             error: Some(TAKEN.into()),
         };
-        let hotkeys = Hotkeys::new(Some(registry.clone()), failed, None);
+        let hotkeys = Hotkeys::new(Some(registry.clone()), quiet_gate(), failed, None);
 
         hotkeys.change(&store, "F6").unwrap();
 
@@ -999,7 +1231,7 @@ mod tests {
             backend: Backend::Portal,
             error: None,
         };
-        let hotkeys = Hotkeys::new(None, status.clone(), None);
+        let hotkeys = Hotkeys::new(None, quiet_gate(), status.clone(), None);
 
         hotkeys.change(&store, "Super+Shift+D").unwrap();
         assert_eq!(store.get().hotkey, "Super+Shift+D");

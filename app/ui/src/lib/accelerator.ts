@@ -46,17 +46,20 @@ function keyName(code: string): string | null {
 /**
  * The accelerator for this key press, or null when there isn't one (yet): a modifier on its own, a key with no name,
  * or a key that needs a modifier and has none. Only the function keys stand alone: any other key as a shortcut
- * would take it away from typing in every app. The Command key is "Super", as the plugin spells it.
+ * would take it away from typing in every app. Shift doesn't count as a modifier here, for the same reason:
+ * Shift+D would take every capital D. The modifiers come in the order Ctrl, Alt, Shift, Super, which the Mac shows as
+ * ⌃⌥⇧⌘; the Command key is "Super", as the plugin spells it.
  */
 export function acceleratorFromKeydown(press: KeyPress): string | null {
   const key = keyName(press.code);
   if (key === null) return null;
   const modifiers = [
-    press.metaKey && "Super",
     press.ctrlKey && "Ctrl",
     press.altKey && "Alt",
     press.shiftKey && "Shift",
+    press.metaKey && "Super",
   ].filter((name) => name !== false);
-  if (modifiers.length === 0 && !FUNCTION_KEY.test(key)) return null;
+  const stands = press.ctrlKey || press.altKey || press.metaKey;
+  if (!stands && !FUNCTION_KEY.test(key)) return null;
   return [...modifiers, key].join("+");
 }

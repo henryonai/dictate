@@ -10,7 +10,7 @@ afterEach(() => {
 });
 
 /** The recorder, with `onrecord` answering what the Rust side would ("" = the shortcut was taken). */
-function renderRecorder(answer = "", props: { label?: string; canChange?: boolean } = {}) {
+function renderRecorder(answer = "", props: { label?: string; canChange?: boolean; onlistening?: (active: boolean) => void } = {}) {
   const onrecord = vi.fn(async (_accelerator: string) => answer);
   render(HotkeyRecorder, { label: "Ctrl+Alt+Space", onrecord, ...props });
   return onrecord;
@@ -39,7 +39,10 @@ test("Change… starts listening and says what to press", async () => {
   await startListening();
 
   expect(screen.getByLabelText("Shortcut")).toHaveValue("Press the new shortcut…");
-  expect(screen.getByText(/Esc cancels/)).toBeInTheDocument();
+  // Shift is not offered as enough, and "Cmd" is not said where there is none.
+  expect(screen.getByText(/Esc cancels/)).toHaveTextContent(
+    "Hold Ctrl, Alt or ⌘/Win and press a key (Shift can be added), or press a function key (F1–F24). Esc cancels.",
+  );
   expect(screen.queryByRole("button", { name: "Change…" })).not.toBeInTheDocument();
 });
 
@@ -69,15 +72,16 @@ test("the Command key makes Super", async () => {
 
   await keydown("KeyD", { metaKey: true, shiftKey: true });
 
-  expect(onrecord).toHaveBeenCalledExactlyOnceWith("Super+Shift+D");
+  expect(onrecord).toHaveBeenCalledExactlyOnceWith("Shift+Super+D");
 });
 
-test("a modifier on its own, and a letter with none, are not a shortcut: it goes on listening", async () => {
+test("a modifier on its own, and a letter with none or with Shift only, are not a shortcut: it goes on listening", async () => {
   const onrecord = renderRecorder();
   await startListening();
 
   await keydown("ControlLeft", { ctrlKey: true });
   await keydown("KeyD");
+  await keydown("KeyD", { shiftKey: true });
 
   expect(onrecord).not.toHaveBeenCalled();
   expect(screen.getByLabelText("Shortcut")).toHaveValue("Press the new shortcut…");
@@ -177,4 +181,42 @@ test("a shortcut the desktop owns has no Change button", () => {
 
   expect(screen.getByLabelText("Shortcut")).toHaveValue("Ctrl+Alt+Space");
   expect(screen.queryByRole("button", { name: "Change…" })).not.toBeInTheDocument();
+});
+
+test("tells when it starts and stops listening, so that the shortcut is paused meanwhile", async () => {
+  const onlistening = vi.fn();
+  renderRecorder("", { onlistening });
+  expect(onlistening).not.toHaveBeenCalled();
+
+  await startListening();
+  expect(onlistening).toHaveBeenCalledExactlyOnceWith(true);
+
+  await keydown("F6");
+  await vi.waitFor(() => expect(onlistening).toHaveBeenLastCalledWith(false));
+  expect(onlistening).toHaveBeenCalledTimes(2);
+});
+
+test.each([
+  ["Esc", () => keydown("Escape")],
+  ["the Cancel button", () => userEvent.setup().click(screen.getByRole("button", { name: "Cancel" }))],
+  ["the window losing the focus", () => fireEvent.blur(window)],
+])("%s ends the pause too", async (_how, end) => {
+  const onlistening = vi.fn();
+  renderRecorder("", { onlistening });
+  await startListening();
+
+  await end();
+
+  await vi.waitFor(() => expect(onlistening).toHaveBeenLastCalledWith(false));
+  expect(onlistening).toHaveBeenCalledTimes(2);
+});
+
+test("the window going away while it listens ends the pause", async () => {
+  const onlistening = vi.fn();
+  const { unmount } = render(HotkeyRecorder, { label: "F6", onrecord: vi.fn(), onlistening });
+  await userEvent.setup().click(screen.getByRole("button", { name: "Change…" }));
+
+  unmount();
+
+  expect(onlistening).toHaveBeenLastCalledWith(false);
 });
