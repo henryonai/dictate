@@ -1,0 +1,5 @@
+[00:00] Speaker 1: Chào mọi người, hôm nay mình bàn về kế hoạch refactor.
+
+[01:05] Speaker 2: Mình đề xuất tách repo test ra riêng.
+
+[02:10] Speaker 1: Đồng ý, Henry tạo repo trước thứ Sáu nhé.

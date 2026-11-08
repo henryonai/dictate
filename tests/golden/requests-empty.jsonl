@@ -1,0 +1,15 @@
+{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_meetings","arguments":{}}}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_meetings","arguments":{"query":"hop"}}}
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_meetings","arguments":{"from":"2026-10-01","to":"2026-10-31"}}}
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"list_meetings","arguments":{"from":"bad"}}}
+{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"get_meeting","arguments":{"id":"2026-10-19 22-20-58"}}}
+{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"get_meeting","arguments":{}}}
+{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"get_transcript","arguments":{"id":"2026-10-19 22-20-58"}}}
+{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":"hop"}}}
+{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"search_meetings","arguments":{"query":""}}}
+{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"list_action_items","arguments":{}}}
+{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"list_action_items","arguments":{"status":"done"}}}
+{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"list_action_items","arguments":{"status":"all","owner":"henry"}}}
+{"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"list_action_items","arguments":{"owner":"henry"}}}
+{"jsonrpc":"2.0","id":14,"method":"tools/call","params":{"name":"list_action_items","arguments":{"from":"2026-10-01"}}}
+{"jsonrpc":"2.0","id":15,"method":"tools/list"}
