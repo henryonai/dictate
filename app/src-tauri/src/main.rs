@@ -7,6 +7,9 @@ mod hotkey;
 // Nothing sends a panel state yet: the dictation controller (Task 10 of the dictation plan) will.
 #[allow(dead_code)]
 mod panel;
+// Fixture states for the panels, to look at them without the controller. A debug build only.
+#[cfg(debug_assertions)]
+mod panel_demo;
 // Nothing calls the platform layer yet: the dictation controller (Task 10 of the dictation plan) will.
 #[allow(dead_code)]
 mod platform;
@@ -80,6 +83,8 @@ fn main() {
                 if let Err(e) = window.hide() {
                     log::warn!("Could not hide the window: {e}");
                 }
+                // A floating window hidden like this is not shown any more, and the next state shows it again.
+                panel::window_closed(window.app_handle(), window.label());
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -173,7 +178,7 @@ fn setup(
     panel::create(app.handle())?;
     // A debug build can cycle fixture states through the panels, to look at them without the controller.
     #[cfg(debug_assertions)]
-    panel::demo::start(app.handle());
+    panel_demo::start(app.handle());
 
     let status = hotkey::start(app.handle(), &accel, hotkey_tx.clone());
     match &status.error {

@@ -18,7 +18,8 @@ use dictate_services::dictation::machine::Phase;
 use dictate_services::dictation::pipeline::Notice;
 use serde::Serialize;
 use tauri::{
-    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, WebviewUrl, WebviewWindowBuilder,
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, PhysicalPosition, PhysicalSize,
+    WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
 
 use crate::platform::{self, Platform, Rect};
@@ -47,7 +48,7 @@ const X_OFFSET: f64 = INSET + 10.0;
 const GAP: f64 = 8.0;
 /// A panel goes below its anchor when this much of the screen is left under it.
 const ROOM_BELOW: f64 = 240.0;
-/// Without an anchor, the visible shape stands this far above the bottom of the screen.
+/// Without an anchor, the bottom of the window is this far above the bottom of the visible frame.
 const BOTTOM_LIFT: f64 = 60.0;
 
 // ---- Where ----------------------------------------------------------------------------------------------------------
@@ -297,8 +298,26 @@ impl Shown {
 struct Inner {
     layout: Layout,
     shown: Shown,
-    /// What each window measures, in logical points.
+    /// What each window measures, in CSS pixels, which are logical points on the screen the window is on.
     sizes: HashMap<&'static str, (f64, f64)>,
+}
+
+impl Inner {
+    fn new() -> Self {
+        Self {
+            layout: Layout::default(),
+            shown: Shown::default(),
+            sizes: HashMap::from([(BUBBLE, BUBBLE_START), (CARD, CARD_START)]),
+        }
+    }
+
+    /// The system closed a panel window and the app answered by hiding it, which `emit_state` didn't ask for: it is not
+    /// shown now, so that the next state that wants it shown shows it again.
+    fn window_closed(&mut self, label: &str) {
+        if let Some(label) = window_label(label) {
+            self.shown.set(label, false);
+        }
+    }
 }
 
 /// The windows' state, managed by the app.
@@ -311,17 +330,102 @@ impl Panels {
     fn new(platform: Arc<dyn Platform>) -> Self {
         Self {
             platform,
-            inner: Mutex::new(Inner {
-                layout: Layout::default(),
-                shown: Shown::default(),
-                sizes: HashMap::from([(BUBBLE, BUBBLE_START), (CARD, CARD_START)]),
-            }),
+            inner: Mutex::new(Inner::new()),
         }
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
         lock(&self.inner)
     }
+}
+
+/// A monitor as Tauri reports it: where it is in physical pixels, and how many pixels make a point on it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct MonitorBox {
+    frame: Rect,
+    scale: f64,
+}
+
+impl MonitorBox {
+    /// Whether the point is on this monitor, in the logical points of the monitor: its frame divided by its own scale,
+    /// which is how the platform layer writes the rectangles of a screen where each is scaled by its own screen.
+    fn has(&self, (x, y): (f64, f64)) -> bool {
+        let f = self.frame;
+        let s = self.scale;
+        x >= f.x / s && x < (f.x + f.w) / s && y >= f.y / s && y < (f.y + f.h) / s
+    }
+}
+
+/// Where and how big a window is put, in what the system takes for it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Spot {
+    /// Logical points, which the window turns into pixels by the scale of the monitor it is on now. Right where one
+    /// space of points covers every screen (macOS).
+    Logical { x: f64, y: f64, w: f64, h: f64 },
+    /// Pixels, by the scale of the monitor the window goes to. Where each screen counts its own points (Windows, and
+    /// Linux), the monitor the window is on now has nothing to say about the one it moves to.
+    Physical { x: i32, y: i32, w: u32, h: u32 },
+}
+
+/// How to give the window of `size` (CSS pixels) at `top_left` (logical points of the screen whose visible frame is
+/// `visible`, as [`place`] and the platform layer have them) to the system. The monitor is the one that has the
+/// centre of `visible`: the corner of a window may stick a little out of the screen. With no monitor to say, in points.
+fn spot(top_left: (f64, f64), size: (f64, f64), visible: Rect, monitors: &[MonitorBox]) -> Spot {
+    let centre = (visible.x + visible.w / 2.0, visible.y + visible.h / 2.0);
+    let found = monitors
+        .iter()
+        .find(|monitor| monitor.scale.is_finite() && monitor.scale > 0.0 && monitor.has(centre));
+    match found {
+        Some(monitor) => Spot::Physical {
+            x: (top_left.0 * monitor.scale).round() as i32,
+            y: (top_left.1 * monitor.scale).round() as i32,
+            // Up, so that the window is never a fraction of a pixel too small for what the page drew.
+            w: (size.0 * monitor.scale).ceil() as u32,
+            h: (size.1 * monitor.scale).ceil() as u32,
+        },
+        None => Spot::Logical {
+            x: top_left.0,
+            y: top_left.1,
+            w: size.0,
+            h: size.1,
+        },
+    }
+}
+
+/// The monitors, where the system counts each screen's points by its own scale: Windows and Linux. Asks the main
+/// thread, where Tauri reads them, and gives up after a moment. macOS has none to give: its points need no help.
+#[cfg(not(target_os = "macos"))]
+fn monitors(app: &AppHandle) -> Vec<MonitorBox> {
+    let (answer, wait) = std::sync::mpsc::sync_channel(1);
+    let handle = app.clone();
+    let queued = app.run_on_main_thread(move || {
+        let boxes: Vec<MonitorBox> = handle
+            .available_monitors()
+            .unwrap_or_default()
+            .iter()
+            .map(|monitor| MonitorBox {
+                frame: Rect {
+                    x: f64::from(monitor.position().x),
+                    y: f64::from(monitor.position().y),
+                    w: f64::from(monitor.size().width),
+                    h: f64::from(monitor.size().height),
+                },
+                scale: monitor.scale_factor(),
+            })
+            .collect();
+        let _ = answer.send(boxes);
+    });
+    match queued {
+        Ok(()) => wait
+            .recv_timeout(std::time::Duration::from_millis(500))
+            .unwrap_or_default(),
+        Err(_) => Vec::new(),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn monitors(_app: &AppHandle) -> Vec<MonitorBox> {
+    Vec::new()
 }
 
 /// The window of this name, as it is named in the page's URL and in the capability: `None` for any other.
@@ -467,26 +571,60 @@ pub fn set_anchor(app: &AppHandle, anchor: Option<Rect>) {
     }
 }
 
-/// Moves a window to where it belongs for its size. Asks the system where the screens are, which can take a moment:
-/// not for the main thread's own work.
+/// Puts a window where it belongs, at its size: next to the anchor, or at the bottom centre. Asks the system where the
+/// screens are, which can take a moment: not for the main thread's own work.
 fn place_window(app: &AppHandle, label: &'static str) {
-    if !positioning_works(on_wayland()) {
-        return;
-    }
     let Some(panels) = app.try_state::<Panels>() else {
         return;
     };
+    let Some(window) = app.get_webview_window(label) else {
+        return;
+    };
+    let size = panels
+        .lock()
+        .sizes
+        .get(label)
+        .copied()
+        .unwrap_or(BUBBLE_START);
+    if !positioning_works(on_wayland()) {
+        // The compositor puts the window where it likes; it is still the size of what is drawn.
+        apply(
+            &window,
+            Spot::Logical {
+                x: 0.0,
+                y: 0.0,
+                w: size.0,
+                h: size.1,
+            },
+            false,
+        );
+        return;
+    }
     let near = panels.lock().layout.near();
     let visible = panels.platform.screen_visible_frame(near);
-    let (x, y) = {
-        let mut inner = panels.lock();
-        let size = inner.sizes.get(label).copied().unwrap_or(BUBBLE_START);
-        inner.layout.position(size, visible)
-    };
-    if let Some(window) = app.get_webview_window(label) {
-        if let Err(e) = window.set_position(LogicalPosition::new(x, y)) {
-            log::warn!("Could not place the {label} window: {e}");
+    let top_left = panels.lock().layout.position(size, visible);
+    apply(&window, spot(top_left, size, visible, &monitors(app)), true);
+}
+
+/// Gives a window its place and its size. Pixels are given as they are: the position first, so that the window is on the
+/// monitor whose scale they are of when it is sized.
+fn apply(window: &WebviewWindow, spot: Spot, position: bool) {
+    let label = window.label().to_owned();
+    let result = match spot {
+        Spot::Logical { x, y, w, h } => {
+            window
+                .set_size(LogicalSize::new(w, h))
+                .and_then(|()| match position {
+                    true => window.set_position(LogicalPosition::new(x, y)),
+                    false => Ok(()),
+                })
         }
+        Spot::Physical { x, y, w, h } => window
+            .set_position(PhysicalPosition::new(x, y))
+            .and_then(|()| window.set_size(PhysicalSize::new(w, h))),
+    };
+    if let Err(e) = result {
+        log::warn!("Could not place the {label} window: {e}");
     }
 }
 
@@ -543,7 +681,7 @@ fn hide_now(app: &AppHandle, label: &'static str) {
 }
 
 /// Sizes a window to what its page measured and puts it where it belongs. The page measures again whenever what it
-/// draws changes size.
+/// draws changes size. A window that is not shown is sized at once, and placed when it is shown.
 fn resize_and_place(app: &AppHandle, label: &'static str, size: (f64, f64)) {
     let Some(panels) = app.try_state::<Panels>() else {
         return;
@@ -553,13 +691,26 @@ fn resize_and_place(app: &AppHandle, label: &'static str, size: (f64, f64)) {
         inner.sizes.insert(label, size);
         inner.shown.is_on(label)
     };
-    if let Some(window) = app.get_webview_window(label) {
-        if let Err(e) = window.set_size(LogicalSize::new(size.0, size.1)) {
-            log::warn!("Could not size the {label} window: {e}");
-        }
-    }
     if shown {
         place_window(app, label);
+    } else if let Some(window) = app.get_webview_window(label) {
+        apply(
+            &window,
+            Spot::Logical {
+                x: 0.0,
+                y: 0.0,
+                w: size.0,
+                h: size.1,
+            },
+            false,
+        );
+    }
+}
+
+/// The system hid a panel window on its own (a request to close it): so that the next state shows it again.
+pub fn window_closed(app: &AppHandle, label: &str) {
+    if let Some(panels) = app.try_state::<Panels>() {
+        panels.lock().window_closed(label);
     }
 }
 
@@ -634,214 +785,6 @@ pub async fn dictation_cancel() -> Result<(), String> {
 pub async fn dictation_set_language(lang: String) -> Result<(), String> {
     log::info!("The panel asked to change the dictation language to {lang}");
     Ok(())
-}
-
-/// A way to look at the windows without the controller: in a debug build, `DICTATE_PANEL_DEMO=1` cycles fixture states
-/// through [`emit_state`]. Debug builds only: a release build has none of it.
-///
-/// - `DICTATE_PANEL_DEMO_ANCHOR=x,y` puts the panels next to a caret there (logical points from the top left of the
-///   main screen), where without it they stand at the bottom centre of the screen.
-/// - `DICTATE_PANEL_DEMO_STEP_MS` is how long each state stays (3000).
-/// - `DICTATE_PANEL_DEMO_HOLD=n` stays on the n-th state (from 0) and doesn't cycle.
-#[cfg(debug_assertions)]
-pub mod demo {
-    use std::time::Duration;
-
-    use super::*;
-
-    /// How often the level and the timer of a state that listens are updated.
-    const TICK: Duration = Duration::from_millis(100);
-
-    fn base() -> PanelState {
-        PanelState {
-            hotkey: "\u{2303}\u{2325}Space".into(),
-            ..PanelState::hidden()
-        }
-    }
-
-    fn working(kind: WorkKind, style: Option<&str>, model: Option<&str>, editing: bool) -> Working {
-        Working {
-            kind,
-            style: style.map(str::to_owned),
-            model: model.map(str::to_owned),
-            editing,
-        }
-    }
-
-    /// One state of each shape the page draws now, in the order a dictation goes through them.
-    pub fn fixtures() -> Vec<PanelState> {
-        let listening = PanelState {
-            view: View::Bubble,
-            phase: Phase::Recording,
-            ..base()
-        };
-        let words = PanelState {
-            committed: "This is the part that is final, and".into(),
-            partial: "this is what is still a guess".into(),
-            ..listening.clone()
-        };
-        let pill = PanelState {
-            view: View::Pill,
-            phase: Phase::Recording,
-            duration_s: 65.0,
-            ..base()
-        };
-        let edited = PanelState {
-            view: View::Bubble,
-            phase: Phase::Working,
-            text: "This is the part that is final, and this is what was heard.".into(),
-            ..base()
-        };
-        vec![
-            listening,
-            words.clone(),
-            PanelState {
-                push_to_talk: true,
-                ..words.clone()
-            },
-            PanelState {
-                phase: Phase::Finishing,
-                ..words
-            },
-            PanelState {
-                working: Some(working(WorkKind::Editing, Some("concise"), None, false)),
-                ..edited.clone()
-            },
-            PanelState {
-                working: Some(working(WorkKind::Writing, None, None, false)),
-                ..edited.clone()
-            },
-            PanelState {
-                working: Some(working(
-                    WorkKind::Retranscribing,
-                    Some("clean"),
-                    Some("whisper-1"),
-                    true,
-                )),
-                ..edited
-            },
-            pill.clone(),
-            PanelState {
-                committed: "The pill shows the words above it,".into(),
-                partial: "and a guess for the rest".into(),
-                ..pill.clone()
-            },
-            PanelState {
-                phase: Phase::Finishing,
-                ..pill
-            },
-            PanelState::hidden(),
-        ]
-    }
-
-    /// Starts cycling when the environment asks for it.
-    pub fn start(app: &AppHandle) {
-        if std::env::var_os("DICTATE_PANEL_DEMO").is_none() {
-            return;
-        }
-        let anchor = std::env::var("DICTATE_PANEL_DEMO_ANCHOR")
-            .ok()
-            .and_then(|value| parse_anchor(&value));
-        let step = std::env::var("DICTATE_PANEL_DEMO_STEP_MS")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-            .map_or(Duration::from_secs(3), Duration::from_millis);
-        let hold = std::env::var("DICTATE_PANEL_DEMO_HOLD")
-            .ok()
-            .and_then(|value| value.parse::<usize>().ok());
-        let app = app.clone();
-        log::info!("Panel demo: cycling the fixture states (anchor {anchor:?})");
-        let spawned = std::thread::Builder::new()
-            .name("panel-demo".into())
-            .spawn(move || run(&app, anchor, step, hold));
-        if let Err(e) = spawned {
-            log::warn!("Could not start the panel demo: {e}");
-        }
-    }
-
-    /// "x,y": a caret at that point, 2 wide and a line of text high.
-    pub fn parse_anchor(value: &str) -> Option<Rect> {
-        let (x, y) = value.split_once(',')?;
-        Some(Rect {
-            x: x.trim().parse().ok()?,
-            y: y.trim().parse().ok()?,
-            w: 2.0,
-            h: 18.0,
-        })
-    }
-
-    fn run(app: &AppHandle, anchor: Option<Rect>, step: Duration, hold: Option<usize>) {
-        // The pages need a moment to load before they hear a state.
-        std::thread::sleep(Duration::from_secs(2));
-        set_anchor(app, anchor);
-        let fixtures = fixtures();
-        loop {
-            let shown: Vec<&PanelState> = match hold {
-                Some(n) => fixtures.get(n).into_iter().collect(),
-                None => fixtures.iter().collect(),
-            };
-            for fixture in shown {
-                log::info!("Panel demo: {:?} {:?}", fixture.view, fixture.phase);
-                let started = std::time::Instant::now();
-                while started.elapsed() < step {
-                    let mut state = fixture.clone();
-                    let t = started.elapsed().as_secs_f32();
-                    // Something like speech: a level that comes and goes.
-                    state.level = ((t * 6.0).sin() * 0.5 + 0.5) * ((t * 2.3).sin().abs());
-                    state.duration_s += f64::from(t);
-                    emit_state(app, &state);
-                    std::thread::sleep(TICK);
-                }
-            }
-        }
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn the_demo_shows_every_shape_the_page_draws_and_ends_hidden() {
-            let fixtures = fixtures();
-            let has = |view: View| fixtures.iter().any(|f| f.view == view);
-            assert!(has(View::Bubble) && has(View::Pill));
-            assert_eq!(fixtures.last().map(|f| f.view), Some(View::Hidden));
-        }
-
-        #[test]
-        fn the_demo_shows_each_title_of_the_bubble_and_both_hints() {
-            let fixtures = fixtures();
-            let kinds: Vec<WorkKind> = fixtures
-                .iter()
-                .filter_map(|f| f.working.as_ref().map(|w| w.kind))
-                .collect();
-            for kind in [
-                WorkKind::Writing,
-                WorkKind::Editing,
-                WorkKind::Retranscribing,
-            ] {
-                assert!(kinds.contains(&kind), "{kind:?}");
-            }
-            assert!(fixtures.iter().any(|f| f.push_to_talk));
-            assert!(fixtures.iter().any(|f| !f.push_to_talk));
-            assert!(fixtures.iter().any(|f| f.phase == Phase::Finishing));
-        }
-
-        #[test]
-        fn an_anchor_is_x_comma_y() {
-            assert_eq!(
-                parse_anchor("300, 200"),
-                Some(Rect {
-                    x: 300.0,
-                    y: 200.0,
-                    w: 2.0,
-                    h: 18.0
-                })
-            );
-            assert_eq!(parse_anchor("300"), None);
-            assert_eq!(parse_anchor("a,b"), None);
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1206,6 +1149,181 @@ mod tests {
         assert_eq!(wanted(View::Pill), [(BUBBLE, false), (CARD, true)]);
         assert_eq!(wanted(View::Card), [(BUBBLE, false), (CARD, true)]);
         assert_eq!(wanted(View::Hidden), [(BUBBLE, false), (CARD, false)]);
+    }
+
+    // ---- Pixels and points ----------------------------------------------------------------------------------------
+
+    /// Two monitors side by side that scale differently, as Tauri reports them in physical pixels: a primary of 2880 x
+    /// 1620 at 150 % (1920 x 1080 points) and a second of 1920 x 1080 at 100 % to the right of it.
+    const PRIMARY: MonitorBox = MonitorBox {
+        frame: Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 2880.0,
+            h: 1620.0,
+        },
+        scale: 1.5,
+    };
+    const SECOND: MonitorBox = MonitorBox {
+        frame: Rect {
+            x: 2880.0,
+            y: 0.0,
+            w: 1920.0,
+            h: 1080.0,
+        },
+        scale: 1.0,
+    };
+
+    /// What `platform::windows` says of each: every rectangle divided by the scale of the screen it is on.
+    const ON_PRIMARY: Rect = Rect {
+        x: 0.0,
+        y: 0.0,
+        w: 1920.0,
+        h: 1040.0,
+    };
+    const ON_SECOND: Rect = Rect {
+        x: 2880.0,
+        y: 0.0,
+        w: 1920.0,
+        h: 1040.0,
+    };
+
+    #[test]
+    fn a_window_on_a_monitor_of_150_percent_is_given_in_pixels_of_that_monitor() {
+        // The window may be on the other monitor now: only the scale of the monitor it goes to counts.
+        let at = spot(
+            (276.0, 262.0),
+            (428.0, 120.0),
+            ON_PRIMARY,
+            &[PRIMARY, SECOND],
+        );
+        assert_eq!(
+            at,
+            Spot::Physical {
+                x: 414,
+                y: 393,
+                w: 642,
+                h: 180
+            }
+        );
+    }
+
+    #[test]
+    fn a_window_on_a_monitor_of_100_percent_is_not_scaled_by_the_150_percent_of_the_other() {
+        let at = spot(
+            (3000.0, 500.0),
+            (428.0, 120.0),
+            ON_SECOND,
+            &[PRIMARY, SECOND],
+        );
+        assert_eq!(
+            at,
+            Spot::Physical {
+                x: 3000,
+                y: 500,
+                w: 428,
+                h: 120
+            }
+        );
+        // The order of the monitors doesn't matter.
+        assert_eq!(
+            spot(
+                (3000.0, 500.0),
+                (428.0, 120.0),
+                ON_SECOND,
+                &[SECOND, PRIMARY]
+            ),
+            at
+        );
+    }
+
+    #[test]
+    fn the_monitor_is_found_by_the_screen_the_visible_frame_is_of_not_by_where_the_window_is_put() {
+        // The clamp lets a window stick 14 points out of the visible frame, which can be outside every monitor.
+        let at = spot(
+            (-14.0, -14.0),
+            (428.0, 120.0),
+            ON_PRIMARY,
+            &[PRIMARY, SECOND],
+        );
+        assert_eq!(
+            at,
+            Spot::Physical {
+                x: -21,
+                y: -21,
+                w: 642,
+                h: 180
+            }
+        );
+    }
+
+    #[test]
+    fn pixels_are_rounded_to_the_nearest_and_a_size_is_rounded_up_so_that_the_window_is_never_too_small(
+    ) {
+        let at = spot((100.2, 50.4), (427.0, 119.1), ON_PRIMARY, &[PRIMARY]);
+        // 150.3, 75.6; 640.5, 178.65
+        assert_eq!(
+            at,
+            Spot::Physical {
+                x: 150,
+                y: 76,
+                w: 641,
+                h: 179
+            }
+        );
+    }
+
+    #[test]
+    fn without_a_monitor_that_has_the_screen_the_window_is_given_in_points() {
+        // macOS asks for none: its points are one space for all the screens, and the window knows how to scale them.
+        let logical = Spot::Logical {
+            x: 276.0,
+            y: 262.0,
+            w: 428.0,
+            h: 120.0,
+        };
+        assert_eq!(
+            spot((276.0, 262.0), (428.0, 120.0), ON_PRIMARY, &[]),
+            logical
+        );
+        // Nor is one found that doesn't hold the screen.
+        assert_eq!(
+            spot((276.0, 262.0), (428.0, 120.0), ON_SECOND, &[PRIMARY]),
+            logical
+        );
+        // A monitor that reports no scale can't turn points into pixels.
+        let broken = MonitorBox {
+            scale: 0.0,
+            ..PRIMARY
+        };
+        assert_eq!(
+            spot((276.0, 262.0), (428.0, 120.0), ON_PRIMARY, &[broken]),
+            logical
+        );
+    }
+
+    // ---- A window the system hid ----------------------------------------------------------------------------------
+
+    #[test]
+    fn a_window_that_was_closed_is_shown_again_by_the_next_state() {
+        // Closing a panel window is answered by hiding it, which is not something `emit_state` did.
+        let mut inner = Inner::new();
+        assert_eq!(inner.shown.set(BUBBLE, true), Change::Appeared);
+        assert_eq!(inner.shown.set(CARD, true), Change::Appeared);
+
+        inner.window_closed(BUBBLE);
+
+        // The next state of the bubble view finds it hidden, and shows it. The card is untouched.
+        assert_eq!(inner.shown.set(BUBBLE, true), Change::Appeared);
+        assert_eq!(inner.shown.set(CARD, true), Change::Same);
+    }
+
+    #[test]
+    fn a_window_that_is_not_ours_changes_nothing() {
+        let mut inner = Inner::new();
+        inner.shown.set(BUBBLE, true);
+        inner.window_closed("settings");
+        assert!(inner.shown.is_on(BUBBLE));
     }
 
     #[test]
