@@ -9,6 +9,7 @@
   "settings.save_failed": "Could not save: {error}",
   "settings.warning_lead": "The settings file had a problem.",
   "settings.dismiss": "Dismiss",
+  "settings.retry": "Retry",
   "common.cancel": "Cancel",
   "common.cancelling": "Cancelling…",
   "choice.other": "Other…",

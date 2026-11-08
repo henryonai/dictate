@@ -39,7 +39,12 @@
           ? t("settings.save_failed", { error: store.error })
           : t("settings.load_failed", { error: store.error })}
       </span>
-      <button type="button" onclick={() => store.dismissError()}>{t("settings.dismiss")}</button>
+      <!-- Before the first load there is nothing behind the error: it can only be tried again, not dismissed. -->
+      {#if store.view}
+        <button type="button" onclick={() => store.dismissError()}>{t("settings.dismiss")}</button>
+      {:else}
+        <button type="button" onclick={() => store.load()}>{t("settings.retry")}</button>
+      {/if}
     </div>
   {/if}
 
@@ -67,7 +72,7 @@
         </div>
       {/each}
     </div>
-  {:else if !store.error}
+  {:else if store.loading}
     <p class="hint loading">{t("settings.loading")}</p>
   {/if}
 </div>

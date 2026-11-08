@@ -101,6 +101,31 @@ test("says so when the settings can't be read", async () => {
   expect(await screen.findByRole("alert")).toHaveTextContent("Could not read the settings: The settings folder is locked");
 });
 
+test("a failed first load shows the error with Retry, and Retry reads the settings again", async () => {
+  const user = userEvent.setup();
+  vi.mocked(api.getSettings).mockRejectedValueOnce("The settings folder is locked");
+  render(Settings);
+
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Could not read the settings: The settings folder is locked",
+  );
+  // Dismissing it would leave a window with nothing in it.
+  expect(screen.queryByRole("button", { name: "Dismiss" })).not.toBeInTheDocument();
+  expect(screen.queryByText("Loading the settings…")).not.toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "Retry" }));
+
+  expect(await screen.findAllByRole("tab")).toHaveLength(4);
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
+test("the Retry of a failed load is in the UI language too", async () => {
+  vi.mocked(api.getSettings).mockRejectedValueOnce("locked");
+  setLanguage("vi");
+  render(Settings);
+  expect(await screen.findByRole("button", { name: "Thử lại" })).toBeInTheDocument();
+});
+
 test("the error goes away when it is dismissed", async () => {
   const user = userEvent.setup();
   vi.mocked(api.saveSettings).mockRejectedValue("disk full");

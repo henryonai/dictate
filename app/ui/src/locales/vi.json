@@ -9,6 +9,7 @@
   "settings.save_failed": "Không lưu được: {error}",
   "settings.warning_lead": "File cài đặt có vấn đề.",
   "settings.dismiss": "Đóng",
+  "settings.retry": "Thử lại",
   "common.cancel": "Huỷ",
   "common.cancelling": "Đang huỷ…",
   "choice.other": "Khác…",
