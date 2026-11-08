@@ -808,9 +808,7 @@ impl KeySender for MacKeys {
         let key = |down: bool| {
             let event = CGEvent::new_keyboard_event(source.as_deref(), KEY_V, down)
                 .ok_or_else(|| PasteError::Failed("could not make the key event".into()))?;
-            // Only Command: the Ctrl and Alt of the hotkey, if they are still held, must not turn it into
-            // another shortcut.
-            CGEvent::set_flags(Some(&event), CGEventFlags::MaskCommand);
+            CGEvent::set_flags(Some(&event), paste_flags(down));
             CGEvent::set_integer_value_field(
                 Some(&event),
                 CGEventField::EventSourceUserData,
@@ -863,6 +861,15 @@ fn activate(target: &AppId) -> bool {
     // same answer); it needs no more than a request.
     running.activateWithOptions(NSApplicationActivationOptions::empty());
     false
+}
+
+/// The flags of a key event of the paste shortcut.
+fn paste_flags(down: bool) -> CGEventFlags {
+    if down {
+        CGEventFlags::MaskCommand
+    } else {
+        CGEventFlags::empty()
+    }
 }
 
 /// Whether one of the modifiers of a shortcut is held (the caps lock and the fn key are none).
@@ -1129,5 +1136,32 @@ mod tests {
         assert!(!modifiers_held(
             CGEventFlags::MaskSecondaryFn | CGEventFlags::MaskNumericPad
         ));
+    }
+
+    #[test]
+    fn the_paste_key_goes_down_with_only_the_command_flag() {
+        // Only Command: the Ctrl and Alt of the hotkey, if they are still held, must not turn it into another
+        // shortcut.
+        assert_eq!(paste_flags(true), CGEventFlags::MaskCommand);
+    }
+
+    #[test]
+    fn the_paste_key_comes_up_with_no_flags() {
+        // The system takes the flags of the last event that was posted for the state of the keyboard, and no key
+        // of Command ever comes up after ours: an up event that still says Command leaves the system thinking that
+        // Command is held (every later `flags_state` says so, and the next paste waits a second for it).
+        assert_eq!(paste_flags(false), CGEventFlags::empty());
+    }
+
+    #[test]
+    fn a_keyboard_at_rest_has_no_modifier_held_whatever_else_the_system_sets() {
+        // What `CGEventSourceFlagsState` gave on macOS 26 with nothing held: a bit that is no modifier.
+        assert!(!modifiers_held(CGEventFlags(0x2000_0000)));
+        // The same after our own up event had said Command, with the Command key reported as down.
+        assert!(modifiers_held(CGEventFlags(0x2010_0000)));
+        // Only the bits that don't depend on the device count: the left-Command bit of a device alone does not,
+        // and with the Command bit it is held like any Command.
+        assert!(!modifiers_held(CGEventFlags(0x2000_0008)));
+        assert!(modifiers_held(CGEventFlags(0x2010_0008)));
     }
 }

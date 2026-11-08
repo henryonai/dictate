@@ -1037,16 +1037,15 @@ mod tests {
 
     #[test]
     fn the_ydotool_daemon_is_looked_for_where_it_says_and_where_it_lives() {
+        // The expected paths are built with `join`, as the code does: no separator is assumed.
+        let socket = |dir: &str| PathBuf::from(dir).join(".ydotool_socket");
         assert_eq!(
             ydotool_sockets(Some("/tmp/mine.sock"), Some("/run/user/1000"), Some(1000)),
-            [
-                PathBuf::from("/tmp/mine.sock"),
-                PathBuf::from("/run/user/1000/.ydotool_socket"),
-            ]
+            [PathBuf::from("/tmp/mine.sock"), socket("/run/user/1000")]
         );
         assert_eq!(
             ydotool_sockets(None, None, Some(501)),
-            [PathBuf::from("/run/user/501/.ydotool_socket")]
+            [socket("/run/user/501")]
         );
         // An empty variable is no variable.
         assert_eq!(
@@ -1057,14 +1056,23 @@ mod tests {
 
     #[test]
     fn a_tool_is_found_in_the_first_directory_that_has_it() {
-        let path = std::ffi::OsString::from("/opt/bin:/usr/bin:/bin");
-        let has = |p: &std::path::Path| p == std::path::Path::new("/usr/bin/wtype");
-        assert_eq!(
-            find_on_path("wtype", &path, has),
-            Some(PathBuf::from("/usr/bin/wtype"))
-        );
+        // `PATH` is split at `:` on Unix and at `;` on Windows, so the test builds it the way the system does.
+        let path = std::env::join_paths(["/opt/bin", "/usr/bin", "/bin"]).unwrap();
+        let in_usr = PathBuf::from("/usr/bin").join("wtype");
+        let has = |p: &std::path::Path| p == in_usr;
+        assert_eq!(find_on_path("wtype", &path, has), Some(in_usr.clone()));
         assert_eq!(find_on_path("ydotool", &path, has), None);
         assert_eq!(find_on_path("wtype", std::ffi::OsStr::new(""), has), None);
+    }
+
+    #[test]
+    fn the_first_directory_of_the_path_wins() {
+        let path = std::env::join_paths(["/opt/bin", "/usr/bin"]).unwrap();
+        let both = |p: &std::path::Path| p.ends_with("wtype");
+        assert_eq!(
+            find_on_path("wtype", &path, both),
+            Some(PathBuf::from("/opt/bin").join("wtype"))
+        );
     }
 
     #[test]
