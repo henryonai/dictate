@@ -14,7 +14,10 @@ keyring = "3.6.3"
 reqwest = { version = "0.12.28", default-features = false, features = ["json", "multipart", "rustls-tls", "stream"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
-tokio = { version = "1.54.1", features = ["fs"] }
+# Only the memory figures: the default features pull in disks, networks, users and components too.
+sysinfo = { version = "0.36.1", default-features = false, features = ["system"] }
+tokio = { version = "1.54.1", features = ["fs", "io-util", "time"] }
+tokio-util = { version = "0.7.20", default-features = false }
 
 # keyring has no default credential stores: pick the native one for each OS.
 # On Linux the pure-Rust Secret Service client avoids a libdbus build dependency.
@@ -29,6 +32,6 @@ keyring = { version = "3.6.3", features = ["async-secret-service", "async-io", "
 
 [dev-dependencies]
 tempfile = "3.27.0"
-tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1.54.1", features = ["macros", "net", "rt-multi-thread"] }
 # wiremock 0.6.5 needs Rust 1.88: stay on 0.6.4 until the minimum Rust version moves up.
 wiremock = "=0.6.4"

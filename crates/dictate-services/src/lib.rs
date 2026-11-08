@@ -5,4 +5,6 @@ pub mod http;
 pub mod presets;
 pub mod secrets;
 pub mod settings;
+pub mod system;
 pub mod transcribe_api;
+pub mod whisper;
