@@ -9,10 +9,10 @@
 //! fixture keeps one such recording (`2026-10-16 23-59-59`); no golden request prints its transcript (a
 //! `list_meetings` query reads it), and `crlf_transcript_is_read_paragraph_by_paragraph` pins the Rust behaviour.
 //!
-//! Unix only: the dates in the replies are local times, and the dates in `expected*.jsonl` are those of
-//! `Asia/Ho_Chi_Minh`. chrono follows the `TZ` variable on Unix only, so on Windows the server would show the
-//! machine's own zone. The other tests still run there.
-#![cfg(unix)]
+//! The two tests that replay the golden requests run on Unix only: the dates in the replies are local times, and
+//! the dates in `expected*.jsonl` are those of `Asia/Ho_Chi_Minh`. chrono follows the `TZ` variable on Unix only,
+//! so on Windows the server would show the machine's own zone. The comparison self-test and the CRLF test run on
+//! every OS.
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -30,6 +30,7 @@ fn golden_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/golden")
 }
 
+#[cfg(unix)]
 fn read(file: &str) -> String {
     let path = golden_dir().join(file);
     std::fs::read_to_string(&path)
@@ -58,6 +59,7 @@ fn serve_file(library: &Path, input: &Path) -> String {
 }
 
 /// The replies of `dictate-mcp` to the requests in the golden file `requests`.
+#[cfg(unix)]
 fn serve(library: &Path, requests: &str) -> String {
     serve_file(library, &golden_dir().join(requests))
 }
@@ -121,6 +123,7 @@ fn compare(expected: &str, actual: &str) -> Result<(), String> {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn replies_match_the_swift_server_for_the_fixture_library() {
     let actual = serve(&golden_dir().join("fixture"), "requests.jsonl");
@@ -129,6 +132,7 @@ fn replies_match_the_swift_server_for_the_fixture_library() {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn replies_match_the_swift_server_for_an_empty_library() {
     let library = tempfile::tempdir().expect("an empty library folder");
