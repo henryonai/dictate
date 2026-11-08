@@ -2,7 +2,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod config;
 mod state;
+#[cfg(test)]
+mod test_support;
 mod tray;
 
 use std::sync::Arc;
@@ -108,12 +111,14 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let models = state::open_model_dir(&models_base)?;
     let lang = tray::language_for(&store.get());
 
-    app.manage(AppState::new(
-        store,
-        warning,
-        Arc::new(KeyringStore::new()),
-        models,
-    ));
+    let state = AppState::new(store, warning, Arc::new(KeyringStore::new()), models);
+    // Ask the key store which keys exist once, now and off this thread: a locked Keychain waits for the user. The
+    // settings view waits for the answer, so it never asks again.
+    let startup = state.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        startup.loaded_keys();
+    });
+    app.manage(state);
     tray::create(app.handle(), lang)?;
     if first_launch {
         log::info!("First launch: showing Settings");

@@ -7,19 +7,20 @@
 //! runtime's own.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::io;
+use std::path::Path;
 use std::sync::Mutex;
 
 use dictate_core::meetings::library::MeetingLibrary;
 use dictate_core::text::segments::Segment;
 use dictate_core::text::timestamp;
-use dictate_services::ai::{self, AiConfig};
+use dictate_services::ai;
 use dictate_services::http::ApiError;
 use dictate_services::presets::{AiProvider, TranscribePreset, EDIT_PRESETS};
 use dictate_services::secrets::{Account, SecretStore};
 use dictate_services::settings::{self, Settings, SettingsStore};
 use dictate_services::system;
-use dictate_services::transcribe_api::{self, TranscribeConfig, TranscribeError};
+use dictate_services::transcribe_api::{self, TranscribeError};
 use dictate_services::whisper::local::{read_wav_16k_mono, LocalWhisper};
 use dictate_services::whisper::models::{
     self, DownloadError, ModelDir, ModelStatus, HUGGING_FACE_BASE_URL,
@@ -30,7 +31,8 @@ use tauri_plugin_autostart::ManagerExt as _;
 use tauri_plugin_opener::OpenerExt as _;
 use tokio_util::sync::CancellationToken;
 
-use crate::state::{lock, AppState, Job};
+use crate::config::{ai_config, local_model, transcribe_config};
+use crate::state::{lock, AppState, Job, KeyFlags};
 use crate::tray;
 
 /// The event that tells how a model download goes.
@@ -113,28 +115,17 @@ pub struct TranscribePresetView {
 
 // ---- the plain functions behind the commands
 
-/// The key saved for an account. A key store that fails counts as no key: the settings stay usable and saving a
-/// key says what is wrong.
-fn saved_key(secrets: &dyn SecretStore, account: Account) -> Option<String> {
-    match secrets.get(account) {
-        Ok(key) => key.filter(|key| !key.is_empty()),
-        Err(e) => {
-            log::warn!("Could not read the {} key: {e}", account.name());
-            None
-        }
-    }
-}
-
-fn get_settings_view(store: &SettingsStore, secrets: &dyn SecretStore) -> SettingsView {
+/// The settings plus which keys exist. The flags are what the key store said at the start and what saving or
+/// removing a key has done since: asking the key store itself on every view could make the OS show a prompt each
+/// time.
+fn get_settings_view(store: &SettingsStore, keys: &KeyFlags) -> SettingsView {
     let settings = store.get();
-    let ai_key = saved_key(secrets, Account::Ai);
-    let own_key = saved_key(secrets, Account::Transcribe);
-    let used_key =
-        settings::effective_transcribe_key(&settings, ai_key.as_deref(), own_key.as_deref());
+    let has_ai_key = keys.get(Account::Ai);
+    let has_transcribe_key = keys.get(Account::Transcribe);
     SettingsView {
-        has_ai_key: ai_key.is_some(),
-        has_transcribe_key: own_key.is_some(),
-        shares_openrouter_key: own_key.is_none() && used_key.is_some(),
+        has_ai_key,
+        has_transcribe_key,
+        shares_openrouter_key: settings::shares_ai_key(&settings, has_ai_key, has_transcribe_key),
         load_warning: None,
         system_language: tray::system_language(),
         settings,
@@ -149,9 +140,11 @@ fn parse_account(name: &str) -> Result<Account, String> {
     }
 }
 
-/// Saves a key; an empty one (after trimming what was pasted around it) deletes it.
+/// Saves a key; an empty one (after trimming what was pasted around it) deletes it. The flag follows only once the
+/// key store has done it.
 fn set_secret_inner(
     store: &SettingsStore,
+    keys: &KeyFlags,
     secrets: &dyn SecretStore,
     account: &str,
     value: &str,
@@ -169,42 +162,41 @@ fn set_secret_inner(
         log::warn!("Could not change the {} key: {e}", account.name());
         e.to_string()
     })?;
-    Ok(get_settings_view(store, secrets))
+    keys.set(account, !value.is_empty());
+    Ok(get_settings_view(store, keys))
 }
 
-fn save(store: &SettingsStore, settings: &Settings) -> Result<(), String> {
-    store
-        .save(settings)
-        .map_err(|e| format!("Could not save the settings: {e}"))
+fn saving_failed(e: io::Error) -> String {
+    format!("Could not save the settings: {e}")
 }
 
 fn set_ai_provider_inner(
     store: &SettingsStore,
-    secrets: &dyn SecretStore,
+    keys: &KeyFlags,
     provider: AiProvider,
 ) -> Result<SettingsView, String> {
-    let mut settings = store.get();
-    settings.set_ai_provider(provider);
-    save(store, &settings)?;
-    Ok(get_settings_view(store, secrets))
+    store
+        .update(|settings| settings.set_ai_provider(provider))
+        .map_err(saving_failed)?;
+    Ok(get_settings_view(store, keys))
 }
 
 fn set_transcribe_preset_inner(
     store: &SettingsStore,
-    secrets: &dyn SecretStore,
+    keys: &KeyFlags,
     preset: TranscribePreset,
 ) -> Result<SettingsView, String> {
-    let mut settings = store.get();
-    settings.set_transcribe_preset(preset);
-    save(store, &settings)?;
-    Ok(get_settings_view(store, secrets))
+    store
+        .update(|settings| settings.set_transcribe_preset(preset))
+        .map_err(saving_failed)?;
+    Ok(get_settings_view(store, keys))
 }
 
 /// Saves `settings`. `apply_launch_at_login` is called, with the new value, only when that setting changes; if it
 /// fails nothing is saved, so the file never says something the system doesn't do.
 fn save_settings_inner(
     store: &SettingsStore,
-    secrets: &dyn SecretStore,
+    keys: &KeyFlags,
     settings: Settings,
     mut apply_launch_at_login: impl FnMut(bool) -> Result<(), String>,
 ) -> Result<SettingsView, String> {
@@ -213,53 +205,14 @@ fn save_settings_inner(
     if changed {
         apply_launch_at_login(settings.launch_at_login)?;
     }
-    if let Err(e) = save(store, &settings) {
+    if let Err(e) = store.update(|current| *current = settings) {
         if changed {
             // Put the system back to what the file still says.
             let _ = apply_launch_at_login(before);
         }
-        return Err(e);
+        return Err(saving_failed(e));
     }
-    Ok(get_settings_view(store, secrets))
-}
-
-/// The AI provider as configured, with its key.
-fn ai_config(store: &SettingsStore, secrets: &dyn SecretStore) -> Result<AiConfig, String> {
-    let settings = store.get();
-    let key = saved_key(secrets, Account::Ai);
-    if !settings::is_ai_configured(&settings, key.is_some()) {
-        return Err(
-            if settings.ai_provider == AiProvider::OpenAi && key.is_some() {
-                "Enter the base URL of the AI provider first.".to_string()
-            } else {
-                "Add the API key of the AI provider first.".to_string()
-            },
-        );
-    }
-    Ok(AiConfig {
-        provider: settings.ai_provider,
-        base_url: settings.ai_base_url,
-        model: settings.ai_model,
-        api_key: key,
-        vocabulary: settings.vocabulary,
-    })
-}
-
-/// The transcription service as configured, with the key it uses.
-fn transcribe_config(store: &SettingsStore, secrets: &dyn SecretStore) -> TranscribeConfig {
-    let settings = store.get();
-    let ai_key = saved_key(secrets, Account::Ai);
-    let own_key = saved_key(secrets, Account::Transcribe);
-    let key = settings::effective_transcribe_key(&settings, ai_key.as_deref(), own_key.as_deref());
-    let language = settings.transcribe_language.trim();
-    TranscribeConfig {
-        base_url: settings.transcribe_base_url,
-        model: settings.transcribe_model,
-        api_key: key.unwrap_or_default(),
-        language: (!language.is_empty()).then(|| language.to_string()),
-        prompt: settings.vocabulary,
-        chat: settings.transcribe_preset.uses_chat(),
-    }
+    Ok(get_settings_view(store, keys))
 }
 
 /// An API error as shown to the user. An error status with no message gets the HTTP reason phrase, so that a
@@ -300,26 +253,6 @@ fn format_transcript(segments: &[Segment]) -> String {
         .map(|segment| format!("[{}] {}", timestamp::format(segment.start), segment.text))
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-/// The model local transcription uses: the chosen one, else the one recommended for this much RAM. It must be
-/// downloaded.
-fn local_model(
-    settings: &Settings,
-    models: &ModelDir,
-    ram_gb: u64,
-) -> Result<(String, PathBuf), String> {
-    let id = settings
-        .whisper_model
-        .clone()
-        .unwrap_or_else(|| models::recommended(ram_gb).to_string());
-    if !models.is_downloaded(&id) {
-        return Err(format!(
-            "The {id} model isn't downloaded yet. Download it in Settings first."
-        ));
-    }
-    let path = models.path(&id);
-    Ok((id, path))
 }
 
 /// The last event of a download, from how it ended and how far it had come.
@@ -500,7 +433,7 @@ pub fn open_meetings_folder_now(app: &AppHandle) -> Result<(), String> {
 pub async fn get_settings(state: State<'_, AppState>) -> Result<SettingsView, String> {
     let state = state.inner().clone();
     blocking(move || {
-        let mut view = get_settings_view(&state.settings, &*state.secrets);
+        let mut view = get_settings_view(&state.settings, state.loaded_keys());
         view.load_warning = state.take_load_warning();
         view
     })
@@ -516,7 +449,7 @@ pub async fn save_settings(
     let state = state.inner().clone();
     let handle = app.clone();
     let view = blocking(move || {
-        save_settings_inner(&state.settings, &*state.secrets, settings, |enabled| {
+        save_settings_inner(&state.settings, state.loaded_keys(), settings, |enabled| {
             set_launch_at_login(&handle, enabled)
         })
     })
@@ -531,7 +464,7 @@ pub async fn set_ai_provider(
     p: AiProvider,
 ) -> Result<SettingsView, String> {
     let state = state.inner().clone();
-    blocking(move || set_ai_provider_inner(&state.settings, &*state.secrets, p)).await?
+    blocking(move || set_ai_provider_inner(&state.settings, state.loaded_keys(), p)).await?
 }
 
 #[tauri::command]
@@ -540,7 +473,7 @@ pub async fn set_transcribe_preset(
     p: TranscribePreset,
 ) -> Result<SettingsView, String> {
     let state = state.inner().clone();
-    blocking(move || set_transcribe_preset_inner(&state.settings, &*state.secrets, p)).await?
+    blocking(move || set_transcribe_preset_inner(&state.settings, state.loaded_keys(), p)).await?
 }
 
 /// `account` is `"ai"` or `"transcribe"`; an empty `value` deletes the key.
@@ -551,7 +484,16 @@ pub async fn set_secret(
     value: String,
 ) -> Result<SettingsView, String> {
     let state = state.inner().clone();
-    blocking(move || set_secret_inner(&state.settings, &*state.secrets, &account, &value)).await?
+    blocking(move || {
+        set_secret_inner(
+            &state.settings,
+            state.loaded_keys(),
+            &*state.secrets,
+            &account,
+            &value,
+        )
+    })
+    .await?
 }
 
 #[tauri::command]
@@ -671,13 +613,15 @@ pub async fn open_meetings_folder(app: AppHandle) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::Job;
+    use crate::state::{Job, KeyFlags};
+    use crate::test_support::{CountingStore, NoKeyring};
     use dictate_services::presets::EDIT_PRESETS;
     use dictate_services::secrets::{Account, MemoryStore, SecretError};
     use dictate_services::settings::UiLanguage;
     use dictate_services::whisper::models::CATALOG;
     use std::io::{Read, Write};
     use std::net::TcpListener;
+    use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
     use std::thread;
 
@@ -687,6 +631,7 @@ mod tests {
     struct Fixture {
         _dir: tempfile::TempDir,
         store: SettingsStore,
+        keys: KeyFlags,
         secrets: MemoryStore,
     }
 
@@ -697,22 +642,8 @@ mod tests {
         Fixture {
             _dir: dir,
             store,
+            keys: KeyFlags::default(),
             secrets: MemoryStore::default(),
-        }
-    }
-
-    /// A key store that is down, like a Linux desktop without a Secret Service.
-    struct NoKeyring;
-
-    impl SecretStore for NoKeyring {
-        fn get(&self, _: Account) -> Result<Option<String>, SecretError> {
-            Err(SecretError::Unavailable)
-        }
-        fn set(&self, _: Account, _: &str) -> Result<(), SecretError> {
-            Err(SecretError::Unavailable)
-        }
-        fn delete(&self, _: Account) -> Result<(), SecretError> {
-            Err(SecretError::Unavailable)
         }
     }
 
@@ -740,15 +671,33 @@ mod tests {
     #[test]
     fn view_never_contains_key_values() {
         let f = fixture();
-        f.secrets.set(Account::Ai, AI_KEY).unwrap();
-        f.secrets.set(Account::Transcribe, STT_KEY).unwrap();
+        set_secret_inner(&f.store, &f.keys, &f.secrets, "ai", AI_KEY).unwrap();
+        set_secret_inner(&f.store, &f.keys, &f.secrets, "transcribe", STT_KEY).unwrap();
 
-        let view = get_settings_view(&f.store, &f.secrets);
+        let view = get_settings_view(&f.store, &f.keys);
         let json = serde_json::to_string(&view).unwrap();
 
         assert!(!json.contains(AI_KEY), "{json}");
         assert!(!json.contains(STT_KEY), "{json}");
         assert!(view.has_ai_key && view.has_transcribe_key);
+    }
+
+    #[test]
+    fn view_does_not_read_the_keychain() {
+        let dir = tempfile::tempdir().unwrap();
+        let counting = Arc::new(CountingStore::default());
+        counting.set(Account::Ai, AI_KEY).unwrap();
+        let state = state_with(&dir, counting.clone());
+        // The start of the app reads the keys.
+        state.loaded_keys();
+        let read_at_start = counting.gets();
+
+        // The window asks for the settings again and again.
+        let view = get_settings_view(&state.settings, state.loaded_keys());
+        get_settings_view(&state.settings, state.loaded_keys());
+
+        assert!(view.has_ai_key && !view.has_transcribe_key);
+        assert_eq!(counting.gets(), read_at_start, "the view read a key");
     }
 
     #[test]
@@ -767,7 +716,7 @@ mod tests {
             let mut s = f.store.get();
             s.ui_language = chosen;
             f.store.save(&s).unwrap();
-            let json = serde_json::to_value(get_settings_view(&f.store, &f.secrets)).unwrap();
+            let json = serde_json::to_value(get_settings_view(&f.store, &f.keys)).unwrap();
             assert_eq!(json["system_language"], wanted, "with {chosen:?} chosen");
         }
     }
@@ -775,7 +724,7 @@ mod tests {
     #[test]
     fn view_has_the_settings_at_the_top_level() {
         let f = fixture();
-        let json = serde_json::to_value(get_settings_view(&f.store, &f.secrets)).unwrap();
+        let json = serde_json::to_value(get_settings_view(&f.store, &f.keys)).unwrap();
         assert_eq!(json["ai_model"], "claude-haiku-5-5");
         assert_eq!(json["hotkey"], "Ctrl+Alt+Space");
         assert_eq!(json["has_ai_key"], false);
@@ -787,52 +736,44 @@ mod tests {
     #[test]
     fn view_reports_which_keys_are_saved() {
         let f = fixture();
-        f.secrets.set(Account::Ai, AI_KEY).unwrap();
-        let view = get_settings_view(&f.store, &f.secrets);
+        f.keys.set(Account::Ai, true);
+        let view = get_settings_view(&f.store, &f.keys);
         assert!(view.has_ai_key);
         assert!(!view.has_transcribe_key);
-        // An empty value counts as no key.
-        f.secrets.set(Account::Transcribe, "").unwrap();
-        assert!(!get_settings_view(&f.store, &f.secrets).has_transcribe_key);
+        f.keys.set(Account::Transcribe, true);
+        assert!(get_settings_view(&f.store, &f.keys).has_transcribe_key);
     }
 
     #[test]
     fn view_flags_the_openrouter_key_that_serves_both() {
         let f = fixture();
-        f.secrets.set(Account::Ai, AI_KEY).unwrap();
+        f.keys.set(Account::Ai, true);
         let mut s = f.store.get();
         s.set_transcribe_preset(TranscribePreset::OpenRouter);
         s.ai_base_url = "https://openrouter.ai/api/v1".into();
         f.store.save(&s).unwrap();
-        assert!(get_settings_view(&f.store, &f.secrets).shares_openrouter_key);
+        assert!(get_settings_view(&f.store, &f.keys).shares_openrouter_key);
 
         // A transcription URL that has moved to another host gets nothing of it.
         s.transcribe_base_url = "https://stt.example.com/v1".into();
         f.store.save(&s).unwrap();
-        assert!(!get_settings_view(&f.store, &f.secrets).shares_openrouter_key);
+        assert!(!get_settings_view(&f.store, &f.keys).shares_openrouter_key);
 
         // With a key of its own, nothing is shared.
         s.transcribe_base_url = "https://openrouter.ai/api/v1".into();
         f.store.save(&s).unwrap();
-        f.secrets.set(Account::Transcribe, STT_KEY).unwrap();
-        assert!(!get_settings_view(&f.store, &f.secrets).shares_openrouter_key);
-    }
-
-    #[test]
-    fn a_keyring_that_is_down_does_not_break_the_view() {
-        let f = fixture();
-        let view = get_settings_view(&f.store, &NoKeyring);
-        assert!(!view.has_ai_key && !view.has_transcribe_key);
+        f.keys.set(Account::Transcribe, true);
+        assert!(!get_settings_view(&f.store, &f.keys).shares_openrouter_key);
     }
 
     #[test]
     fn set_secret_stores_the_key_and_the_view_says_so() {
         let f = fixture();
-        let view = set_secret_inner(&f.store, &f.secrets, "ai", AI_KEY).unwrap();
+        let view = set_secret_inner(&f.store, &f.keys, &f.secrets, "ai", AI_KEY).unwrap();
         assert!(view.has_ai_key && !view.has_transcribe_key);
         assert_eq!(f.secrets.get(Account::Ai), Ok(Some(AI_KEY.to_string())));
 
-        let view = set_secret_inner(&f.store, &f.secrets, "transcribe", STT_KEY).unwrap();
+        let view = set_secret_inner(&f.store, &f.keys, &f.secrets, "transcribe", STT_KEY).unwrap();
         assert!(view.has_transcribe_key);
         assert_eq!(
             f.secrets.get(Account::Transcribe),
@@ -841,11 +782,28 @@ mod tests {
     }
 
     #[test]
+    fn set_secret_updates_the_flag() {
+        let f = fixture();
+        let secrets = CountingStore::default();
+
+        let view = set_secret_inner(&f.store, &f.keys, &secrets, "ai", AI_KEY).unwrap();
+        assert!(view.has_ai_key);
+        assert!(f.keys.get(Account::Ai));
+
+        let view = set_secret_inner(&f.store, &f.keys, &secrets, "ai", "  ").unwrap();
+        assert!(!view.has_ai_key);
+        assert!(!f.keys.get(Account::Ai));
+
+        assert_eq!(secrets.gets(), 0, "the key store is not read for the view");
+    }
+
+    #[test]
     fn set_secret_empty_deletes() {
         let f = fixture();
         f.secrets.set(Account::Ai, AI_KEY).unwrap();
+        f.keys.set(Account::Ai, true);
 
-        let view = set_secret_inner(&f.store, &f.secrets, "ai", "").unwrap();
+        let view = set_secret_inner(&f.store, &f.keys, &f.secrets, "ai", "").unwrap();
 
         assert!(!view.has_ai_key);
         // Deleted, not stored as an empty string.
@@ -855,35 +813,55 @@ mod tests {
     #[test]
     fn set_secret_trims_what_was_pasted() {
         let f = fixture();
-        set_secret_inner(&f.store, &f.secrets, "ai", &format!("  {AI_KEY}\n")).unwrap();
+        set_secret_inner(
+            &f.store,
+            &f.keys,
+            &f.secrets,
+            "ai",
+            &format!("  {AI_KEY}\n"),
+        )
+        .unwrap();
         assert_eq!(f.secrets.get(Account::Ai), Ok(Some(AI_KEY.to_string())));
 
         // Only blanks is no key.
-        set_secret_inner(&f.store, &f.secrets, "ai", " \n ").unwrap();
+        set_secret_inner(&f.store, &f.keys, &f.secrets, "ai", " \n ").unwrap();
         assert_eq!(f.secrets.get(Account::Ai), Ok(None));
     }
 
     #[test]
     fn set_secret_knows_two_accounts() {
         let f = fixture();
-        let err = set_secret_inner(&f.store, &f.secrets, "github", AI_KEY).unwrap_err();
+        let err = set_secret_inner(&f.store, &f.keys, &f.secrets, "github", AI_KEY).unwrap_err();
         assert!(err.contains("github"), "{err}");
         assert_eq!(f.secrets.get(Account::Ai), Ok(None));
+        assert!(!f.keys.get(Account::Ai));
     }
 
     #[test]
     fn set_secret_without_a_keyring_says_so() {
         let f = fixture();
-        let err = set_secret_inner(&f.store, &NoKeyring, "ai", AI_KEY).unwrap_err();
+        let err = set_secret_inner(&f.store, &f.keys, &NoKeyring, "ai", AI_KEY).unwrap_err();
         assert_eq!(err, "No system keyring available");
-        let err = set_secret_inner(&f.store, &NoKeyring, "ai", "").unwrap_err();
+        let err = set_secret_inner(&f.store, &f.keys, &NoKeyring, "ai", "").unwrap_err();
         assert_eq!(err, "No system keyring available");
+    }
+
+    #[test]
+    fn a_key_that_could_not_be_written_or_removed_leaves_the_flag_as_it_was() {
+        let f = fixture();
+
+        set_secret_inner(&f.store, &f.keys, &NoKeyring, "ai", AI_KEY).unwrap_err();
+        assert!(!f.keys.get(Account::Ai), "a key that was never saved");
+
+        f.keys.set(Account::Ai, true);
+        set_secret_inner(&f.store, &f.keys, &NoKeyring, "ai", "").unwrap_err();
+        assert!(f.keys.get(Account::Ai), "a key that is still there");
     }
 
     #[test]
     fn set_secret_tells_what_the_platform_said_when_it_refuses() {
         let f = fixture();
-        let err = set_secret_inner(&f.store, &DeniedKeyring, "ai", AI_KEY).unwrap_err();
+        let err = set_secret_inner(&f.store, &f.keys, &DeniedKeyring, "ai", AI_KEY).unwrap_err();
         assert!(err.starts_with("No system keyring available"), "{err}");
         assert!(
             err.contains("The user denied the Keychain prompt (-25293)"),
@@ -899,7 +877,7 @@ mod tests {
         let f = fixture();
         let mut s = f.store.get();
         s.vocabulary = "Dictate, Whisper".into();
-        let view = save_settings_inner(&f.store, &f.secrets, s, |_| Ok(())).unwrap();
+        let view = save_settings_inner(&f.store, &f.keys, s, |_| Ok(())).unwrap();
         assert_eq!(view.settings.vocabulary, "Dictate, Whisper");
         assert_eq!(f.store.get().vocabulary, "Dictate, Whisper");
     }
@@ -911,20 +889,20 @@ mod tests {
 
         let mut s = f.store.get();
         s.launch_at_login = true;
-        save_settings_inner(&f.store, &f.secrets, s.clone(), |on| {
+        save_settings_inner(&f.store, &f.keys, s.clone(), |on| {
             applied.lock().unwrap().push(on);
             Ok(())
         })
         .unwrap();
         // Saving again with the same value leaves the system alone.
         s.vocabulary = "x".into();
-        save_settings_inner(&f.store, &f.secrets, s.clone(), |on| {
+        save_settings_inner(&f.store, &f.keys, s.clone(), |on| {
             applied.lock().unwrap().push(on);
             Ok(())
         })
         .unwrap();
         s.launch_at_login = false;
-        save_settings_inner(&f.store, &f.secrets, s, |on| {
+        save_settings_inner(&f.store, &f.keys, s, |on| {
             applied.lock().unwrap().push(on);
             Ok(())
         })
@@ -940,7 +918,7 @@ mod tests {
         s.launch_at_login = true;
         s.vocabulary = "changed".into();
 
-        let err = save_settings_inner(&f.store, &f.secrets, s, |_| {
+        let err = save_settings_inner(&f.store, &f.keys, s, |_| {
             Err("Could not add the login item".to_string())
         })
         .unwrap_err();
@@ -962,7 +940,7 @@ mod tests {
 
         let mut s = store.get();
         s.launch_at_login = true;
-        let err = save_settings_inner(&store, &MemoryStore::default(), s, |on| {
+        let err = save_settings_inner(&store, &KeyFlags::default(), s, |on| {
             applied.lock().unwrap().push(on);
             Ok(())
         })
@@ -976,7 +954,7 @@ mod tests {
     #[test]
     fn switching_provider_follows_the_rules_and_is_saved() {
         let f = fixture();
-        let view = set_ai_provider_inner(&f.store, &f.secrets, AiProvider::OpenAi).unwrap();
+        let view = set_ai_provider_inner(&f.store, &f.keys, AiProvider::OpenAi).unwrap();
         assert_eq!(view.settings.ai_provider, AiProvider::OpenAi);
         assert_eq!(view.settings.ai_base_url, "http://localhost:8317/v1");
         assert_eq!(f.store.get().ai_base_url, "http://localhost:8317/v1");
@@ -985,105 +963,13 @@ mod tests {
     #[test]
     fn switching_transcription_service_follows_the_rules_and_is_saved() {
         let f = fixture();
-        let view =
-            set_transcribe_preset_inner(&f.store, &f.secrets, TranscribePreset::Groq).unwrap();
+        let view = set_transcribe_preset_inner(&f.store, &f.keys, TranscribePreset::Groq).unwrap();
         assert_eq!(view.settings.transcribe_preset, TranscribePreset::Groq);
         assert_eq!(
             view.settings.transcribe_base_url,
             "https://api.groq.com/openai/v1"
         );
         assert_eq!(f.store.get().transcribe_model, "whisper-large-v3-turbo");
-    }
-
-    // ---- the checks
-
-    #[test]
-    fn the_ai_check_needs_a_key_for_anthropic() {
-        let f = fixture();
-        let err = ai_config(&f.store, &f.secrets).unwrap_err();
-        assert!(err.to_lowercase().contains("key"), "{err}");
-    }
-
-    #[test]
-    fn the_ai_config_carries_the_key_and_the_vocabulary() {
-        let f = fixture();
-        f.secrets.set(Account::Ai, AI_KEY).unwrap();
-        let mut s = f.store.get();
-        s.vocabulary = "Dictate".into();
-        s.ai_model = "my-model".into();
-        f.store.save(&s).unwrap();
-
-        let config = ai_config(&f.store, &f.secrets).unwrap();
-        assert_eq!(config.api_key.as_deref(), Some(AI_KEY));
-        assert_eq!(config.vocabulary, "Dictate");
-        assert_eq!(config.model, "my-model");
-        assert_eq!(config.base_url, "https://api.anthropic.com");
-    }
-
-    #[test]
-    fn a_local_ai_server_needs_no_key() {
-        let f = fixture();
-        let mut s = f.store.get();
-        s.set_ai_provider(AiProvider::OpenAi);
-        f.store.save(&s).unwrap();
-        let config = ai_config(&f.store, &f.secrets).unwrap();
-        assert_eq!(config.api_key, None);
-    }
-
-    #[test]
-    fn the_transcription_config_uses_its_own_key_first() {
-        let f = fixture();
-        f.secrets.set(Account::Ai, AI_KEY).unwrap();
-        f.secrets.set(Account::Transcribe, STT_KEY).unwrap();
-        let config = transcribe_config(&f.store, &f.secrets);
-        assert_eq!(config.api_key, STT_KEY);
-        assert_eq!(config.base_url, "https://api.openai.com/v1");
-        assert_eq!(config.model, "whisper-1");
-        assert!(!config.chat);
-    }
-
-    #[test]
-    fn the_transcription_config_shares_the_openrouter_key() {
-        let f = fixture();
-        f.secrets.set(Account::Ai, AI_KEY).unwrap();
-        let mut s = f.store.get();
-        s.ai_base_url = "https://openrouter.ai/api/v1".into();
-        s.set_transcribe_preset(TranscribePreset::OpenRouter);
-        s.transcribe_language = "vi".into();
-        s.vocabulary = "Dictate".into();
-        f.store.save(&s).unwrap();
-
-        let config = transcribe_config(&f.store, &f.secrets);
-        assert_eq!(config.api_key, AI_KEY);
-        assert!(config.chat);
-        assert_eq!(config.language.as_deref(), Some("vi"));
-        assert_eq!(config.prompt, "Dictate");
-    }
-
-    #[test]
-    fn the_transcription_config_keeps_the_ai_key_from_another_host() {
-        let f = fixture();
-        f.secrets.set(Account::Ai, AI_KEY).unwrap();
-        let mut s = f.store.get();
-        s.ai_base_url = "https://openrouter.ai/api/v1".into();
-        s.set_transcribe_preset(TranscribePreset::OpenRouter);
-        s.transcribe_base_url = "https://stt.example.com/v1".into();
-        f.store.save(&s).unwrap();
-
-        let config = transcribe_config(&f.store, &f.secrets);
-        assert_eq!(config.base_url, "https://stt.example.com/v1");
-        assert_eq!(
-            config.api_key, "",
-            "the key of OpenRouter stays with OpenRouter"
-        );
-    }
-
-    #[test]
-    fn no_key_means_an_empty_key_and_no_language() {
-        let f = fixture();
-        let config = transcribe_config(&f.store, &f.secrets);
-        assert_eq!(config.api_key, "");
-        assert_eq!(config.language, None);
     }
 
     // ---- error text
@@ -1172,47 +1058,6 @@ mod tests {
     fn put_model(models: &ModelDir, id: &str) {
         std::fs::create_dir_all(models.root()).unwrap();
         std::fs::write(models.path(id), b"not a real model").unwrap();
-    }
-
-    #[test]
-    fn the_chosen_model_is_used_when_it_is_downloaded() {
-        let dir = tempfile::tempdir().unwrap();
-        let models = ModelDir::new(dir.path().join("models"));
-        put_model(&models, "tiny");
-        let settings = Settings {
-            whisper_model: Some("tiny".into()),
-            ..Settings::default()
-        };
-        let (id, path) = local_model(&settings, &models, 32).unwrap();
-        assert_eq!(id, "tiny");
-        assert_eq!(path, models.path("tiny"));
-    }
-
-    #[test]
-    fn the_recommended_model_is_used_when_none_is_chosen() {
-        let dir = tempfile::tempdir().unwrap();
-        let models = ModelDir::new(dir.path().join("models"));
-        put_model(&models, "small");
-        let (id, _) = local_model(&Settings::default(), &models, 8).unwrap();
-        assert_eq!(id, "small");
-    }
-
-    #[test]
-    fn a_model_that_is_not_downloaded_is_named_in_the_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let models = ModelDir::new(dir.path().join("models"));
-        let settings = Settings {
-            whisper_model: Some("medium".into()),
-            ..Settings::default()
-        };
-        let err = local_model(&settings, &models, 32).unwrap_err();
-        assert_eq!(
-            err,
-            "The medium model isn't downloaded yet. Download it in Settings first."
-        );
-        // The recommended one for 4 GB is `base`.
-        let err = local_model(&Settings::default(), &models, 4).unwrap_err();
-        assert!(err.contains("base"), "{err}");
     }
 
     #[test]
@@ -1352,14 +1197,18 @@ mod tests {
         format!("http://127.0.0.1:{port}")
     }
 
-    fn state_in(dir: &tempfile::TempDir) -> AppState {
+    fn state_with(dir: &tempfile::TempDir, secrets: Arc<dyn SecretStore>) -> AppState {
         let (store, warning) = SettingsStore::open(dir.path().join("settings.json"));
         AppState::new(
             store,
             warning,
-            Arc::new(MemoryStore::default()),
+            secrets,
             ModelDir::new(dir.path().join("models")),
         )
+    }
+
+    fn state_in(dir: &tempfile::TempDir) -> AppState {
+        state_with(dir, Arc::new(MemoryStore::default()))
     }
 
     type Events = Arc<Mutex<Vec<DownloadEvent>>>;

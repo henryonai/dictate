@@ -1,17 +1,20 @@
-//! What the commands share: the settings file, the key store, the model folder and the jobs that can be
-//! cancelled.
+//! What the commands share: the settings file, the key store, which keys exist, the model folder and the jobs
+//! that can be cancelled.
 
 use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
-use dictate_services::secrets::SecretStore;
+use dictate_services::secrets::{Account, SecretStore};
 use dictate_services::settings::{LoadWarning, SettingsStore};
 use dictate_services::whisper::models::ModelDir;
 use tokio_util::sync::CancellationToken;
+
+use crate::config::saved_key;
 
 /// A job that runs for a while and can be cancelled.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -113,11 +116,42 @@ impl Drop for JobGuard {
     }
 }
 
+/// Which keys are saved, as the settings view and the dictation need to know it. Asking the OS key store for
+/// that on every call can make the system show a prompt each time, so it is read once (see
+/// `AppState::loaded_keys`) and kept up to date when a key is saved or removed.
+#[derive(Debug, Default)]
+pub struct KeyFlags {
+    /// The key of the AI provider.
+    pub ai: AtomicBool,
+    /// The key of the transcription service itself; the AI key it may borrow doesn't count.
+    pub transcribe: AtomicBool,
+}
+
+impl KeyFlags {
+    fn flag(&self, account: Account) -> &AtomicBool {
+        match account {
+            Account::Ai => &self.ai,
+            Account::Transcribe => &self.transcribe,
+        }
+    }
+
+    /// Whether a key is saved for the account.
+    pub fn get(&self, account: Account) -> bool {
+        self.flag(account).load(Ordering::SeqCst)
+    }
+
+    pub fn set(&self, account: Account, saved: bool) {
+        self.flag(account).store(saved, Ordering::SeqCst);
+    }
+}
+
 /// Everything the commands need, cheap to clone into a background task.
 #[derive(Clone)]
 pub struct AppState {
     pub settings: Arc<SettingsStore>,
     pub secrets: Arc<dyn SecretStore>,
+    pub keys: Arc<KeyFlags>,
+    keys_read: Arc<OnceLock<()>>,
     pub models: ModelDir,
     pub jobs: Arc<Jobs>,
     load_warning: Arc<Mutex<Option<String>>>,
@@ -133,6 +167,8 @@ impl AppState {
         AppState {
             settings: Arc::new(settings),
             secrets,
+            keys: Arc::default(),
+            keys_read: Arc::default(),
             models,
             jobs: Arc::new(Jobs::default()),
             load_warning: Arc::new(Mutex::new(load_warning.map(|warning| warning.message))),
@@ -142,6 +178,20 @@ impl AppState {
     /// Why the settings file wasn't used as it was, once: the first call gets it, later ones nothing.
     pub fn take_load_warning(&self) -> Option<String> {
         lock(&self.load_warning).take()
+    }
+
+    /// The key flags, after the key store was asked once which keys it holds. The first caller asks, which may
+    /// take a while (a locked Keychain waits for the user), so call this from a blocking thread; anyone who comes
+    /// meanwhile waits for the answer instead of asking again, and later calls return at once. A key store that
+    /// can't be read counts as holding no key.
+    pub fn loaded_keys(&self) -> &KeyFlags {
+        self.keys_read.get_or_init(|| {
+            for account in [Account::Ai, Account::Transcribe] {
+                self.keys
+                    .set(account, saved_key(&*self.secrets, account).is_some());
+            }
+        });
+        &self.keys
     }
 }
 
@@ -165,6 +215,7 @@ pub fn open_model_dir(base_dir: &Path) -> io::Result<ModelDir> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{CountingStore, NoKeyring};
     use dictate_services::secrets::MemoryStore;
     use std::thread;
 
@@ -270,6 +321,78 @@ mod tests {
         );
         assert_eq!(state.take_load_warning(), warning.map(|w| w.message));
         assert_eq!(state.take_load_warning(), None);
+    }
+
+    /// The state with the given key store, in a folder of its own.
+    fn state_with(dir: &tempfile::TempDir, secrets: Arc<dyn SecretStore>) -> AppState {
+        let (store, warning) = SettingsStore::open(dir.path().join("settings.json"));
+        AppState::new(
+            store,
+            warning,
+            secrets,
+            ModelDir::new(dir.path().join("models")),
+        )
+    }
+
+    #[test]
+    fn the_key_flags_tell_which_keys_are_saved() {
+        let dir = tempfile::tempdir().unwrap();
+        let secrets = MemoryStore::default();
+        secrets.set(Account::Transcribe, "sk-stt").unwrap();
+        let state = state_with(&dir, Arc::new(secrets));
+
+        let keys = state.loaded_keys();
+
+        assert!(!keys.get(Account::Ai));
+        assert!(keys.get(Account::Transcribe));
+    }
+
+    #[test]
+    fn an_empty_key_or_a_key_store_that_is_down_counts_as_no_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let secrets = MemoryStore::default();
+        secrets.set(Account::Ai, "").unwrap();
+        let state = state_with(&dir, Arc::new(secrets));
+        assert!(!state.loaded_keys().get(Account::Ai));
+
+        let state = state_with(&dir, Arc::new(NoKeyring));
+        let keys = state.loaded_keys();
+        assert!(!keys.get(Account::Ai) && !keys.get(Account::Transcribe));
+    }
+
+    #[test]
+    fn the_key_store_is_read_once_and_every_caller_waits_for_it() {
+        let dir = tempfile::tempdir().unwrap();
+        // A store that takes its time, like a Keychain waiting for the user to answer a prompt.
+        let secrets = Arc::new(CountingStore::slow(Duration::from_millis(40)));
+        secrets.set(Account::Ai, "sk-ai").unwrap();
+        let state = state_with(&dir, secrets.clone());
+
+        thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    // Whoever asks first reads; the others get the flags only when it is done.
+                    let keys = state.loaded_keys();
+                    assert!(keys.get(Account::Ai), "asked before the keys were read");
+                    assert!(!keys.get(Account::Transcribe));
+                });
+            }
+        });
+        state.loaded_keys();
+
+        assert_eq!(secrets.gets(), 2, "one read per key, in all");
+    }
+
+    #[test]
+    fn a_flag_can_be_changed_after_the_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state_with(&dir, Arc::new(MemoryStore::default()));
+        let keys = state.loaded_keys();
+
+        keys.set(Account::Ai, true);
+        assert!(keys.get(Account::Ai) && !keys.get(Account::Transcribe));
+        keys.set(Account::Ai, false);
+        assert!(!keys.get(Account::Ai));
     }
 
     #[test]
