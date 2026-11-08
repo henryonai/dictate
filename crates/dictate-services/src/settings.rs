@@ -223,12 +223,11 @@ pub struct SettingsStore {
 }
 
 impl SettingsStore {
-    /// `<config dir>/Dictate/settings.json`.
-    pub fn default_path() -> PathBuf {
-        dirs::config_dir()
-            .unwrap_or_default()
-            .join("Dictate")
-            .join("settings.json")
+    /// `<config dir>/Dictate/settings.json`; `None` when the system has no config dir. There is no
+    /// fallback to a path in the working directory: settings written there would be lost, or worse,
+    /// picked up from wherever the app happens to start.
+    pub fn default_path() -> Option<PathBuf> {
+        settings_path_in(dirs::config_dir())
     }
 
     /// Load the file. A missing file is normal (defaults, no warning).
@@ -283,6 +282,11 @@ impl SettingsStore {
         *current = s.clone();
         Ok(())
     }
+}
+
+/// The settings file below `config_dir`; `None` without one.
+fn settings_path_in(config_dir: Option<PathBuf>) -> Option<PathBuf> {
+    config_dir.map(|dir| dir.join("Dictate").join("settings.json"))
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -900,9 +904,25 @@ mod tests {
     #[test]
     fn default_path_is_under_the_config_dir() {
         let path = SettingsStore::default_path();
-        assert!(path.ends_with("Dictate/settings.json"));
+        assert_eq!(path, settings_path_in(dirs::config_dir()));
         if let Some(config) = dirs::config_dir() {
+            let path = path.expect("there is a config dir");
+            assert!(path.ends_with("Dictate/settings.json"));
             assert!(path.starts_with(config));
         }
+    }
+
+    #[test]
+    fn the_settings_file_is_dictate_settings_json_in_the_config_dir() {
+        let config = Path::new("config");
+        assert_eq!(
+            settings_path_in(Some(config.to_path_buf())),
+            Some(config.join("Dictate").join("settings.json"))
+        );
+    }
+
+    #[test]
+    fn without_a_config_dir_there_is_no_path_and_never_a_relative_one() {
+        assert_eq!(settings_path_in(None), None);
     }
 }

@@ -95,7 +95,8 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "macos")]
     app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-    let settings_path = SettingsStore::default_path();
+    let settings_path =
+        SettingsStore::default_path().ok_or("the system has no folder for the app's settings")?;
     // Without a settings file this is the first start: Settings opens so that a new user sees where to begin.
     let first_launch = !settings_path.exists();
     let (store, warning) = SettingsStore::open(settings_path);
