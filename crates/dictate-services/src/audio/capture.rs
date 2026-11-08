@@ -145,10 +145,13 @@ impl Tap {
     }
 }
 
-/// The callback for errors of the stream: forwards those that end the recording.
+/// The callback for errors of the stream: forwards the first one that ends the recording. A backend that lost its
+/// device may report it again with every callback, and the listener needs to hear of it only once.
 fn error_handler(tx: Sender<CaptureEvent>) -> impl FnMut(cpal::Error) + Send + 'static {
+    let mut reported = false;
     move |e: cpal::Error| {
-        if stream_error_ends_recording(e.kind()) {
+        if !reported && stream_error_ends_recording(e.kind()) {
+            reported = true;
             let _ = tx.send(CaptureEvent::Error(CaptureError::Stream(e.to_string())));
         }
     }
@@ -326,6 +329,7 @@ mod tests {
         assert!(!stream_error_ends_recording(ErrorKind::DeviceChanged));
         assert!(!stream_error_ends_recording(ErrorKind::RealtimeDenied));
         assert!(stream_error_ends_recording(ErrorKind::DeviceNotAvailable));
+        assert!(stream_error_ends_recording(ErrorKind::StreamInvalidated));
         assert!(stream_error_ends_recording(ErrorKind::BackendError));
     }
 
@@ -340,6 +344,45 @@ mod tests {
         assert_eq!(
             rx.try_recv().unwrap(),
             CaptureEvent::Error(CaptureError::Stream("unplugged".into()))
+        );
+    }
+
+    #[test]
+    fn only_the_first_stream_error_is_sent() {
+        let (tx, rx) = mpsc::channel();
+        let mut on_error = error_handler(tx);
+        // A backend that has lost its device can report it on every callback.
+        on_error(cpal::Error::with_message(
+            ErrorKind::DeviceNotAvailable,
+            "unplugged",
+        ));
+        on_error(cpal::Error::with_message(
+            ErrorKind::DeviceNotAvailable,
+            "unplugged again",
+        ));
+        on_error(cpal::Error::new(ErrorKind::StreamInvalidated));
+        assert_eq!(
+            rx.try_iter().collect::<Vec<_>>(),
+            [CaptureEvent::Error(CaptureError::Stream(
+                "unplugged".into()
+            ))]
+        );
+    }
+
+    #[test]
+    fn an_ignored_error_does_not_use_up_the_one_that_is_sent() {
+        let (tx, rx) = mpsc::channel();
+        let mut on_error = error_handler(tx);
+        on_error(cpal::Error::new(ErrorKind::Xrun));
+        on_error(cpal::Error::with_message(
+            ErrorKind::DeviceNotAvailable,
+            "unplugged",
+        ));
+        assert_eq!(
+            rx.try_iter().collect::<Vec<_>>(),
+            [CaptureEvent::Error(CaptureError::Stream(
+                "unplugged".into()
+            ))]
         );
     }
 

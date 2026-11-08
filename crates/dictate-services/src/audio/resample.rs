@@ -22,6 +22,11 @@ pub fn to_16k(samples: &[f32], rate: u32) -> Vec<f32> {
     resample(samples, rate).unwrap_or_default()
 }
 
+/// Runs the whole clip through rubato's FFT resampler one chunk at a time.
+///
+/// rubato's own `process_all` is not used: it cuts the filter's delay off the start in a way that leaves the first
+/// tens of milliseconds wrong. Here the delay is cut by hand: the clip is followed by silence until the resampler
+/// has put out its delay plus every sample that was asked for, and then the delay is dropped from the front.
 fn resample(samples: &[f32], rate: u32) -> Option<Vec<f32>> {
     let mut resampler = Fft::<f32>::new(
         rate as usize,
@@ -31,9 +36,32 @@ fn resample(samples: &[f32], rate: u32) -> Option<Vec<f32>> {
         FixedSync::Input,
     )
     .ok()?;
-    let input = InterleavedSlice::new(samples, 1, samples.len()).ok()?;
-    let output = resampler.process_all(&input, samples.len(), None).ok()?;
-    Some(output.take_data())
+    // Whole samples of 16 kHz audio that the clip makes, rounded up.
+    let wanted = (samples.len() as u64 * u64::from(TARGET_RATE)).div_ceil(u64::from(rate)) as usize;
+    let delay = resampler.output_delay();
+
+    let mut out: Vec<f32> = Vec::with_capacity(wanted + delay + resampler.output_frames_max());
+    let mut chunk = vec![0.0_f32; resampler.input_frames_max()];
+    let mut consumed = 0;
+    while out.len() < wanted + delay {
+        let frames = resampler.input_frames_next();
+        let from = consumed.min(samples.len());
+        let to = (consumed + frames).min(samples.len());
+        chunk[..to - from].copy_from_slice(&samples[from..to]);
+        chunk[to - from..frames].fill(0.0);
+        consumed += frames;
+
+        let input = InterleavedSlice::new(&chunk[..frames], 1, frames).ok()?;
+        let block = resampler.process(&input, None).ok()?.take_data();
+        if block.is_empty() {
+            // No progress is possible: better no audio than a loop that never ends.
+            return None;
+        }
+        out.extend_from_slice(&block);
+    }
+    out.drain(..delay);
+    out.truncate(wanted);
+    Some(out)
 }
 
 #[cfg(test)]
@@ -89,9 +117,10 @@ mod tests {
     #[test]
     fn resample_keeps_the_loudness_of_a_tone() {
         let out = to_16k(&sine(440.0, 48_000, 1.0), 48_000);
-        // Skip the edges, where the filter is still settling.
-        let middle = &out[1_000..out.len() - 1_000];
-        let peak = middle.iter().fold(0.0_f32, |m, s| m.max(s.abs()));
+        // The whole output but the last 100 samples, where the filter runs out of input.
+        let peak = out[..out.len() - 100]
+            .iter()
+            .fold(0.0_f32, |m, s| m.max(s.abs()));
         assert!((peak - 0.5).abs() < 0.02, "peak {peak}");
     }
 
@@ -99,9 +128,45 @@ mod tests {
     fn resample_removes_what_16_khz_cannot_hold() {
         // 12 kHz is above the 8 kHz limit of 16 kHz audio: plain decimation would fold it down to a 4 kHz tone.
         let out = to_16k(&sine(12_000.0, 48_000, 1.0), 48_000);
-        let middle = &out[1_000..out.len() - 1_000];
-        let peak = middle.iter().fold(0.0_f32, |m, s| m.max(s.abs()));
+        // Not the first 20 and the last 100 samples: the tone starts and stops abruptly there, and a filter cannot
+        // tell that from a click (the very first sample reaches 0.08, the one after it 0.014).
+        let peak = out[20..out.len() - 100]
+            .iter()
+            .fold(0.0_f32, |m, s| m.max(s.abs()));
         assert!(peak < 0.02, "peak {peak}");
+    }
+
+    /// `seconds` of a sine wave at `hz` sampled at `rate`, each sample worked out exactly (in f64).
+    fn exact_sine(hz: f64, rate: u32, seconds: f64) -> Vec<f32> {
+        let n = (f64::from(rate) * seconds).round() as usize;
+        (0..n)
+            .map(|i| (0.5 * (std::f64::consts::TAU * hz * i as f64 / f64::from(rate)).sin()) as f32)
+            .collect()
+    }
+
+    #[test]
+    fn resample_matches_an_ideal_16_khz_sine_from_the_first_sample() {
+        // The whole output, head included, must be the sine that was recorded: the filter's delay is cut off the
+        // start and not left in as a few milliseconds of the wrong waveform.
+        for rate in [48_000, 44_100, 96_000, 22_050, 8_000] {
+            let out = to_16k(&exact_sine(440.0, rate, 1.0), rate);
+            let ideal = exact_sine(440.0, 16_000, 1.0);
+            assert_eq!(out.len(), ideal.len(), "{rate} Hz: length");
+            // Not the last 100 samples: the end of the clip is where the filter runs out of input. A tone that is one
+            // sample late is off by 0.086 at worst, so the 0.06 allows the small error of the filter, 0.044 at most
+            // (at the very first samples, where the tone starts abruptly), but not a shift.
+            let checked = out.len() - 100;
+            let (at, worst) = out[..checked]
+                .iter()
+                .zip(&ideal)
+                .map(|(a, b)| (a - b).abs())
+                .enumerate()
+                .fold((0, 0.0_f32), |w, (i, e)| if e > w.1 { (i, e) } else { w });
+            assert!(
+                worst < 0.06,
+                "{rate} Hz: off by {worst} at output sample {at}"
+            );
+        }
     }
 
     #[test]
@@ -115,9 +180,23 @@ mod tests {
     }
 
     #[test]
-    fn resample_a_clip_shorter_than_one_chunk() {
-        // 100 ms at 44.1 kHz is less than the resampler's chunk size.
-        let out = to_16k(&sine(440.0, 44_100, 0.1), 44_100);
-        assert!(out.len().abs_diff(1_600) <= 16, "got {} samples", out.len());
+    fn resample_a_clip_shorter_than_one_chunk_stays_aligned() {
+        // 800 frames at 44.1 kHz (18 ms) is less than the 1024 frames the resampler takes at a time. An impulse in
+        // the middle must come out where it belongs: sample 441 of 44 100 is sample 160 of 16 000.
+        let mut clip = vec![0.0_f32; 800];
+        clip[441] = 1.0;
+        let out = to_16k(&clip, 44_100);
+
+        assert_eq!(out.len(), 291, "800 * 16000 / 44100 rounded up");
+        let loudest = out
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.abs().total_cmp(&b.1.abs()))
+            .map(|(i, _)| i)
+            .unwrap();
+        assert!(
+            loudest.abs_diff(160) <= 2,
+            "the impulse landed at {loudest}"
+        );
     }
 }
