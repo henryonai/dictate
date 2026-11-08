@@ -33,7 +33,7 @@ const press = (key: string, code: string, held: Partial<Record<"metaKey" | "ctrl
 // ---- What it shows ------------------------------------------------------------------------------------------------
 
 test("the header says where the text comes from, and the meta line how long it was and in what language", () => {
-  render(Card, { panel: review({ style: "concise", language: "en-US", durationS: 65 }) });
+  render(Card, { panel: review({ style: "concise", original: "hello there", language: "en-US", durationS: 65 }) });
   expect(screen.getByText("Edited — Shorten")).toBeInTheDocument();
   expect(screen.getByText(`01:05 · ${languageName("en-US", "en")}`)).toBeInTheDocument();
 });
@@ -90,6 +90,29 @@ test("a text the controller sends takes the place of what is in the box, and the
   // The AI's answer is new text: it is what the box holds now.
   rerender({ panel: review({ text: "second" }) });
   expect(box()).toHaveValue("second");
+});
+
+test("an answer of the AI that is the same as the text before replaces what was typed in the meantime", async () => {
+  const { rerender } = render(Card, { panel: review({ text: "Draft." }) });
+  await fireEvent.input(box(), { target: { value: "Draft. And what I added." } });
+
+  // The AI works on it (the state still has the text it was sent), and answers with the very text of the draft.
+  rerender({ panel: review({ phase: "refining", text: "Draft.", style: "concise" }) });
+  expect(box()).toBeDisabled();
+  rerender({ panel: review({ phase: "review", text: "Draft.", style: "concise", original: "Draft." }) });
+
+  expect(box()).toHaveValue("Draft.");
+  expect(box()).not.toBeDisabled();
+});
+
+test("what is typed after the AI is done is the person's again, and the same state does not take it back", async () => {
+  const { rerender } = render(Card, { panel: review({ phase: "refining", text: "Draft.", style: "concise" }) });
+  rerender({ panel: review({ text: "Shorter.", style: "concise", original: "Draft." }) });
+  expect(box()).toHaveValue("Shorter.");
+
+  await fireEvent.input(box(), { target: { value: "Shorter. Mine." } });
+  rerender({ panel: review({ text: "Shorter.", style: "concise", original: "Draft.", notice: { key: "edit_failed", detail: "x" } }) });
+  expect(box()).toHaveValue("Shorter. Mine.");
 });
 
 // ---- The style buttons --------------------------------------------------------------------------------------------
@@ -358,10 +381,18 @@ test("the footer of a card from the dictation: Discard, and Copy & close that co
   expect(api.dictationCopy).toHaveBeenCalledExactlyOnceWith("Edited text.");
 });
 
-test("card_from_chip_footer: Copy and Paste into field, and neither Discard nor Copy & close", async () => {
+test("card_from_chip_footer: Discard stays, and Copy and Paste into field take the place of Copy & close", async () => {
   render(Card, { panel: review({ fromChip: true }) });
-  expect(screen.queryByRole("button", { name: "Discard" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Discard" })).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Copy & close" })).not.toBeInTheDocument();
+
+  // In the order of the footer: Discard, then Copy, then Paste into field.
+  const footer = screen.getByRole("button", { name: "Discard" }).parentElement as HTMLElement;
+  expect([...footer.querySelectorAll("button")].map((button) => button.textContent?.trim())).toEqual([
+    "Discard",
+    "Copy",
+    "Paste into field",
+  ]);
 
   await fireEvent.input(box(), { target: { value: "Edited text." } });
   await fireEvent.click(screen.getByRole("button", { name: "Copy" }));
@@ -369,6 +400,15 @@ test("card_from_chip_footer: Copy and Paste into field, and neither Discard nor 
 
   await fireEvent.click(screen.getByRole("button", { name: "Paste into field" }));
   expect(api.dictationPasteCard).toHaveBeenCalledExactlyOnceWith("Edited text.");
+});
+
+test("card_from_chip_footer: Discard and Esc drop the dictation from the chip's card too", async () => {
+  render(Card, { panel: review({ fromChip: true }) });
+  await fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+  expect(api.dictationCancel).toHaveBeenCalledOnce();
+
+  await press("Escape", "Escape");
+  expect(api.dictationCancel).toHaveBeenCalledTimes(2);
 });
 
 test("card_from_chip_footer: Cmd+Enter pastes the edited text as fresh text", async () => {
@@ -416,8 +456,9 @@ test("the hint names the shortcuts of the system, and leaves undo out when there
   rerender({ panel: review({ original: null }) });
   expect(screen.getByText("⌘1–5 edit · Esc discard")).toBeInTheDocument();
 
+  // From the chip it is Esc discard as well.
   rerender({ panel: review({ original: "hello", fromChip: true }) });
-  expect(screen.getByText("⌘1–5 edit · ⌥⌘Z undo · Esc close")).toBeInTheDocument();
+  expect(screen.getByText("⌘1–5 edit · ⌥⌘Z undo · Esc discard")).toBeInTheDocument();
 });
 
 test("the hint is written with Ctrl on the other systems", () => {

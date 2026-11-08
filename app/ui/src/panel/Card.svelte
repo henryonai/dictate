@@ -16,11 +16,18 @@
 
   // The box is the person's to edit: what the Rust side sends replaces it only when it is new text (the answer of the AI,
   // the text before the edit), and a state that carries the same text again leaves what was typed alone.
+  const refining = $derived(panel.phase === "refining");
+
+  // The answer of the AI always is the box's text, though it is the same as the text that was sent before (a rewrite
+  // that comes out as an earlier draft): what was typed meanwhile is not the answer.
   let text = $state(untrack(() => panel.text));
   let sent = untrack(() => panel.text);
+  let wasRefining = untrack(() => panel.phase === "refining");
   $effect(() => {
     const next = panel.text;
-    if (next !== sent) {
+    const answered = wasRefining && !refining;
+    wasRefining = refining;
+    if (answered || next !== sent) {
       sent = next;
       text = next;
     }
@@ -37,7 +44,6 @@
   let customField: HTMLInputElement | undefined = $state();
   let moreRoot: HTMLElement | undefined = $state();
 
-  const refining = $derived(panel.phase === "refining");
   const empty = $derived(text.trim() === "");
   /** The styles, the custom request and the copy wait for the AI, and for something to work on. */
   const busy = $derived(refining || empty);
@@ -46,7 +52,7 @@
     [
       t("card.hint_edit", { mod }),
       panel.original !== null ? t("card.hint_undo", { undo: undoKeys }) : null,
-      t(panel.fromChip ? "card.hint_close" : "card.hint_discard"),
+      t("card.hint_discard"),
     ]
       .filter((part) => part !== null)
       .join(" · "),
@@ -260,11 +266,11 @@
     {/if}
     <span class="hint">{hint}</span>
     <span class="grow"></span>
+    <button type="button" class="secondary" onclick={discard}>{t("card.discard")}</button>
     {#if panel.fromChip}
       <button type="button" class="secondary" disabled={busy} onclick={copy}>{t("card.copy")}</button>
       <button type="button" class="primary" disabled={busy || !panel.canWrite} onclick={pasteIntoField}>{t("card.paste_into_field")}</button>
     {:else}
-      <button type="button" class="secondary" onclick={discard}>{t("card.discard")}</button>
       <button type="button" class="primary" disabled={busy} onclick={copy}>{t("card.copy_close")}</button>
     {/if}
   </div>

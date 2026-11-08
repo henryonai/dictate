@@ -106,10 +106,29 @@ test("a press inside the menu leaves it open", async () => {
 });
 
 test("Esc closes the menu and goes no further", async () => {
+  // Whatever listens for Esc on the page (the card's Esc, a window that hides) must not hear the one that closes the menu.
+  const onEscape = vi.fn();
+  window.addEventListener("keydown", onEscape);
   render(Chip, { panel: written() });
   await fireEvent.click(dots());
-  await fireEvent.keyDown(window, { key: "Escape" });
+
+  const notPrevented = await fireEvent.keyDown(dots(), { key: "Escape" });
+  window.removeEventListener("keydown", onEscape);
+
   expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  expect(onEscape).not.toHaveBeenCalled();
+  // The key is taken: its own action is prevented too.
+  expect(notPrevented).toBe(false);
+});
+
+test("Esc with no menu open goes where it was going", async () => {
+  const onEscape = vi.fn();
+  window.addEventListener("keydown", onEscape);
+  render(Chip, { panel: written() });
+
+  await fireEvent.keyDown(dots(), { key: "Escape" });
+  window.removeEventListener("keydown", onEscape);
+  expect(onEscape).toHaveBeenCalledOnce();
 });
 
 test("when the chip goes away with its menu open it says that the menu is closed", async () => {

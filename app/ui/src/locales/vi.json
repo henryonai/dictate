@@ -189,6 +189,5 @@
   "card.paste_into_field": "Dán vào ô",
   "card.hint_edit": "{mod}1–5 sửa",
   "card.hint_undo": "{undo} hoàn tác",
-  "card.hint_discard": "Esc bỏ",
-  "card.hint_close": "Esc đóng"
+  "card.hint_discard": "Esc bỏ"
 }

@@ -180,14 +180,35 @@ describe("the card", () => {
     );
     expect(cardHeader(review({ phase: "refining", style: "email" }))).toBe("AI is editing: Turn into an email…");
     expect(cardHeader(review({ phase: "refining" }))).toBe("AI is editing…");
-    expect(cardHeader(review({ style: "concise" }))).toBe("Edited — Shorten");
+    expect(cardHeader(review({ style: "concise", original: "hello there" }))).toBe("Edited — Shorten");
     expect(cardHeader(review({ fromChip: true }))).toBe("Edit what was just written");
     expect(cardHeader(review())).toBe("Done — edit or copy");
   });
 
+  test("a card from the chip on text the AI edited says Edited, and Edit what was just written for text it did not", () => {
+    expect(cardHeader(review({ fromChip: true, style: "concise", original: "hello there" }))).toBe("Edited — Shorten");
+    expect(cardHeader(review({ fromChip: true, style: "rewrite for my boss", original: "hello" }))).toBe(
+      "Edited — rewrite for my boss",
+    );
+    // A style with no original to go back to, or an original with no style to name, is not told as an edit.
+    expect(cardHeader(review({ fromChip: true, style: "concise", original: null }))).toBe("Edit what was just written");
+    expect(cardHeader(review({ fromChip: true, style: null, original: "hello" }))).toBe("Edit what was just written");
+    expect(cardHeader(review({ style: "concise", original: null }))).toBe("Done — edit or copy");
+  });
+
+  test("the AI that is re-transcribing is told as the bubble tells it, not as an edit", () => {
+    const working = (editing: boolean) => ({ kind: "retranscribing" as const, style: "clean", model: "whisper-1", editing });
+    expect(cardHeader(review({ phase: "refining", working: working(false) }))).toBe("Re-transcribing with whisper-1…");
+    expect(cardHeader(review({ phase: "refining", working: working(true) }))).toBe(
+      "Re-transcribing and editing with whisper-1…",
+    );
+    setLanguage("vi");
+    expect(cardHeader(review({ phase: "refining", working: working(false) }))).toBe("Chép lại bằng whisper-1…");
+  });
+
   test("the header is in Vietnamese when the UI is", () => {
     setLanguage("vi");
-    expect(cardHeader(review({ style: "concise" }))).toBe("Đã sửa — Rút gọn");
+    expect(cardHeader(review({ style: "concise", original: "hello" }))).toBe("Đã sửa — Rút gọn");
     expect(cardHeader(review({ fromChip: true }))).toBe("Chỉnh sửa đoạn vừa viết");
     expect(cardHeader(review())).toBe("Xong — sửa hoặc sao chép");
   });
@@ -205,7 +226,12 @@ describe("the card", () => {
 
 describe("the shortcuts of the card", () => {
   /** What a key press says: the key, the physical key, and the modifiers held. */
-  const press = (code: string, held: Partial<Record<"metaKey" | "ctrlKey" | "altKey" | "shiftKey", boolean>> = {}, key = "") => ({
+  const press = (
+    code: string,
+    held: Partial<Record<"metaKey" | "ctrlKey" | "altKey" | "shiftKey", boolean>> = {},
+    key = "",
+    altGraph = false,
+  ) => ({
     key,
     code,
     metaKey: false,
@@ -213,6 +239,7 @@ describe("the shortcuts of the card", () => {
     altKey: false,
     shiftKey: false,
     ...held,
+    getModifierState: (name: string) => altGraph && name === "AltGraph",
   });
 
   test("card_shortcuts_1_to_5: Cmd and a digit run a style on a Mac, and Ctrl does nothing", () => {
@@ -242,6 +269,19 @@ describe("the shortcuts of the card", () => {
     expect(cardShortcut(press("KeyZ", { ctrlKey: true, altKey: true }), false)).toEqual({ kind: "undo" });
     // Without Alt it is the undo of the text box, which is not ours.
     expect(cardShortcut(press("KeyZ", { metaKey: true }), true)).toBeNull();
+  });
+
+  test("AltGr of a Windows keyboard (Ctrl and Alt reported together) is a key for typing, not the undo", () => {
+    // On a layout like the Polish one AltGr+Z types a letter.
+    expect(cardShortcut(press("KeyZ", { ctrlKey: true, altKey: true }, "ż", true), false)).toBeNull();
+    expect(cardShortcut(press("Digit2", { ctrlKey: true, altKey: true }, "", true), false)).toBeNull();
+    expect(cardShortcut(press("Enter", { ctrlKey: true, altKey: true }, "Enter", true), false)).toBeNull();
+    // The same keys with the real Ctrl and Alt are the shortcut.
+    expect(cardShortcut(press("KeyZ", { ctrlKey: true, altKey: true }), false)).toEqual({ kind: "undo" });
+    // An event that has no modifier state to ask (a test double) is judged by the flags alone.
+    expect(cardShortcut({ key: "z", code: "KeyZ", metaKey: false, ctrlKey: true, altKey: true, shiftKey: false }, false)).toEqual({
+      kind: "undo",
+    });
   });
 
   test("Cmd (Ctrl) and Return confirm, Esc discards", () => {

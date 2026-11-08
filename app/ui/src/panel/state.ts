@@ -211,14 +211,22 @@ export const CARD_STYLES: readonly string[] = ["clean", "concise", "email", "bul
 /** The rest of the styles, in the "More" menu. */
 export const CARD_MORE_STYLES: readonly string[] = ["formal", "prompt", "vi"];
 
-/** The header of the card: what the AI is doing, where the text comes from, or that it is there to edit or copy. */
+/**
+ * The header of the card: what the AI is doing; else what it did (a style, and the original it can go back to), also on
+ * a card from the chip; else that the text is the chip's to edit, or there to edit or copy.
+ */
 export function cardHeader(state: PanelState): string {
   if (state.phase === "refining") {
-    const style = state.working?.style ?? state.style;
+    const work = state.working;
+    // As the bubble tells it: the transcription is again under way, and may be doing the edit in the same call.
+    if (work?.kind === "retranscribing") {
+      return t(work.editing ? "panel.retranscribing_editing" : "panel.retranscribing", { model: work.model ?? "" });
+    }
+    const style = work?.style ?? state.style;
     return style ? t("card.header_refining", { style: styleTitle(style) }) : t("card.header_refining_plain");
   }
+  if (state.style && state.original !== null) return t("card.header_edited", { style: styleTitle(state.style) });
   if (state.fromChip) return t("card.header_from_chip");
-  if (state.style) return t("card.header_edited", { style: styleTitle(state.style) });
   return t("card.header_done");
 }
 
@@ -229,7 +237,9 @@ export function cardMeta(state: PanelState, ui: Language): string {
 }
 
 /** What a key press says, as much as the shortcuts of the card look at. */
-export type KeyLike = Pick<KeyboardEvent, "key" | "code" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey">;
+export type KeyLike = Pick<KeyboardEvent, "key" | "code" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey"> & {
+  getModifierState?: (key: string) => boolean;
+};
 
 export type CardShortcut = { kind: "style"; style: string } | { kind: "undo" } | { kind: "confirm" } | { kind: "discard" };
 
@@ -240,10 +250,12 @@ export function onMac(): boolean {
 
 /**
  * What a key press means in the card: Cmd (Ctrl) and 1 to 5 run a style, with Alt and Z undo, with Return confirm; Esc
- * discards. Keys are told by `code` (the key on the keyboard): with Alt held the letter of the key is another one.
+ * discards. Keys are told by `code` (the key on the keyboard): with Alt held the letter of the key is another one. On
+ * Windows the AltGr key is reported as Ctrl and Alt together, with the AltGraph state set: it types letters, and is no shortcut.
  */
 export function cardShortcut(press: KeyLike, mac: boolean): CardShortcut | null {
   if (press.key === "Escape") return { kind: "discard" };
+  if (press.getModifierState?.("AltGraph")) return null;
   const mod = mac ? press.metaKey && !press.ctrlKey : press.ctrlKey && !press.metaKey;
   if (!mod) return null;
   if (press.altKey) {

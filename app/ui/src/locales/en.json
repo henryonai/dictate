@@ -189,6 +189,5 @@
   "card.paste_into_field": "Paste into field",
   "card.hint_edit": "{mod}1–5 edit",
   "card.hint_undo": "{undo} undo",
-  "card.hint_discard": "Esc discard",
-  "card.hint_close": "Esc close"
+  "card.hint_discard": "Esc discard"
 }
