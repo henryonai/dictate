@@ -66,6 +66,13 @@ fn main() {
         .expect("the Dictate app could not start");
 
     app.run(|app, event| match event {
+        // Opening the app again from Finder, Launchpad or Spotlight reaches the running one as this event, not as a
+        // second process, so the single-instance plugin never hears of it. Settings is what a tray app shows then.
+        #[cfg(target_os = "macos")]
+        RunEvent::Reopen { .. } => {
+            log::info!("The app was opened again: showing Settings");
+            tray::show_settings(app);
+        }
         // Closing the last window doesn't end a tray app; Quit does, and it comes with an exit code.
         RunEvent::ExitRequested { api, code, .. } => {
             if code.is_none() {
