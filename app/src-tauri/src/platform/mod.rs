@@ -1,12 +1,18 @@
 //! What the operating system knows about where the user is typing: the frontmost app, the text field that has
 //! the focus and where its caret is, and whether the app may use the microphone and (on macOS) the Accessibility
 //! API. Dictation asks these questions before it shows its bubble and after it writes, and it asks while another
-//! app has the focus, so every answer can be a "don't know".
+//! app has the focus, so every answer can be a "don't know". Writing there is [`paste`]: the clipboard, the paste
+//! shortcut and the user's clipboard given back, which each system does its own way.
 
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+mod clipboard;
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+mod keys;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
+pub mod paste;
 pub mod rules;
 #[cfg(target_os = "windows")]
 mod windows;
@@ -135,6 +141,37 @@ pub fn current(app: &tauri::AppHandle) -> Arc<dyn Platform> {
         Arc::new(linux::LinuxPlatform::new(Box::new(move |near| {
             tauri_screen(&app, near)
         })))
+    }
+}
+
+/// The clipboard of this system, which a paste writes the dictated text to and takes the user's back from.
+pub fn current_clipboard() -> Arc<dyn paste::Clipboard> {
+    #[cfg(target_os = "macos")]
+    {
+        Arc::new(macos::MacClipboard::new())
+    }
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    {
+        Arc::new(clipboard::DesktopClipboard::new())
+    }
+}
+
+/// What presses the paste shortcut and brings an app forward on this system. `app` is the way to the main thread,
+/// where macOS answers the questions about the app in front.
+pub fn current_keys(app: &tauri::AppHandle) -> Arc<dyn paste::KeySender> {
+    #[cfg(target_os = "macos")]
+    {
+        Arc::new(macos::MacKeys::new(app.clone()))
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = app;
+        Arc::new(windows::WindowsKeys::new())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = app;
+        Arc::new(linux::LinuxKeys::new())
     }
 }
 

@@ -6,10 +6,22 @@
 //! Wayland has no way at all to ask another app's window for anything, and no pointer position either: it
 //! answers "don't know" to every question.
 
+use std::os::unix::fs::MetadataExt;
+use std::path::Path;
+use std::process::{Command, Stdio};
+use std::sync::{Mutex, PoisonError};
+use std::thread;
+use std::time::{Duration, Instant};
+
 use x11rb::connection::Connection;
-use x11rb::protocol::xproto::{Atom, AtomEnum, ConnectionExt, GetPropertyReply};
+use x11rb::protocol::xproto::{Atom, AtomEnum, ConnectionExt, GetPropertyReply, KeyButMask};
 use x11rb::rust_connection::RustConnection;
 
+use super::keys::press_paste;
+use super::paste::{
+    find_on_path, is_app, pick_wayland_tool, wayland_args, ydotool_sockets, KeySender, PasteError,
+    WaylandTool,
+};
 use super::rules::{is_terminal, parse_wm_class, session, Os, Session};
 use super::{
     run_with_timeout, AppId, FieldInfo, FieldLookup, FieldSnapshot, Permission, Platform, Rect,
@@ -159,4 +171,131 @@ fn x11_front() -> Option<Front> {
 /// The first number of a property of numbers.
 fn first_value(reply: &GetPropertyReply) -> Option<u32> {
     reply.value32()?.next()
+}
+
+// ---- The keys ------------------------------------------------------------------------------------------------
+
+/// How long a tool of Wayland (`wtype`, `ydotool`) has to press the keys.
+const TOOL_TIME: Duration = Duration::from_secs(2);
+
+/// Presses Ctrl+V (Ctrl+Shift+V in a terminal): through the XTest extension on X11, and through `wtype` or
+/// `ydotool` on Wayland. Wayland lets no app press keys in another, so without one of the two tools there is
+/// nothing to do but copy.
+pub struct LinuxKeys {
+    session: Session,
+    last_post: Mutex<Option<Instant>>,
+}
+
+impl LinuxKeys {
+    pub fn new() -> LinuxKeys {
+        LinuxKeys {
+            session: session(&|name| std::env::var(name).ok()),
+            last_post: Mutex::new(None),
+        }
+    }
+
+    fn on_x11(&self) -> bool {
+        self.session == Session::X11
+    }
+}
+
+impl KeySender for LinuxKeys {
+    fn bring_forward(&self, app: &AppId) -> bool {
+        // Wayland doesn't say who is in front, and an app that wasn't found by name can't be waited for: the
+        // keys go to whoever has the focus, which is the app that the dictation started in.
+        if !self.on_x11() || (app.id.is_empty() && app.pid.is_none()) {
+            return true;
+        }
+        match x11_front() {
+            Some(front) => is_app(&front.app, app),
+            // No window manager that says which window is active.
+            None => true,
+        }
+    }
+
+    fn modifiers_released(&self) -> bool {
+        // Wayland doesn't say which keys are down.
+        if !self.on_x11() {
+            return true;
+        }
+        let held = run_with_timeout(ASK_TIMEOUT, || {
+            let (connection, screen) = RustConnection::connect(None).ok()?;
+            let root = connection.setup().roots.get(screen)?.root;
+            let mask = connection.query_pointer(root).ok()?.reply().ok()?.mask;
+            let shortcut =
+                KeyButMask::SHIFT | KeyButMask::CONTROL | KeyButMask::MOD1 | KeyButMask::MOD4;
+            Some(mask.intersects(shortcut))
+        })
+        .flatten();
+        !held.unwrap_or(false)
+    }
+
+    fn send_paste(&self, terminal: bool) -> Result<(), PasteError> {
+        let sent = if self.on_x11() {
+            press_paste(terminal)
+        } else {
+            wayland_paste(terminal)
+        };
+        if sent.is_ok() {
+            *self
+                .last_post
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = Some(Instant::now());
+        }
+        sent
+    }
+
+    fn last_post(&self) -> Option<Instant> {
+        *self
+            .last_post
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// Presses the keys with the tool that this Wayland desktop has: `wtype` when it is installed, else `ydotool`
+/// with its daemon running.
+fn wayland_paste(terminal: bool) -> Result<(), PasteError> {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let on_path = |name: &str| find_on_path(name, &path, Path::is_file);
+    let uid = std::fs::metadata("/proc/self").ok().map(|own| own.uid());
+    let sockets = ydotool_sockets(
+        std::env::var("YDOTOOL_SOCKET").ok().as_deref(),
+        std::env::var("XDG_RUNTIME_DIR").ok().as_deref(),
+        uid,
+    );
+    let listening = sockets.iter().any(|socket| socket.exists());
+    let tool = pick_wayland_tool(on_path("wtype"), on_path("ydotool"), listening)
+        .ok_or(PasteError::NoWaylandTool)?;
+    let (WaylandTool::Wtype(program) | WaylandTool::Ydotool(program)) = &tool;
+    let mut child = Command::new(program)
+        .args(wayland_args(&tool, terminal))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| PasteError::Failed(format!("{}: {error}", program.display())))?;
+    // A tool that hangs (a daemon that doesn't answer) must not hold the paste.
+    let deadline = Instant::now() + TOOL_TIME;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(status)) => {
+                return Err(PasteError::Failed(format!(
+                    "{} failed: {status}",
+                    program.display()
+                )))
+            }
+            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(PasteError::Failed(format!(
+                    "{} did not answer",
+                    program.display()
+                )));
+            }
+            Err(error) => return Err(PasteError::Failed(error.to_string())),
+        }
+    }
 }

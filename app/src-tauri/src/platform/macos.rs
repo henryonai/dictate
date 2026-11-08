@@ -10,14 +10,18 @@
 //! conversion; AppKit's are from the bottom left and are flipped.
 
 use std::ptr::NonNull;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use block2::RcBlock;
-use objc2::runtime::Bool;
+use objc2::rc::Retained;
+use objc2::runtime::{Bool, ProtocolObject};
 use objc2::MainThreadMarker;
-use objc2_app_kit::{NSEvent, NSScreen, NSWorkspace};
+use objc2_app_kit::{
+    NSApplicationActivationOptions, NSEvent, NSPasteboard, NSPasteboardItem,
+    NSPasteboardTypeString, NSPasteboardWriting, NSRunningApplication, NSScreen, NSWorkspace,
+};
 use objc2_application_services::{
     kAXTrustedCheckOptionPrompt, AXError, AXIsProcessTrusted, AXIsProcessTrustedWithOptions,
     AXUIElement, AXValue, AXValueType,
@@ -27,7 +31,12 @@ use objc2_core_foundation::{
     CFBoolean, CFDictionary, CFNumber, CFRange, CFRetained, CFString, CFType, CGPoint, CGRect,
     CGSize,
 };
+use objc2_core_graphics::{
+    CGEvent, CGEventField, CGEventFlags, CGEventSource, CGEventSourceStateID, CGEventTapLocation,
+};
+use objc2_foundation::{NSArray, NSData, NSString};
 
+use super::paste::{ChangeMark, ClipSnapshot, Clipboard, KeySender, PasteError, PasteboardItem};
 use super::rules::{
     accept_caret, ax_focus_is_the_app, caret_after, classify_ax, field_anchor, flip_y,
     is_chromium_browser, is_terminal, on_any_screen, pick_visible_frame, secure_read_outcome,
@@ -645,6 +654,227 @@ fn snapshot(front: &Front, _screens: &[Screen], deadline: Instant) -> Result<Fie
     })
 }
 
+// ---- The clipboard -------------------------------------------------------------------------------------------
+
+/// The type that clipboard managers skip (nspasteboard.org): text put there only to be pasted.
+const TRANSIENT_TYPE: &str = "org.nspasteboard.TransientType";
+
+/// The pasteboard. Its calls are safe from any thread.
+pub struct MacClipboard {
+    /// Which pasteboard: the general one, always, outside the tests.
+    board: fn() -> Retained<NSPasteboard>,
+}
+
+impl MacClipboard {
+    pub fn new() -> MacClipboard {
+        MacClipboard {
+            board: NSPasteboard::generalPasteboard,
+        }
+    }
+}
+
+impl Clipboard for MacClipboard {
+    fn snapshot(&self) -> ClipSnapshot {
+        let board = (self.board)();
+        // A type that gives no bytes (a promise that nobody keeps) can't be kept.
+        let item_of = |item: &NSPasteboardItem| -> PasteboardItem {
+            item.types()
+                .iter()
+                .filter_map(|kind| {
+                    let data = item.dataForType(&kind)?;
+                    Some((kind.to_string(), data.to_vec()))
+                })
+                .collect()
+        };
+        let items = board
+            .pasteboardItems()
+            .map(|items| {
+                items
+                    .iter()
+                    .map(|item| item_of(&item))
+                    .filter(|types| !types.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+        ClipSnapshot::Pasteboard(items)
+    }
+
+    fn write_transient(&self, text: &str) -> Result<ChangeMark, String> {
+        let board = (self.board)();
+        board.clearContents();
+        // SAFETY: a constant of AppKit.
+        let string_type = unsafe { NSPasteboardTypeString };
+        if !board.setString_forType(&NSString::from_str(text), string_type) {
+            return Err("the pasteboard did not take the text".into());
+        }
+        // The empty data of the transient type is all the mark is: without it the text is still pasted.
+        board.setData_forType(Some(&NSData::new()), &NSString::from_str(TRANSIENT_TYPE));
+        Ok(ChangeMark(change_count(&board)))
+    }
+
+    fn changed_since(&self, mark: &ChangeMark) -> bool {
+        change_count(&(self.board)()) != mark.0
+    }
+
+    fn restore(&self, snapshot: ClipSnapshot) {
+        let ClipSnapshot::Pasteboard(items) = snapshot else {
+            return;
+        };
+        let board = (self.board)();
+        board.clearContents();
+        let objects: Vec<Retained<ProtocolObject<dyn NSPasteboardWriting>>> = items
+            .iter()
+            .map(|types| {
+                let item = NSPasteboardItem::new();
+                for (kind, bytes) in types {
+                    item.setData_forType(&NSData::with_bytes(bytes), &NSString::from_str(kind));
+                }
+                ProtocolObject::from_retained(item)
+            })
+            .collect();
+        if !objects.is_empty() {
+            board.writeObjects(&NSArray::from_retained_slice(&objects));
+        }
+    }
+
+    fn copy(&self, text: &str) -> Result<(), String> {
+        let board = (self.board)();
+        board.clearContents();
+        // SAFETY: a constant of AppKit.
+        let string_type = unsafe { NSPasteboardTypeString };
+        if board.setString_forType(&NSString::from_str(text), string_type) {
+            Ok(())
+        } else {
+            Err("the pasteboard did not take the text".into())
+        }
+    }
+}
+
+/// The number that the pasteboard counts up whenever something is put on it.
+fn change_count(board: &NSPasteboard) -> u64 {
+    u64::try_from(board.changeCount()).unwrap_or(0)
+}
+
+// ---- The keys ------------------------------------------------------------------------------------------------
+
+/// The key V on every keyboard layout, as the system numbers the keys by where they are.
+const KEY_V: u16 = 9;
+/// What every key event of ours is tagged with ("DICT"), so that whoever watches the keyboard can tell it from the
+/// user's own typing.
+pub const EVENT_TAG: i64 = 0x4449_4354;
+/// How long one question about the app in front waits for the main thread, which has to answer it.
+const FORWARD_ASK: Duration = Duration::from_millis(100);
+
+/// Presses Cmd+V and brings apps forward.
+pub struct MacKeys {
+    app: tauri::AppHandle,
+    last_post: Mutex<Option<Instant>>,
+}
+
+impl MacKeys {
+    pub fn new(app: tauri::AppHandle) -> MacKeys {
+        MacKeys {
+            app,
+            last_post: Mutex::new(None),
+        }
+    }
+}
+
+impl KeySender for MacKeys {
+    fn bring_forward(&self, app: &AppId) -> bool {
+        let app = app.clone();
+        // The activation state of an app is kept by the main thread, so that is where it is asked.
+        ask_main(&self.app, Instant::now() + FORWARD_ASK, move |_| {
+            activate(&app)
+        })
+        .unwrap_or(false)
+    }
+
+    fn modifiers_released(&self) -> bool {
+        !modifiers_held(CGEventSource::flags_state(
+            CGEventSourceStateID::CombinedSessionState,
+        ))
+    }
+
+    fn send_paste(&self, _terminal: bool) -> Result<(), PasteError> {
+        // Without the permission the system drops the keys and says nothing.
+        // SAFETY: a call with no arguments.
+        if !unsafe { AXIsProcessTrusted() } {
+            return Err(PasteError::Failed(
+                "Accessibility access is not granted".into(),
+            ));
+        }
+        let source = CGEventSource::new(CGEventSourceStateID::CombinedSessionState);
+        let key = |down: bool| {
+            let event = CGEvent::new_keyboard_event(source.as_deref(), KEY_V, down)
+                .ok_or_else(|| PasteError::Failed("could not make the key event".into()))?;
+            // Only Command: the Ctrl and Alt of the hotkey, if they are still held, must not turn it into
+            // another shortcut.
+            CGEvent::set_flags(Some(&event), CGEventFlags::MaskCommand);
+            CGEvent::set_integer_value_field(
+                Some(&event),
+                CGEventField::EventSourceUserData,
+                EVENT_TAG,
+            );
+            Ok(event)
+        };
+        // Both events are made before one is sent: a key that went down always comes up.
+        let (down, up) = (key(true)?, key(false)?);
+        CGEvent::post(CGEventTapLocation::HIDEventTap, Some(&down));
+        CGEvent::post(CGEventTapLocation::HIDEventTap, Some(&up));
+        *self
+            .last_post
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(Instant::now());
+        Ok(())
+    }
+
+    fn last_post(&self) -> Option<Instant> {
+        *self
+            .last_post
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// Asks the app to come forward if it isn't, and says whether it is in front now. Runs on the main thread.
+fn activate(target: &AppId) -> bool {
+    let by_pid = target
+        .pid
+        .and_then(|pid| i32::try_from(pid).ok())
+        .and_then(NSRunningApplication::runningApplicationWithProcessIdentifier);
+    let running = by_pid.or_else(|| {
+        let id = NSString::from_str(&target.id);
+        NSRunningApplication::runningApplicationsWithBundleIdentifier(&id)
+            .iter()
+            .next()
+    });
+    let Some(running) = running else {
+        // The app quit.
+        return false;
+    };
+    if running.isTerminated() {
+        return false;
+    }
+    if running.isActive() {
+        return true;
+    }
+    // Only the main and key windows come forward. The system may refuse (and then the next question gets the
+    // same answer); it needs no more than a request.
+    running.activateWithOptions(NSApplicationActivationOptions::empty());
+    false
+}
+
+/// Whether one of the modifiers of a shortcut is held (the caps lock and the fn key are none).
+fn modifiers_held(flags: CGEventFlags) -> bool {
+    flags.intersects(
+        CGEventFlags::MaskCommand
+            | CGEventFlags::MaskControl
+            | CGEventFlags::MaskAlternate
+            | CGEventFlags::MaskShift,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -716,5 +946,188 @@ mod tests {
         ] {
             assert_eq!(secure_read_of(error.0), SecureRead::Failed, "{error:?}");
         }
+    }
+
+    // ---- The clipboard, on a pasteboard of its own so that the user's is left alone ----
+
+    /// The tests share one private pasteboard, so they take turns.
+    fn exclusive() -> std::sync::MutexGuard<'static, ()> {
+        static TURN: Mutex<()> = Mutex::new(());
+        TURN.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn private_board() -> Retained<NSPasteboard> {
+        // One name for the whole run: `pasteboardWithName` gives the same board for it every time.
+        NSPasteboard::pasteboardWithName(&NSString::from_str(&format!(
+            "io.github.henryonai.dictate.test.{}",
+            std::process::id()
+        )))
+    }
+
+    fn private_clipboard() -> MacClipboard {
+        MacClipboard {
+            board: private_board,
+        }
+    }
+
+    /// Puts items on the pasteboard the way an app that copies does: one `NSPasteboardItem` for each.
+    fn put_items(board: &NSPasteboard, items: &[Vec<(&str, &[u8])>]) {
+        board.clearContents();
+        let items: Vec<Retained<ProtocolObject<dyn NSPasteboardWriting>>> = items
+            .iter()
+            .map(|types| {
+                let item = NSPasteboardItem::new();
+                for (kind, bytes) in types {
+                    item.setData_forType(&NSData::with_bytes(bytes), &NSString::from_str(kind));
+                }
+                ProtocolObject::from_retained(item)
+            })
+            .collect();
+        assert!(board.writeObjects(&NSArray::from_retained_slice(&items)));
+    }
+
+    /// What the pasteboard has: each item with its types, in order of type name.
+    fn items_of(board: &NSPasteboard) -> Vec<Vec<(String, Vec<u8>)>> {
+        board
+            .pasteboardItems()
+            .map(|items| {
+                items
+                    .iter()
+                    .map(|item| {
+                        let mut types: Vec<(String, Vec<u8>)> = item
+                            .types()
+                            .iter()
+                            .map(|kind| {
+                                let bytes = item.dataForType(&kind).map(|d| d.to_vec());
+                                (kind.to_string(), bytes.unwrap_or_default())
+                            })
+                            .collect();
+                        types.sort();
+                        types
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn a_snapshot_gives_back_every_item_with_every_type() {
+        let _turn = exclusive();
+        let clip = private_clipboard();
+        let board = private_board();
+        let png = [0x89, b'P', b'N', b'G', 0, 1, 2, 3, 255];
+        put_items(
+            &board,
+            &[
+                vec![
+                    ("public.utf8-plain-text", b"hello".as_slice()),
+                    ("public.html", b"<b>hello</b>".as_slice()),
+                ],
+                vec![("public.png", png.as_slice())],
+            ],
+        );
+        let before = items_of(&board);
+        assert_eq!(before.len(), 2);
+
+        let snapshot = clip.snapshot();
+        clip.write_transient("dictated").unwrap();
+        assert_eq!(items_of(&board).len(), 1);
+        clip.restore(snapshot);
+
+        assert_eq!(items_of(&board), before);
+    }
+
+    #[test]
+    fn restoring_an_empty_clipboard_takes_the_dictated_text_away() {
+        let _turn = exclusive();
+        let clip = private_clipboard();
+        let board = private_board();
+        board.clearContents();
+        let snapshot = clip.snapshot();
+        clip.write_transient("dictated").unwrap();
+
+        clip.restore(snapshot);
+
+        assert!(items_of(&board).is_empty());
+    }
+
+    #[test]
+    fn dictated_text_is_marked_so_that_clipboard_managers_skip_it() {
+        let _turn = exclusive();
+        let clip = private_clipboard();
+        let board = private_board();
+
+        clip.write_transient("dictated").unwrap();
+
+        let items = items_of(&board);
+        assert_eq!(items.len(), 1);
+        let kinds: Vec<&str> = items[0].iter().map(|(kind, _)| kind.as_str()).collect();
+        assert!(
+            kinds.contains(&"org.nspasteboard.TransientType"),
+            "{kinds:?}"
+        );
+        assert_eq!(
+            board
+                .stringForType(unsafe { NSPasteboardTypeString })
+                .map(|text| text.to_string()),
+            Some("dictated".to_string())
+        );
+    }
+
+    #[test]
+    fn the_mark_tells_a_later_copy_from_our_own_write() {
+        let _turn = exclusive();
+        let clip = private_clipboard();
+
+        let mark = clip.write_transient("dictated").unwrap();
+        assert!(!clip.changed_since(&mark));
+
+        // Putting the user's clipboard back counts as a change too: nothing is restored twice.
+        clip.copy("something the user copied").unwrap();
+        assert!(clip.changed_since(&mark));
+    }
+
+    #[test]
+    fn a_plain_copy_has_no_transient_mark() {
+        let _turn = exclusive();
+        let clip = private_clipboard();
+        let board = private_board();
+
+        clip.copy("kept").unwrap();
+
+        let items = items_of(&board);
+        let kinds: Vec<&str> = items[0].iter().map(|(kind, _)| kind.as_str()).collect();
+        assert!(!kinds.contains(&TRANSIENT_TYPE), "{kinds:?}");
+        assert_eq!(
+            board
+                .stringForType(unsafe { NSPasteboardTypeString })
+                .map(|text| text.to_string()),
+            Some("kept".to_string())
+        );
+    }
+
+    #[test]
+    fn each_modifier_of_a_shortcut_counts_as_held() {
+        for flag in [
+            CGEventFlags::MaskCommand,
+            CGEventFlags::MaskControl,
+            CGEventFlags::MaskAlternate,
+            CGEventFlags::MaskShift,
+        ] {
+            assert!(modifiers_held(flag), "{flag:?}");
+        }
+        assert!(modifiers_held(
+            CGEventFlags::MaskControl | CGEventFlags::MaskAlternate
+        ));
+    }
+
+    #[test]
+    fn caps_lock_and_the_fn_key_are_no_modifiers_of_a_shortcut() {
+        assert!(!modifiers_held(CGEventFlags::empty()));
+        assert!(!modifiers_held(CGEventFlags::MaskAlphaShift));
+        assert!(!modifiers_held(
+            CGEventFlags::MaskSecondaryFn | CGEventFlags::MaskNumericPad
+        ));
     }
 }

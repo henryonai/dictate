@@ -13,16 +13,17 @@
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::mpsc;
+use std::sync::{mpsc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use windows::core::{Interface, BOOL, PWSTR};
-use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, POINT, RECT};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, POINT, RECT};
 use windows::Win32::Graphics::Gdi::{
     ClientToScreen, EnumDisplayMonitors, GetMonitorInfoW, MonitorFromPoint, HDC, HMONITOR,
     MONITORINFO, MONITOR_DEFAULTTONEAREST,
 };
+use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
     SAFEARRAY,
@@ -32,7 +33,8 @@ use windows::Win32::System::Ole::{
     SafeArrayUnaccessData,
 };
 use windows::Win32::System::Threading::{
-    OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    GetCurrentProcess, OpenProcess, OpenProcessToken, QueryFullProcessImageNameW,
+    PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::Accessibility::{
     CUIAutomation, CUIAutomation8, IUIAutomation, IUIAutomation6, IUIAutomationElement,
@@ -41,11 +43,16 @@ use windows::Win32::UI::Accessibility::{
     TextUnit_Character, UIA_TextPattern2Id, UIA_TextPatternId, UIA_ValuePatternId,
 };
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    GetAsyncKeyState, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetCursorPos, GetForegroundWindow, GetGUIThreadInfo, GetWindowRect, GetWindowThreadProcessId,
     GUITHREADINFO, MONITORINFOF_PRIMARY,
 };
 
+use super::keys::press_paste;
+use super::paste::{blocked_by_uipi, is_app, KeySender, PasteError};
 use super::rules::{
     accept_caret, bounded_text_len, caret_after, classify_uia, field_anchor, first_rect,
     is_terminal, on_any_screen, pick_visible_frame, secure_read_outcome, terminal_anchor,
@@ -558,5 +565,114 @@ fn snapshot(uia: &IUIAutomation, deadline: Instant) -> Option<FieldSnapshot> {
             sel_loc,
             sel_len,
         })
+    }
+}
+
+// ---- The keys ------------------------------------------------------------------------------------------------
+
+/// Presses Ctrl+V with `SendInput` (through enigo). Windows doesn't let a normal app send keys to an elevated
+/// one, and says nothing when it drops them, so that case is looked for before the keys are sent.
+pub struct WindowsKeys {
+    last_post: Mutex<Option<Instant>>,
+}
+
+impl WindowsKeys {
+    pub fn new() -> WindowsKeys {
+        WindowsKeys {
+            last_post: Mutex::new(None),
+        }
+    }
+}
+
+impl KeySender for WindowsKeys {
+    fn bring_forward(&self, app: &AppId) -> bool {
+        // The windows of dictation never take the focus, so the app that had it is the one in front. When it is
+        // not (a window of ours is still going away), the next question finds it. Windows doesn't let a
+        // background app take the focus anyway.
+        let Some(pid) = foreground_pid() else {
+            return false;
+        };
+        let front = AppId {
+            id: foreground().map(|front| front.exe).unwrap_or_default(),
+            pid: Some(pid),
+        };
+        is_app(&front, app)
+    }
+
+    fn modifiers_released(&self) -> bool {
+        [VK_CONTROL, VK_MENU, VK_SHIFT, VK_LWIN, VK_RWIN]
+            .into_iter()
+            // SAFETY: a call with a key code. The high bit says that the key is down.
+            .all(|key| unsafe { GetAsyncKeyState(i32::from(key.0)) } >= 0)
+    }
+
+    fn send_paste(&self, _terminal: bool) -> Result<(), PasteError> {
+        let pid =
+            foreground_pid().ok_or_else(|| PasteError::Failed("no window has the focus".into()))?;
+        // SAFETY: the pseudo handle of this process needs no closing.
+        let ours = token_elevated(unsafe { GetCurrentProcess() }).unwrap_or(false);
+        if blocked_by_uipi(ours, process_elevated(pid)) {
+            return Err(PasteError::Elevated);
+        }
+        // Windows Terminal and the console take Ctrl+V like every other app.
+        press_paste(false)?;
+        *self
+            .last_post
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(Instant::now());
+        Ok(())
+    }
+
+    fn last_post(&self) -> Option<Instant> {
+        *self
+            .last_post
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// The process of the foreground window: no handle to the process is needed.
+fn foreground_pid() -> Option<u32> {
+    // SAFETY: plain calls with a handle that the system gave.
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.is_invalid() {
+            return None;
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        (pid != 0).then_some(pid)
+    }
+}
+
+/// Whether the process runs with the full rights of an administrator. `None` when Windows won't say, which it
+/// does for a process of a higher level than ours.
+fn process_elevated(pid: u32) -> Option<bool> {
+    // SAFETY: the handle is closed again.
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let elevated = token_elevated(process);
+        let _ = CloseHandle(process);
+        elevated
+    }
+}
+
+fn token_elevated(process: HANDLE) -> Option<bool> {
+    // SAFETY: `elevation` is the buffer that `TokenElevation` fills, and the token is closed again.
+    unsafe {
+        let mut token = HANDLE::default();
+        OpenProcessToken(process, TOKEN_QUERY, &mut token).ok()?;
+        let mut elevation = TOKEN_ELEVATION::default();
+        let mut size = 0u32;
+        let read = GetTokenInformation(
+            token,
+            TokenElevation,
+            Some((&mut elevation as *mut TOKEN_ELEVATION).cast()),
+            size_of::<TOKEN_ELEVATION>() as u32,
+            &mut size,
+        );
+        let _ = CloseHandle(token);
+        read.ok()?;
+        Some(elevation.TokenIsElevated != 0)
     }
 }
