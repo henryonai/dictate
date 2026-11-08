@@ -103,8 +103,9 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(warning) = &warning {
         log::warn!("{warning}");
     }
-    let data_dir = dirs::data_dir().ok_or("the system has no folder for the app's data")?;
-    let models = state::open_model_dir(&data_dir)?;
+    let models_base =
+        state::models_base_dir().ok_or("the system has no folder for the app's data")?;
+    let models = state::open_model_dir(&models_base)?;
     let lang = tray::language_for(&store.get());
 
     app.manage(AppState::new(

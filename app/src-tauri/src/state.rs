@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -145,12 +145,19 @@ impl AppState {
     }
 }
 
-/// The folder of the Whisper models below the OS data directory, created when it is missing.
+/// The folder the models are kept below: the local data directory of the OS, and not the roaming one that
+/// `dirs::data_dir()` is on Windows (`AppData\Roaming`): a profile that roams must not carry gigabytes of
+/// models along. On macOS and Linux both are the same folder. `None` when the system has none.
+pub fn models_base_dir() -> Option<PathBuf> {
+    dirs::data_local_dir()
+}
+
+/// The folder of the Whisper models below `base_dir` (see `models_base_dir`), created when it is missing.
 ///
 /// It is `whisper-models` and not `models`: on macOS `Dictate/models` is the same folder as the Swift app's
 /// `Dictate/Models`, and that one holds the Swift app's files.
-pub fn open_model_dir(data_dir: &Path) -> io::Result<ModelDir> {
-    let root = data_dir.join("Dictate").join("whisper-models");
+pub fn open_model_dir(base_dir: &Path) -> io::Result<ModelDir> {
+    let root = base_dir.join("Dictate").join("whisper-models");
     fs::create_dir_all(&root)?;
     Ok(ModelDir::new(root))
 }
@@ -279,7 +286,19 @@ mod tests {
     }
 
     #[test]
-    fn the_model_folder_is_dictate_whisper_models_below_the_data_dir_and_is_created() {
+    fn the_models_live_in_the_local_data_dir_not_the_roaming_one() {
+        // On Windows `AppData\Local` and `AppData\Roaming` differ, and a profile that roams must not carry
+        // gigabytes of models along. Elsewhere there is only one data dir.
+        assert_eq!(models_base_dir(), dirs::data_local_dir());
+        if cfg!(windows) {
+            assert_ne!(models_base_dir(), dirs::data_dir());
+        } else {
+            assert_eq!(models_base_dir(), dirs::data_dir());
+        }
+    }
+
+    #[test]
+    fn the_model_folder_is_dictate_whisper_models_below_the_base_dir_and_is_created() {
         let dir = tempfile::tempdir().unwrap();
         let models = open_model_dir(dir.path()).unwrap();
         // Not `Dictate/models`: macOS compares names without regard to case, so that would be the folder
