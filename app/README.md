@@ -2,7 +2,9 @@
 
 The desktop app, for macOS, Windows and Linux: a tray icon and a Settings window. It is built with [Tauri 2](https://tauri.app): a Rust shell in `src-tauri/` and a Svelte 5 + TypeScript interface in `ui/`.
 
-What there is so far is the app shell. Settings (language, hotkey, AI provider, transcription service), API keys in the system's key store, the Whisper model downloads, the connection checks and a test transcription of a WAV file work. Recording and dictation come next.
+What there is so far is the app shell. Settings (language, AI provider, transcription service), API keys in the system's key store, the Whisper model downloads, the connection checks and a test transcription of a WAV file work. The hotkey is shown but can't be changed yet. Recording and dictation come next.
+
+So far the app has only been run on macOS. Windows and Linux are compiled and tested by CI, but nobody has run the app there yet.
 
 ```
 app/
@@ -17,13 +19,20 @@ Every system needs:
 
 - **Rust 1.85 or newer** with `rustup` (the repository picks the stable toolchain in `rust-toolchain.toml`).
 - **Node.js 22**.
-- **pnpm 10.5 or newer.** `app/package.json` names the exact version; with [Corepack](https://nodejs.org/api/corepack.html) (`corepack enable`) or a current pnpm that version is picked up by itself.
+- **pnpm 12 or Corepack.** `app/package.json` names the exact pnpm version. Either install pnpm 12, or use [Corepack](https://nodejs.org/api/corepack.html) (`corepack enable`), which fetches that version by itself. Corepack should be 0.34.5 or newer: if `pnpm` fails to run, update it with `npm install -g corepack@latest`.
 - **CMake and libclang.** Whisper (whisper.cpp) is built from source with the app.
 
 On top of that:
 
 - **macOS:** the Xcode Command Line Tools (`xcode-select --install`) and CMake (`brew install cmake`).
-- **Windows 10 or 11:** the [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with the "Desktop development with C++" workload, CMake and LLVM (for libclang), for example `winget install Kitware.CMake LLVM.LLVM`, and the WebView2 runtime, which Windows 11 has already. If the build can't find libclang, set `LIBCLANG_PATH` to the `bin` folder of the LLVM install.
+- **Windows 10 or 11:** the [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with the "Desktop development with C++" workload, CMake and LLVM (for libclang), and the WebView2 runtime, which Windows 11 has already. CMake and LLVM can come from winget, one command each:
+
+  ```sh
+  winget install Kitware.CMake
+  winget install LLVM.LLVM
+  ```
+
+  Open a new terminal afterwards, so that it finds the new tools. If the build can't find libclang, set `LIBCLANG_PATH` to the `bin` folder of the LLVM install.
 - **Linux:** the web view, tray and build libraries. On Debian and Ubuntu:
 
   ```sh
@@ -51,7 +60,7 @@ pnpm tauri dev
 
 This starts the Vite dev server for the interface and the app, which reloads when the interface changes. The first time the app starts, with no settings saved yet, the Settings window opens. After that the app lives in the tray (menu bar on macOS, with no Dock icon): click the icon for the menu, **Settings** to open the window and **Quit** to leave. Closing the window doesn't quit the app.
 
-Settings are kept in `Dictate/settings.json` in the system's config folder, the Whisper models in `Dictate/whisper-models` in its data folder (on macOS both are in `~/Library/Application Support`), and API keys in the system's key store (Keychain, Credential Manager, Secret Service).
+Settings are kept in `Dictate/settings.json` in the system's config folder, the Whisper models in `Dictate/whisper-models` in its local data folder (on macOS both are in `~/Library/Application Support`; on Windows the settings are in `%APPDATA%` and the models in `%LOCALAPPDATA%`, so that they don't roam with the profile), and API keys in the system's key store (Keychain, Credential Manager, Secret Service).
 
 ## Build it
 
@@ -59,7 +68,7 @@ Settings are kept in `Dictate/settings.json` in the system's config folder, the 
 pnpm tauri build
 ```
 
-This builds the interface and the app in release mode and bundles it for the system you are on: the folder `target/release/bundle/` at the root of the repository gets the `.app` and `.dmg` on macOS, the `.msi` and `.exe` installers on Windows and the `.deb`, `.rpm` and AppImage on Linux. The bundles are not signed.
+This builds the interface and the app in release mode and bundles it for the system you are on: the folder `target/release/bundle/` at the root of the repository gets the `.app` and `.dmg` on macOS, the `.msi` and `.exe` installers on Windows and the `.deb`, `.rpm` and AppImage on Linux. The bundles are not signed. Only the macOS `.app` has been built and run so far; the installers are untested, and CI builds the app but not its bundles.
 
 For a quicker build of just the macOS app, without installers:
 
