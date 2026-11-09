@@ -20,8 +20,6 @@
     "allow-cancel-download",
     "allow-delete-model",
     "allow-models-disk-usage-mb",
-    "allow-transcribe-wav",
-    "allow-cancel-transcribe",
     "allow-edit-presets",
     "allow-transcribe-presets",
     "allow-open-meetings-folder",

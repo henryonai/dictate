@@ -74,3 +74,11 @@ describe("what the controller says, the UI has words for", () => {
     }
   });
 });
+
+describe("what the app no longer has, the locales do not carry", () => {
+  test("no text of the WAV file test of the Speech page is left", () => {
+    for (const locale of [en, vi] as Record<string, string>[]) {
+      expect(Object.keys(locale).filter((key) => key.startsWith("wav."))).toEqual([]);
+    }
+  });
+});

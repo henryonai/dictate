@@ -39,8 +39,6 @@ describe("each wrapper calls its command with the argument names the Rust side e
     ["cancelDownload", "cancel_download", { id: "tiny" }, () => api.cancelDownload("tiny")],
     ["deleteModel", "delete_model", { id: "tiny" }, () => api.deleteModel("tiny")],
     ["modelsDiskUsageMb", "models_disk_usage_mb", undefined, () => api.modelsDiskUsageMb()],
-    ["transcribeWav", "transcribe_wav", { path: "a.wav" }, () => api.transcribeWav("a.wav")],
-    ["cancelTranscribe", "cancel_transcribe", undefined, () => api.cancelTranscribe()],
     ["editPresets", "edit_presets", undefined, () => api.editPresets()],
     ["transcribePresets", "transcribe_presets", undefined, () => api.transcribePresets()],
     ["openMeetingsFolder", "open_meetings_folder", undefined, () => api.openMeetingsFolder()],

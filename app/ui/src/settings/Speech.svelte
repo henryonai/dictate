@@ -1,8 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { api, errorText } from "../lib/api";
   import type { Engine } from "../lib/api";
-  import { startedNow, tooSoonToCancel } from "../lib/double-click";
   import { t } from "../lib/i18n";
   import { ModelList } from "../lib/models.svelte";
   import type { SettingsStore } from "../lib/settings-store.svelte";
@@ -37,40 +35,6 @@
 
   function percent(done: number, total: number): number {
     return Math.min(100, Math.round((done / total) * 100));
-  }
-
-  // ---- the WAV file test
-
-  type WavTest =
-    | { state: "idle" | "running" | "cancelling" }
-    | { state: "done"; text: string }
-    | { state: "failed"; error: string };
-
-  let wavPath = $state("");
-  let wav = $state<WavTest>({ state: "idle" });
-  let wavStartedAt: number | undefined;
-  const wavBusy = $derived(wav.state === "running" || wav.state === "cancelling");
-
-  async function transcribe() {
-    if (wavBusy) return;
-    wavStartedAt = startedNow();
-    wav = { state: "running" };
-    try {
-      wav = { state: "done", text: await api.transcribeWav(wavPath.trim()) };
-    } catch (e) {
-      wav = { state: "failed", error: errorText(e) };
-    }
-  }
-
-  async function cancelTranscribe() {
-    if (wav.state !== "running" || tooSoonToCancel(wavStartedAt)) return;
-    // It stops within a moment; the transcription call ends with its own result.
-    wav = { state: "cancelling" };
-    try {
-      await api.cancelTranscribe();
-    } catch (e) {
-      wav = { state: "failed", error: errorText(e) };
-    }
   }
 </script>
 
@@ -186,29 +150,6 @@
   </p>
 </section>
 
-<section class="group" aria-labelledby="speech-wav">
-  <h2 id="speech-wav">{t("wav.heading")}</h2>
-  <p class="hint">{t("wav.hint")}</p>
-  <div class="wav-row">
-    <input type="text" aria-label={t("wav.path")} bind:value={wavPath} spellcheck="false" />
-    {#if wav.state === "running"}
-      <span class="hint">{t("wav.running")}</span>
-      <button type="button" onclick={cancelTranscribe}>{t("common.cancel")}</button>
-    {:else if wav.state === "cancelling"}
-      <button type="button" disabled>{t("common.cancelling")}</button>
-    {:else}
-      <button type="button" disabled={wavPath.trim() === "" || wavBusy} onclick={transcribe}>
-        {t("wav.run")}
-      </button>
-    {/if}
-  </div>
-  {#if wav.state === "done"}
-    <pre class="transcript">{wav.text || t("wav.empty")}</pre>
-  {:else if wav.state === "failed"}
-    <p class="error">{wav.error}</p>
-  {/if}
-</section>
-
 <style>
   .models {
     margin: 0;
@@ -253,22 +194,5 @@
     display: flex;
     justify-content: space-between;
     margin: 8px 0 0;
-  }
-  .wav-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .wav-row input {
-    flex: 1;
-  }
-  .transcript {
-    margin: 8px 0 0;
-    padding: 8px 10px;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-    background: var(--bg);
-    border-radius: 6px;
-    user-select: text;
   }
 </style>

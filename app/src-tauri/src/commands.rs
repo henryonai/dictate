@@ -12,26 +12,19 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use dictate_core::meetings::library::MeetingLibrary;
-use dictate_core::text::segments::Segment;
-use dictate_core::text::timestamp;
 use dictate_services::ai;
 use dictate_services::http::ApiError;
 use dictate_services::presets::{AiProvider, TranscribePreset, EDIT_PRESETS};
 use dictate_services::secrets::{Account, SecretStore};
 use dictate_services::settings::{self, Settings, SettingsStore};
-use dictate_services::system;
 use dictate_services::transcribe_api::{self, TranscribeError};
-use dictate_services::whisper::local::{read_wav_16k_mono, LocalWhisper};
-use dictate_services::whisper::models::{
-    self, DownloadError, ModelDir, ModelStatus, HUGGING_FACE_BASE_URL,
-};
+use dictate_services::whisper::models::{self, DownloadError, ModelStatus, HUGGING_FACE_BASE_URL};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_autostart::ManagerExt as _;
 use tauri_plugin_opener::OpenerExt as _;
-use tokio_util::sync::CancellationToken;
 
-use crate::config::{ai_config, local_model, transcribe_config};
+use crate::config::{ai_config, transcribe_config};
 use crate::dictation::save::SavePaths;
 use crate::hotkey::{ChangeError, HotkeyStatus, Hotkeys, INVALID, TAKEN};
 use crate::platform::rules::Os;
@@ -369,15 +362,6 @@ fn download_error_text(error: &DownloadError) -> String {
     }
 }
 
-/// `[mm:ss] text` lines.
-fn format_transcript(segments: &[Segment]) -> String {
-    segments
-        .iter()
-        .map(|segment| format!("[{}] {}", timestamp::format(segment.start), segment.text))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 /// The last event of a download, from how it ended and how far it had come.
 fn final_event(
     id: &str,
@@ -442,34 +426,6 @@ async fn run_download(
         Ok(()) | Err(DownloadError::Cancelled) => Ok(()),
         Err(e) => Err(download_error_text(&e)),
     }
-}
-
-/// Transcribes a WAV file with the local model the settings choose. Blocks until it is done or cancelled.
-fn transcribe_file(
-    settings: &Settings,
-    models: &ModelDir,
-    ram_gb: u64,
-    wav: &Path,
-    cancel: &CancellationToken,
-) -> Result<String, String> {
-    let (id, model_path) = local_model(settings, models, ram_gb)?;
-    let samples = read_wav_16k_mono(wav).map_err(|e| e.to_string())?;
-    let whisper = LocalWhisper::load(&model_path).map_err(|e| e.to_string())?;
-    let language = settings.transcribe_language.trim();
-    let segments = whisper
-        .transcribe(
-            &samples,
-            (!language.is_empty()).then_some(language),
-            &settings.vocabulary,
-            cancel,
-            |_| {},
-        )
-        .map_err(|e| e.to_string())?;
-    log::info!(
-        "Transcribed a WAV file with the {id} model: {} segments",
-        segments.len()
-    );
-    Ok(format_transcript(&segments))
 }
 
 /// Removes a model, unless it is being downloaded.
@@ -752,36 +708,6 @@ pub async fn models_disk_usage_mb(state: State<'_, AppState>) -> Result<u64, Str
     blocking(move || state.models.disk_usage_mb()).await
 }
 
-/// Dev helper: the chosen local model transcribes a WAV file; the result is `[mm:ss] text` lines. The meetings
-/// screens replace it later.
-#[tauri::command]
-pub async fn transcribe_wav(state: State<'_, AppState>, path: String) -> Result<String, String> {
-    let state = state.inner().clone();
-    let guard = state
-        .jobs
-        .start(Job::Transcribe)
-        .map_err(|_| "Already transcribing".to_string())?;
-    blocking(move || {
-        // The guard lives as long as the work does.
-        let guard = guard;
-        transcribe_file(
-            &state.settings.get(),
-            &state.models,
-            system::total_ram_gb(),
-            Path::new(&path),
-            &guard.token(),
-        )
-    })
-    .await?
-}
-
-/// Stops a running `transcribe_wav`. It ends within about one encoder pass, so the UI should say "Cancelling…".
-#[tauri::command]
-pub async fn cancel_transcribe(state: State<'_, AppState>) -> Result<(), String> {
-    state.jobs.cancel(&Job::Transcribe);
-    Ok(())
-}
-
 #[tauri::command]
 pub async fn edit_presets() -> Result<Vec<EditPresetView>, String> {
     Ok(edit_presets_list())
@@ -837,10 +763,9 @@ mod tests {
     use dictate_services::presets::EDIT_PRESETS;
     use dictate_services::secrets::{Account, MemoryStore, SecretError};
     use dictate_services::settings::UiLanguage;
-    use dictate_services::whisper::models::CATALOG;
+    use dictate_services::whisper::models::{ModelDir, CATALOG};
     use std::io::{Read, Write};
     use std::net::TcpListener;
-    use std::path::PathBuf;
     use std::sync::atomic::Ordering;
     use std::sync::{Arc, Mutex};
     use std::thread;
@@ -1367,137 +1292,6 @@ mod tests {
         );
     }
 
-    // ---- local transcription
-
-    #[test]
-    fn the_transcript_has_a_minutes_and_seconds_mark_per_line() {
-        let segments = vec![
-            Segment {
-                start: 0.0,
-                speaker: None,
-                text: "Hello there.".into(),
-            },
-            Segment {
-                start: 65.4,
-                speaker: None,
-                text: "Second line.".into(),
-            },
-            Segment {
-                start: 3725.0,
-                speaker: None,
-                text: "Much later.".into(),
-            },
-        ];
-        assert_eq!(
-            format_transcript(&segments),
-            "[00:00] Hello there.\n[01:05] Second line.\n[1:02:05] Much later."
-        );
-        assert_eq!(format_transcript(&[]), "");
-    }
-
-    fn put_model(models: &ModelDir, id: &str) {
-        std::fs::create_dir_all(models.root()).unwrap();
-        std::fs::write(models.path(id), b"not a real model").unwrap();
-    }
-
-    #[test]
-    fn transcribing_with_a_missing_model_names_the_model() {
-        let dir = tempfile::tempdir().unwrap();
-        let models = ModelDir::new(dir.path().join("models"));
-        let settings = Settings {
-            whisper_model: Some("small".into()),
-            ..Settings::default()
-        };
-        let err = transcribe_file(
-            &settings,
-            &models,
-            16,
-            Path::new("none.wav"),
-            &CancellationToken::new(),
-        )
-        .unwrap_err();
-        assert!(
-            err.contains("small") && err.contains("isn't downloaded"),
-            "{err}"
-        );
-    }
-
-    #[test]
-    fn a_file_that_is_no_wav_is_reported_before_the_model_is_loaded() {
-        let dir = tempfile::tempdir().unwrap();
-        let models = ModelDir::new(dir.path().join("models"));
-        // Not a real model: loading it would fail differently, so this shows the audio is read first.
-        put_model(&models, "tiny");
-        let audio = dir.path().join("talk.wav");
-        std::fs::write(&audio, b"this is not audio").unwrap();
-        let settings = Settings {
-            whisper_model: Some("tiny".into()),
-            ..Settings::default()
-        };
-
-        let err =
-            transcribe_file(&settings, &models, 16, &audio, &CancellationToken::new()).unwrap_err();
-
-        assert!(err.starts_with("Could not read the audio"), "{err}");
-    }
-
-    /// The real thing: needs a Whisper model. Run with
-    /// `DICTATE_WHISPER_TEST_MODEL=/path/to/ggml-tiny.bin cargo test -p dictate-app -- --ignored`.
-    fn real_model_dir(dir: &tempfile::TempDir) -> ModelDir {
-        let source = std::env::var_os("DICTATE_WHISPER_TEST_MODEL")
-            .expect("set DICTATE_WHISPER_TEST_MODEL to a ggml-tiny.bin file");
-        let models = ModelDir::new(dir.path().join("models"));
-        std::fs::create_dir_all(models.root()).unwrap();
-        std::fs::copy(source, models.path("tiny")).unwrap();
-        models
-    }
-
-    fn hello_wav() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../crates/dictate-services/tests/fixtures/hello.wav")
-    }
-
-    #[test]
-    #[ignore = "needs a Whisper model: set DICTATE_WHISPER_TEST_MODEL"]
-    fn a_real_model_transcribes_the_hello_clip_into_timed_lines() {
-        let dir = tempfile::tempdir().unwrap();
-        let models = real_model_dir(&dir);
-        let settings = Settings {
-            whisper_model: Some("tiny".into()),
-            transcribe_language: "en".into(),
-            ..Settings::default()
-        };
-
-        let text = transcribe_file(
-            &settings,
-            &models,
-            16,
-            &hello_wav(),
-            &CancellationToken::new(),
-        )
-        .unwrap();
-
-        assert!(text.starts_with("[00:0"), "{text}");
-        assert!(text.to_lowercase().contains("hello"), "{text}");
-    }
-
-    #[test]
-    #[ignore = "needs a Whisper model: set DICTATE_WHISPER_TEST_MODEL"]
-    fn a_cancelled_transcription_says_so() {
-        let dir = tempfile::tempdir().unwrap();
-        let models = real_model_dir(&dir);
-        let settings = Settings {
-            whisper_model: Some("tiny".into()),
-            ..Settings::default()
-        };
-        let cancel = CancellationToken::new();
-        cancel.cancel();
-
-        let err = transcribe_file(&settings, &models, 16, &hello_wav(), &cancel).unwrap_err();
-
-        assert_eq!(err, "The transcription was cancelled.");
-    }
-
     // ---- model downloads
 
     /// A server that answers the first request with `length` bytes announced and `sent` of them sent, then holds
@@ -1756,6 +1550,11 @@ mod tests {
     }
 
     // ---- small things
+
+    fn put_model(models: &ModelDir, id: &str) {
+        std::fs::create_dir_all(models.root()).unwrap();
+        std::fs::write(models.path(id), b"not a real model").unwrap();
+    }
 
     #[test]
     fn deleting_a_model_removes_it_and_its_unfinished_download() {

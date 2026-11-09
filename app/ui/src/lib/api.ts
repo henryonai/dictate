@@ -149,9 +149,6 @@ export const api = {
   cancelDownload: (id: string) => invoke<void>("cancel_download", { id }),
   deleteModel: (id: string) => invoke<void>("delete_model", { id }),
   modelsDiskUsageMb: () => invoke<number>("models_disk_usage_mb"),
-  /** Resolves with the `[mm:ss] text` lines. */
-  transcribeWav: (path: string) => invoke<string>("transcribe_wav", { path }),
-  cancelTranscribe: () => invoke<void>("cancel_transcribe"),
 
   editPresets: () => invoke<EditPresetView[]>("edit_presets"),
   transcribePresets: () => invoke<TranscribePresetView[]>("transcribe_presets"),

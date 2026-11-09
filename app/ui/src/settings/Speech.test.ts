@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api } from "../lib/api";
 import type { ModelView } from "../lib/api";
 import { setLanguage } from "../lib/i18n";
-import { freezeTime, loadedStore, passTime, setWallClockBack, stubApi } from "../test-helpers";
+import { freezeTime, loadedStore, passTime, stubApi } from "../test-helpers";
 import Speech from "./Speech.svelte";
 
 const tiny: ModelView = { id: "tiny", size_mb: 75, downloaded: false, recommended: false };
@@ -230,84 +230,9 @@ test("the speaker separation switch saves", async () => {
   expect(lastSaved()).toMatchObject({ diarize: false });
 });
 
-test("Transcribe needs a path before it does anything", async () => {
-  render(Speech, { store: await loadedStore() });
-  expect(screen.getByRole("button", { name: "Transcribe" })).toBeDisabled();
-});
-
-test("Transcribe shows the result of the WAV file", async () => {
-  const user = userEvent.setup();
-  vi.mocked(api.transcribeWav).mockResolvedValue("[00:00] hello world");
+test("has no test with a WAV file any more: the meetings window transcribes files", async () => {
   render(Speech, { store: await loadedStore() });
 
-  await user.type(screen.getByLabelText("Path to a WAV file"), "fixtures/hello.wav");
-  await user.click(screen.getByRole("button", { name: "Transcribe" }));
-
-  expect(api.transcribeWav).toHaveBeenCalledWith("fixtures/hello.wav");
-  expect(await screen.findByText("[00:00] hello world")).toBeInTheDocument();
-});
-
-test("Transcribe shows the error text when the file can't be transcribed", async () => {
-  const user = userEvent.setup();
-  vi.mocked(api.transcribeWav).mockRejectedValue("The tiny model isn't downloaded yet. Download it in Settings first.");
-  render(Speech, { store: await loadedStore() });
-
-  await user.type(screen.getByLabelText("Path to a WAV file"), "a.wav");
-  await user.click(screen.getByRole("button", { name: "Transcribe" }));
-
-  expect(
-    await screen.findByText("The tiny model isn't downloaded yet. Download it in Settings first."),
-  ).toBeInTheDocument();
-});
-
-test("the second click of a double click on Transcribe doesn't land on Cancel", async () => {
-  freezeTime();
-  const user = userEvent.setup();
-  vi.mocked(api.transcribeWav).mockReturnValue(later<string>().promise);
-  render(Speech, { store: await loadedStore() });
-  await user.type(screen.getByLabelText("Path to a WAV file"), "a.wav");
-
-  await user.click(screen.getByRole("button", { name: "Transcribe" }));
-  await user.click(await screen.findByRole("button", { name: "Cancel" }));
-
-  expect(api.cancelTranscribe).not.toHaveBeenCalled();
-  expect(screen.getByText("Transcribing…")).toBeInTheDocument();
-  expect(api.transcribeWav).toHaveBeenCalledTimes(1);
-});
-
-test("Cancel on a transcription works when the clock was set back after the start", async () => {
-  freezeTime();
-  const user = userEvent.setup();
-  vi.mocked(api.transcribeWav).mockReturnValue(later<string>().promise);
-  render(Speech, { store: await loadedStore() });
-  await user.type(screen.getByLabelText("Path to a WAV file"), "a.wav");
-  await user.click(screen.getByRole("button", { name: "Transcribe" }));
-  expect(await screen.findByText("Transcribing…")).toBeInTheDocument();
-
-  setWallClockBack(60 * 60 * 1000);
-  passTime(1000);
-  await user.click(screen.getByRole("button", { name: "Cancel" }));
-
-  expect(api.cancelTranscribe).toHaveBeenCalledTimes(1);
-});
-
-test("a running transcription can be cancelled and says Cancelling… until it ends", async () => {
-  freezeTime();
-  const user = userEvent.setup();
-  const transcription = later<string>();
-  vi.mocked(api.transcribeWav).mockReturnValue(transcription.promise);
-  render(Speech, { store: await loadedStore() });
-
-  await user.type(screen.getByLabelText("Path to a WAV file"), "a.wav");
-  await user.click(screen.getByRole("button", { name: "Transcribe" }));
-  expect(await screen.findByText("Transcribing…")).toBeInTheDocument();
-  passTime(1000);
-
-  await user.click(screen.getByRole("button", { name: "Cancel" }));
-  expect(api.cancelTranscribe).toHaveBeenCalledTimes(1);
-  expect(await screen.findByRole("button", { name: "Cancelling…" })).toBeDisabled();
-
-  transcription.reject("The transcription was cancelled.");
-  expect(await screen.findByText("The transcription was cancelled.")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Transcribe" })).toBeEnabled();
+  expect(screen.queryByLabelText("Path to a WAV file")).not.toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "Test with a WAV file" })).not.toBeInTheDocument();
 });

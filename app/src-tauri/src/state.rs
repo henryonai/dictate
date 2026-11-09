@@ -22,8 +22,6 @@ use crate::config::saved_key;
 pub enum Job {
     /// The download of the Whisper model with this id.
     Download(String),
-    /// A local transcription.
-    Transcribe,
     /// A dictation with this number, from the shortcut to the text in the field. Each has its own, so that a new one
     /// can begin while the one before it is told to stop.
     Dictation(u64),
@@ -347,7 +345,9 @@ mod tests {
         let jobs = Arc::new(Jobs::default());
         let _tiny = jobs.start(download("tiny")).unwrap();
         let _base = jobs.start(download("base")).unwrap();
-        let _transcription = jobs.start(Job::Transcribe).unwrap();
+        let _meeting = jobs
+            .start(Job::Meeting("2026-11-09 10-00-00".into()))
+            .unwrap();
     }
 
     #[test]

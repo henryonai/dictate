@@ -20,8 +20,6 @@ const COMMANDS: &[&str] = &[
     "cancel_download",
     "delete_model",
     "models_disk_usage_mb",
-    "transcribe_wav",
-    "cancel_transcribe",
     "edit_presets",
     "transcribe_presets",
     "open_meetings_folder",

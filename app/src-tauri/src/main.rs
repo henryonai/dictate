@@ -105,8 +105,6 @@ fn main() {
             commands::cancel_download,
             commands::delete_model,
             commands::models_disk_usage_mb,
-            commands::transcribe_wav,
-            commands::cancel_transcribe,
             commands::edit_presets,
             commands::transcribe_presets,
             commands::open_meetings_folder,
@@ -269,7 +267,7 @@ mod tests {
     use tauri::{App, WebviewUrl, WebviewWindowBuilder};
 
     /// The commands of the Settings window.
-    const SETTINGS_COMMANDS: [&str; 24] = [
+    const SETTINGS_COMMANDS: [&str; 22] = [
         "get_settings",
         "save_settings",
         "set_ai_provider",
@@ -285,8 +283,6 @@ mod tests {
         "cancel_download",
         "delete_model",
         "models_disk_usage_mb",
-        "transcribe_wav",
-        "cancel_transcribe",
         "edit_presets",
         "transcribe_presets",
         "open_meetings_folder",

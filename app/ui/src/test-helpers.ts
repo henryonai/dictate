@@ -79,8 +79,6 @@ export function stubApi() {
   vi.spyOn(api, "cancelDownload").mockResolvedValue();
   vi.spyOn(api, "deleteModel").mockResolvedValue();
   vi.spyOn(api, "modelsDiskUsageMb").mockResolvedValue(0);
-  vi.spyOn(api, "transcribeWav").mockResolvedValue("[00:00] hello");
-  vi.spyOn(api, "cancelTranscribe").mockResolvedValue();
   vi.spyOn(api, "editPresets").mockResolvedValue(
     EDIT_PRESET_IDS.map((id) => ({ id, instruction: `instruction of ${id}` })),
   );
