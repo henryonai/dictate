@@ -36,14 +36,24 @@ pub fn search_path() -> OsString {
     )
 }
 
+/// What separates the folders in a PATH on this system.
+#[cfg(windows)]
+const PATH_SEPARATOR: &str = ";";
+#[cfg(not(windows))]
+const PATH_SEPARATOR: &str = ":";
+
 /// `search_path` for a given PATH, home folder and local app data folder (the last is only used on Windows).
+///
+/// The PATH is kept as it is, and the folders are added after it: splitting a PATH and joining it again is not
+/// always the same PATH (Windows reads quote marks in it, and a stray one makes the folders after it one), and the
+/// PATH of the user is what finds the system's own programs.
 #[cfg_attr(not(windows), allow(unused_variables))]
 fn search_path_from(
     path_var: Option<OsString>,
     home: Option<PathBuf>,
     local_data: Option<PathBuf>,
 ) -> OsString {
-    let mut all: Vec<PathBuf> = path_var
+    let mut known: Vec<PathBuf> = path_var
         .as_deref()
         .map(|p| std::env::split_paths(p).collect())
         .unwrap_or_default();
@@ -65,14 +75,23 @@ fn search_path_from(
         extra.push(home.join(".local").join("bin"));
         extra.push(home.join("bin"));
     }
-    for dir in extra {
-        if !all.contains(&dir) {
-            all.push(dir);
-        }
-    }
 
-    // Joining fails only for a folder with the separator in its name: then the plain PATH is what is left.
-    std::env::join_paths(all).unwrap_or_else(|_| path_var.unwrap_or_default())
+    let mut joined = path_var.unwrap_or_default();
+    for dir in extra {
+        if known.contains(&dir) {
+            continue;
+        }
+        // A folder with the separator in its name is quoted, and one that cannot be is left out.
+        let Ok(entry) = std::env::join_paths([&dir]) else {
+            continue;
+        };
+        if !joined.is_empty() {
+            joined.push(PATH_SEPARATOR);
+        }
+        joined.push(entry);
+        known.push(dir);
+    }
+    joined
 }
 
 /// An external program the app can use.
@@ -386,24 +405,19 @@ mod tests {
         }
     }
 
-    fn own_path_entries() -> Vec<PathBuf> {
-        std::env::var_os("PATH")
-            .map(|p| std::env::split_paths(&p).collect())
-            .unwrap_or_default()
-    }
-
     #[test]
     fn search_path_contains_path_and_os_dirs() {
-        let own = own_path_entries();
-        let all: Vec<PathBuf> = std::env::split_paths(&search_path()).collect();
+        let own = std::env::var_os("PATH").unwrap_or_default();
+        let own = own.to_string_lossy();
+        let all = search_path().to_string_lossy().into_owned();
 
-        assert_eq!(all[..own.len()], own[..], "the PATH entries come first");
+        assert!(all.starts_with(&*own), "the PATH comes first: {all}");
         #[cfg(target_os = "macos")]
-        assert!(all.contains(&PathBuf::from("/opt/homebrew/bin")));
+        assert!(all.contains("/opt/homebrew/bin"), "{all}");
         #[cfg(target_os = "linux")]
-        assert!(all.contains(&PathBuf::from("/snap/bin")));
+        assert!(all.contains("/snap/bin"), "{all}");
         #[cfg(windows)]
-        assert!(all.iter().any(|p| p.ends_with(r"WinGet\Links")));
+        assert!(all.contains(r"WinGet\Links"), "{all}");
     }
 
     #[test]
@@ -433,6 +447,47 @@ mod tests {
         let all: Vec<PathBuf> = std::env::split_paths(&joined).collect();
 
         assert_eq!(all[0], PathBuf::from("/first"));
+    }
+
+    /// The separator of the PATH on this system.
+    const SEP: char = if cfg!(windows) { ';' } else { ':' };
+
+    #[test]
+    fn search_path_keeps_the_path_exactly_as_it_was_given() {
+        // An empty entry and a quote mark that never closes. Splitting this PATH and joining it again would read
+        // the quote the Windows way (everything after it is one quoted folder) and write a different PATH.
+        let path_var = format!("/first{SEP}{SEP}/odd\"dir{SEP}/last");
+
+        let joined = search_path_from(
+            Some(OsString::from(&path_var)),
+            Some(PathBuf::from("/home/me")),
+            None,
+        );
+
+        let joined = joined.to_string_lossy().into_owned();
+        assert!(
+            joined.starts_with(&format!("{path_var}{SEP}")),
+            "the PATH changed: {joined}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn search_path_leaves_out_a_folder_that_cannot_be_in_a_path_and_adds_the_rest() {
+        // The home folder has the separator in its name, so the folders under it cannot be written into the PATH.
+        let joined = search_path_from(
+            Some(OsString::from("/first")),
+            Some(PathBuf::from("/home/a:b")),
+            None,
+        );
+
+        let joined = joined.to_string_lossy().into_owned();
+        assert!(joined.starts_with("/first:"), "{joined}");
+        assert!(!joined.contains("a:b"), "{joined}");
+        assert!(
+            joined.len() > "/first:".len(),
+            "no folder was added: {joined}"
+        );
     }
 
     #[test]
@@ -560,9 +615,10 @@ mod tests {
 
     #[tokio::test]
     async fn run_gives_the_program_the_search_path_and_unbuffered_python() {
+        // `set PATH` prints `Path=...` (and `PATHEXT=...`): the name keeps the case it has in the environment.
         let (program, args) = shell(
-            r#"echo "$PYTHONUNBUFFERED"; echo "$PATH""#,
-            "echo %PYTHONUNBUFFERED%",
+            r#"echo "$PYTHONUNBUFFERED"; echo "PATH=$PATH""#,
+            "echo %PYTHONUNBUFFERED%&set PATH",
         );
         let mut lines = Vec::new();
 
@@ -573,8 +629,37 @@ mod tests {
         .unwrap();
 
         assert_eq!(lines[0], "1");
-        #[cfg(unix)]
-        assert_eq!(lines[1], search_path().to_string_lossy());
+        let path = lines
+            .iter()
+            .find_map(|l| {
+                l.get(..5)
+                    .filter(|n| n.eq_ignore_ascii_case("path="))
+                    .map(|_| &l[5..])
+            })
+            .expect("the program printed no PATH");
+        assert_eq!(path, search_path().to_string_lossy());
+    }
+
+    #[tokio::test]
+    async fn run_lets_the_program_start_system_programs_by_bare_name() {
+        // `where` is in System32 on Windows and `uname` in /usr/bin: both are found through the PATH only.
+        let (program, args) = shell("command -v uname", "where ping");
+        let mut lines = Vec::new();
+
+        let exit = run(&program, &args, &CancellationToken::new(), |l| {
+            lines.push(l.to_string())
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(
+            exit.code,
+            Some(0),
+            "{lines:?} with the PATH ({} characters) {:?}",
+            search_path().len(),
+            search_path()
+        );
+        assert!(!lines.is_empty());
     }
 
     #[tokio::test]
@@ -631,7 +716,12 @@ mod tests {
     #[tokio::test]
     async fn run_cancel_kills_the_tree() {
         // The shell starts a child that sleeps and says its id, then waits for it.
-        let (program, args) = shell("sleep 30 & echo $!; wait", "ping -n 30 127.0.0.1 >nul");
+        // On Windows the sleeper is ping.exe, by its full path: finding programs in the PATH is tested apart.
+        let ping = format!(
+            r"{}\System32\ping.exe -n 30 127.0.0.1 >nul",
+            std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into())
+        );
+        let (program, args) = shell("sleep 30 & echo $!; wait", &ping);
         let cancel = CancellationToken::new();
         let pid = Arc::new(Mutex::new(None::<u32>));
         let started = Instant::now();
