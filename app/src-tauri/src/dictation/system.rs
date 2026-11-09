@@ -174,6 +174,13 @@ impl PanelSink for PanelWindows {
     fn language_changed(&self, lang: &str) {
         crate::commands::emit_language(&self.app, lang);
     }
+
+    fn own_window_focused(&self) -> bool {
+        self.app
+            .webview_windows()
+            .values()
+            .any(|window| window.is_focused().unwrap_or(false))
+    }
 }
 
 /// Where the commands of the panels find the controller. It exists from the start of the app, and the controller is put in

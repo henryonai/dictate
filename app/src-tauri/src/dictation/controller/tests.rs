@@ -1484,6 +1484,41 @@ fn controller_unknown_field_is_a_card_on_mac_and_a_paste_on_linux() {
     assert_eq!((anchor.x, anchor.y), (50.0, 60.0));
 }
 
+#[test]
+fn controller_a_dictation_started_with_our_own_window_focused_goes_to_the_card_where_no_app_is_in_front(
+) {
+    // Wayland names no app in front: the focus of our own window (Settings) is all that says it is not a field to paste into.
+    let fx = Fixture::on(Os::Linux);
+    fx.platform.set_front(None);
+    fx.platform.lookups.set([FieldLookup::Unknown]);
+    fx.ui.own_focus.store(true, Ordering::SeqCst);
+    fx.start_listening();
+    assert_eq!(
+        fx.ui.last().view,
+        View::Pill,
+        "no bubble at a field that is not one"
+    );
+    fx.talk(1);
+    fx.press();
+    fx.wait_for_view(View::Card);
+    fx.wait_for("the card to be done", || {
+        fx.ui.last().phase == Phase::Review
+    });
+
+    assert!(fx.keys.pastes.lock().unwrap().is_empty());
+    assert_eq!(fx.ui.last().text, "Hello, world.");
+
+    // The same dictation with no window of ours in focus is pasted, as before.
+    let other = Fixture::on(Os::Linux);
+    other.platform.set_front(None);
+    other.platform.lookups.set([FieldLookup::Unknown]);
+    other.start_listening();
+    other.talk(1);
+    other.press();
+    other.run_until("the chip", || other.chip_is_up());
+    assert_eq!(other.keys.pastes.lock().unwrap().len(), 1);
+}
+
 // ---- language, state, quitting -------------------------------------------------------------------------------------
 
 #[test]

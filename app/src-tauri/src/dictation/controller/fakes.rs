@@ -690,6 +690,8 @@ pub struct FakeUi {
     pub settings_opened: AtomicUsize,
     /// The languages that the Settings window was told about.
     pub languages: Mutex<Vec<String>>,
+    /// One of the app's own windows has the focus.
+    pub own_focus: AtomicBool,
 }
 
 impl FakeUi {
@@ -723,6 +725,10 @@ impl PanelSink for FakeUi {
 
     fn language_changed(&self, lang: &str) {
         lock(&self.languages).push(lang.to_owned());
+    }
+
+    fn own_window_focused(&self) -> bool {
+        self.own_focus.load(Ordering::SeqCst)
     }
 }
 

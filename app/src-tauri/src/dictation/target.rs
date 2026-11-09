@@ -46,6 +46,9 @@ pub struct Facts {
     pub auto_write: bool,
     pub accessibility: Permission,
     pub own_pid: u32,
+    /// One of this app's own windows has the focus (Settings, the card). Where the system names the app in front this
+    /// says what `own_pid` says; Wayland names none, and the focus of our own window is all that is known of it.
+    pub own_window_focused: bool,
 }
 
 /// Where the text goes. `front` is the app that has the focus; `lookup` and `mouse` ask the system, and are only asked
@@ -66,7 +69,7 @@ pub fn decide(
     if facts.os == Os::Mac && facts.accessibility != Permission::Granted {
         return Target::Card(CardReason::AccessibilityMissing);
     }
-    if front.is_some_and(|front| front.pid == Some(facts.own_pid)) {
+    if facts.own_window_focused || front.is_some_and(|front| front.pid == Some(facts.own_pid)) {
         return Target::Card(CardReason::OwnWindow);
     }
     match lookup() {
@@ -113,6 +116,7 @@ mod tests {
                 Permission::NotNeeded
             },
             own_pid: OWN,
+            own_window_focused: false,
         }
     }
 
@@ -293,6 +297,20 @@ mod tests {
         for os in [Os::Mac, Os::Windows, Os::Linux] {
             let (target, asked) =
                 decided(facts(os), Some(app("io.dictate", OWN)), field(None), None);
+            assert_eq!(target, Target::Card(CardReason::OwnWindow), "{os:?}");
+            assert!(!asked, "{os:?}");
+        }
+    }
+
+    #[test]
+    fn one_of_our_own_windows_with_the_focus_has_the_card_on_every_system() {
+        // Wayland names no app in front, so that only the focus of our own window says that Settings is where the person is.
+        for os in [Os::Mac, Os::Windows, Os::Linux] {
+            let own = Facts {
+                own_window_focused: true,
+                ..facts(os)
+            };
+            let (target, asked) = decided(own, None, FieldLookup::Unknown, Some((5.0, 6.0)));
             assert_eq!(target, Target::Card(CardReason::OwnWindow), "{os:?}");
             assert!(!asked, "{os:?}");
         }

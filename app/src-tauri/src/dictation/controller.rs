@@ -71,6 +71,8 @@ pub trait PanelSink: Send + Sync {
     /// The Settings window keeps a copy of the settings, which it sends back whole with every save: it is told of a
     /// language that was changed without it, so that it doesn't send the old one back.
     fn language_changed(&self, lang: &str);
+    /// Whether one of this app's own windows has the focus: Settings, or the card.
+    fn own_window_focused(&self) -> bool;
 }
 
 /// Local speech recognition.
@@ -566,6 +568,7 @@ impl Controller {
             auto_write: settings.auto_write,
             accessibility: platform.accessibility(),
             own_pid: self.deps.own_pid,
+            own_window_focused: self.deps.ui.own_window_focused(),
         };
         let target = target::decide(
             facts,
