@@ -129,8 +129,9 @@ pub fn part_seconds(c: &TranscribeConfig, total: f64) -> f64 {
 /// The transcript of a whole recording (`samples_16k`: mono, 16 kHz), sent in parts. `folder` is the recording's
 /// folder: the slices and the cache of finished parts are written in it. The times of the segments are from the
 /// start of the recording. `sleep` waits between a failure and the next try (a test passes one that is over at
-/// once). Cancelling is noticed before each part and after each wait; the request in flight is not stopped, but
-/// dropping the future stops it, and the slice file goes with it.
+/// once). Cancelling is noticed before each part, between the halves of a part whose reply was cut off, and after
+/// each wait; the request in flight is not stopped, but dropping the future stops it, and the slice file goes with
+/// it. When all is done, the cache and every `api-slice-*.wav` in `folder` are removed.
 pub async fn transcribe_long(
     c: &TranscribeConfig,
     samples_16k: &[f32],
@@ -191,6 +192,7 @@ pub async fn transcribe_long(
     }
     // Everything is done: the cache is not needed any more (and neither is that of another language or part length).
     let _ = std::fs::remove_dir_all(&parts_root);
+    remove_slices(folder);
     Ok(segments)
 }
 
@@ -231,6 +233,10 @@ impl<F: FnMut(ApiProgress) + Send> Run<'_, F> {
         // The ranges still to ask for, the next one last.
         let mut pending = vec![whole];
         while let Some(range) = pending.pop() {
+            // Between the halves of a part too, not only between parts.
+            if self.cancel.is_cancelled() {
+                return Err(LongApiError::Cancelled);
+            }
             match self.request(index, count, range).await? {
                 Reply::Whole(written) => segments.extend(written),
                 Reply::Cut(written) => {
@@ -291,7 +297,7 @@ impl<F: FnMut(ApiProgress) + Send> Run<'_, F> {
                         wait_s,
                         error: e.to_string(),
                     });
-                    self.wait(wait_s).await?;
+                    wait(self.cancel, self.sleep, wait_s).await?;
                 }
                 Err(error) => {
                     return Err(LongApiError::PartFailed {
@@ -322,20 +328,27 @@ impl<F: FnMut(ApiProgress) + Send> Run<'_, F> {
             .map_err(|e| LongApiError::Io(format!("{}: {e}", slice.path().display())))?;
         Ok(slice)
     }
+}
 
-    /// Waits `seconds`, and notices it when the caller cancels in the meantime.
-    async fn wait(&self, seconds: u64) -> Result<(), LongApiError> {
-        let over = (self.sleep)(Duration::from_secs(seconds));
-        tokio::select! {
-            biased;
-            () = self.cancel.cancelled() => {}
-            () = over => {}
-        }
-        if self.cancel.is_cancelled() {
-            return Err(LongApiError::Cancelled);
-        }
-        Ok(())
+/// Waits `seconds`, and notices it when the caller cancels in the meantime.
+///
+/// A free function over the two things it needs, not a method of `Run`: a method would hold `&Run<F>` across the
+/// await, which makes the future `Send` only if the progress closure is `Sync` too, and `Send` is all it promises.
+async fn wait(
+    cancel: &CancellationToken,
+    sleep: &(dyn Fn(Duration) -> BoxFuture<'static, ()> + Sync),
+    seconds: u64,
+) -> Result<(), LongApiError> {
+    let over = sleep(Duration::from_secs(seconds));
+    tokio::select! {
+        biased;
+        () = cancel.cancelled() => {}
+        () = over => {}
     }
+    if cancel.is_cancelled() {
+        return Err(LongApiError::Cancelled);
+    }
+    Ok(())
 }
 
 /// A slice of the audio on disk, deleted when it is dropped: after its request, on an error, or when the caller
@@ -351,6 +364,21 @@ impl SliceFile {
 impl Drop for SliceFile {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Deletes the `api-slice-*.wav` files in `folder`. A request deletes its own slice; these are the ones that a run
+/// that was killed left, possibly with another part length, so that no part of this run has the same name.
+fn remove_slices(folder: &Path) {
+    let Ok(entries) = std::fs::read_dir(folder) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with("api-slice-") && name.ends_with(".wav") {
+            let _ = std::fs::remove_file(entry.path());
+        }
     }
 }
 
@@ -506,6 +534,13 @@ mod tests {
         ResponseTemplate::new(200).set_body_json(json!({"segments": [
             {"start": 1.0, "text": format!("part at {start}")}
         ]}))
+    }
+
+    /// The reply of a whisper model that takes a long time to give it.
+    fn whisper_reply_after_a_pause() -> ResponseTemplate {
+        ResponseTemplate::new(200)
+            .set_body_json(json!({"segments": []}))
+            .set_delay(Duration::from_secs(30))
     }
 
     /// A chat model's reply: `content` and why it stopped.
@@ -918,6 +953,9 @@ mod tests {
         let other = folder.join("api-parts").join("vi-480s");
         std::fs::create_dir_all(&other).unwrap();
         std::fs::write(other.join("0.json"), "[]").unwrap();
+        // The slices of a run that was killed, with another part length: no part of this run has these names.
+        std::fs::write(folder.join("api-slice-120.wav"), b"RIFF").unwrap();
+        std::fs::write(folder.join("api-slice-240.wav"), b"RIFF").unwrap();
 
         transcribe_long(
             &config(&server.uri(), "whisper-1", false),
@@ -935,9 +973,16 @@ mod tests {
 
     #[tokio::test]
     async fn api_long_cancel_stops_before_next_part() {
-        let server = server_with(whisper_reply).await;
-        let (_dir, folder) = recording_folder();
+        // The user cancels while part 1 is with the server: the part is finished, and the next one is not started.
         let cancel = CancellationToken::new();
+        let token = cancel.clone();
+        let server = server_with(move |request| {
+            token.cancel();
+            whisper_reply(request)
+        })
+        .await;
+        let (_dir, folder) = recording_folder();
+        let mut events = Vec::new();
 
         let err = transcribe_long(
             &config(&server.uri(), "whisper-1", false),
@@ -945,17 +990,22 @@ mod tests {
             &folder,
             &cancel,
             &|wait| Waits::default().sleep(wait),
-            |progress| {
-                if let ApiProgress::Part { index: 1, .. } = progress {
-                    cancel.cancel();
-                }
-            },
+            |progress| events.push(progress),
         )
         .await
         .unwrap_err();
 
         assert_eq!(err, LongApiError::Cancelled);
         assert_eq!(server.received_requests().await.unwrap().len(), 1);
+        // Part 2 was not even announced.
+        assert_eq!(
+            events,
+            [ApiProgress::Part {
+                index: 1,
+                count: 3,
+                reused: false
+            }]
+        );
         // The part that was done stays, so that the next run continues from part 2.
         assert_eq!(files_in(&folder), ["api-parts"]);
         assert_eq!(
@@ -1138,6 +1188,95 @@ mod tests {
         assert!(events
             .iter()
             .any(|event| matches!(event, ApiProgress::Retry { .. })));
+    }
+
+    /// Compile-time: what `transcribe_long` is allowed to hold across an await. The progress closure is `Send`
+    /// but not `Sync` (it owns a `Cell`), as the pipeline's may be; a backend behind `#[async_trait]` needs the
+    /// future to be `Send` all the same.
+    #[test]
+    fn api_long_future_is_send_when_the_progress_closure_is_not_sync() {
+        fn assert_send<T: Send>(_: T) {}
+        let c = config("http://localhost", "whisper-1", false);
+        let samples = silence(1);
+        let cancel = CancellationToken::new();
+        let sleep = |_: Duration| -> BoxFuture<'static, ()> { Box::pin(async {}) };
+        let seen = std::cell::Cell::new(0_usize);
+
+        assert_send(transcribe_long(
+            &c,
+            &samples,
+            Path::new("folder"),
+            &cancel,
+            &sleep,
+            move |_| seen.set(seen.get() + 1),
+        ));
+    }
+
+    #[tokio::test]
+    async fn api_long_cancel_stops_between_halves() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = calls.clone();
+        // The first reply is cut off; any other asks would be answered whole.
+        let server =
+            server_with(
+                move |_| match seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+                    0 => chat_reply(r#"{"segments":[{"start":1,"te"#, "length"),
+                    _ => chat_reply(r#"{"segments":[{"start":1,"text":"half"}]}"#, "stop"),
+                },
+            )
+            .await;
+        let (_dir, folder) = recording_folder();
+        let cancel = CancellationToken::new();
+
+        let err = transcribe_long(
+            &config(&server.uri(), "google/gemini-3.5-flash", true),
+            &silence(130),
+            &folder,
+            &cancel,
+            &|wait| Waits::default().sleep(wait),
+            |progress| {
+                // The user cancels as the part is split in two.
+                if matches!(progress, ApiProgress::CutOff { .. }) {
+                    cancel.cancel();
+                }
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(err, LongApiError::Cancelled);
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+        assert!(files_in(&folder).is_empty(), "left {:?}", files_in(&folder));
+    }
+
+    #[tokio::test]
+    async fn api_long_dropping_the_future_deletes_the_slice() {
+        // The server holds its answer back: the run is in the middle of a request.
+        let server = server_with(|_| whisper_reply_after_a_pause()).await;
+        let (_dir, folder) = recording_folder();
+        let c = config(&server.uri(), "whisper-1", false);
+        let cancel = CancellationToken::new();
+        let sleep = |wait| Waits::default().sleep(wait);
+        let samples = silence(100);
+        // Boxed, not `pin!`ned: dropping a pinned borrow would not drop the future.
+        let mut run = Box::pin(transcribe_long(
+            &c,
+            &samples,
+            &folder,
+            &cancel,
+            &sleep,
+            |_| {},
+        ));
+
+        // The slice is written before the first wait for the server, so one poll is enough.
+        let pending = tokio::time::timeout(Duration::from_millis(200), &mut run).await;
+        assert!(pending.is_err(), "the request is still in flight");
+        assert_eq!(files_in(&folder), ["api-slice-0.wav"]);
+
+        // The caller gives up (the user cancels the job and drops the task).
+        drop(run);
+
+        assert!(files_in(&folder).is_empty(), "left {:?}", files_in(&folder));
     }
 
     #[test]
