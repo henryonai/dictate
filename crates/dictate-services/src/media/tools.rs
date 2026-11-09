@@ -28,6 +28,12 @@ const LAST_LINES: usize = 2;
 /// `/usr/bin:/bin:/usr/sbin:/sbin`, with no Homebrew), and a Linux launcher often leaves out `~/.local/bin`.
 ///
 /// Child processes get this as their PATH too: yt-dlp looks for ffmpeg there.
+///
+/// The system folders go first for cmd.exe, which handles a PATH of at most 8191 characters: a program that cmd
+/// starts (a `.cmd` or `.bat` shim of a tool is run by cmd, so it inherits the limit) may not see the folders far
+/// down a long PATH, and without System32 it cannot find `where`, `ping` or the other programs of the system.
+/// Putting them first helps a user whose PATH is long but under the limit; a PATH over it (one of 15000 under
+/// `cargo test` on Windows) cmd ignores altogether, whatever the order.
 pub fn search_path() -> OsString {
     search_path_from(
         system_folders(),
@@ -38,12 +44,7 @@ pub fn search_path() -> OsString {
 }
 
 /// The folders of the system's own programs, which go before everything else in the search path. Only Windows has
-/// any: `%SystemRoot%\System32` and `%SystemRoot%`.
-///
-/// cmd.exe reads only the first 8191 characters of an environment variable, and a PATH can be longer (a test
-/// run by `cargo test` on Windows has one of 15000, with System32 at the end). Whatever is past the 8191st
-/// character is lost to a program that cmd starts, and a `.cmd` shim of a tool is one: without System32 it cannot
-/// find `where`, `ping` or the other programs of the system.
+/// any: `%SystemRoot%\System32` and `%SystemRoot%` (why they go first: see `search_path`).
 fn system_folders() -> Vec<PathBuf> {
     #[cfg(windows)]
     return match std::env::var_os("SystemRoot") {
@@ -217,14 +218,12 @@ impl fmt::Display for RunError {
 
 impl std::error::Error for RunError {}
 
-/// The command every child process starts from: the search path of `search_path()` (so that yt-dlp finds ffmpeg),
-/// Python's output unbuffered (so that the progress lines arrive as they are printed), and on Windows no console
-/// window flashing up.
-fn base_command(program: &Path) -> std::process::Command {
+/// The command every child process starts from: `path` as its search path (`search_path()`, so that yt-dlp finds
+/// ffmpeg), Python's output unbuffered (so that the progress lines arrive as they are printed), and on Windows no
+/// console window flashing up.
+fn base_command(program: &Path, path: &OsStr) -> std::process::Command {
     let mut command = std::process::Command::new(program);
-    command
-        .env("PATH", search_path())
-        .env("PYTHONUNBUFFERED", "1");
+    command.env("PATH", path).env("PYTHONUNBUFFERED", "1");
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -358,11 +357,22 @@ pub async fn run(
     cancel: &CancellationToken,
     on_line: impl FnMut(&str) + Send,
 ) -> Result<Exit, RunError> {
+    run_with_path(program, args, &search_path(), cancel, on_line).await
+}
+
+/// `run` with `path` as the search path of the program instead of `search_path()`.
+async fn run_with_path(
+    program: &Path,
+    args: &[OsString],
+    path: &OsStr,
+    cancel: &CancellationToken,
+    on_line: impl FnMut(&str) + Send,
+) -> Result<Exit, RunError> {
     if cancel.is_cancelled() {
         return Err(RunError::Cancelled);
     }
 
-    let mut command = base_command(program);
+    let mut command = base_command(program, path);
     command.args(args);
     let mut command = tokio::process::Command::from(command);
     command
@@ -495,7 +505,11 @@ mod tests {
         assert!(rest.starts_with(&long_path), "the PATH is not kept whole");
         let after_the_path = &rest[long_path.len()..];
         assert!(after_the_path.starts_with(SEP), "{after_the_path}");
-        assert!(after_the_path.contains("/home/me/bin"), "{after_the_path}");
+        let user_folders: Vec<PathBuf> = std::env::split_paths(after_the_path).collect();
+        assert!(
+            user_folders.contains(&PathBuf::from("/home/me").join("bin")),
+            "{after_the_path}"
+        );
     }
 
     #[test]
@@ -750,11 +764,16 @@ mod tests {
 
     #[tokio::test]
     async fn run_lets_the_program_start_system_programs_by_bare_name() {
-        // `where` is in System32 on Windows and `uname` in /usr/bin: both are found through the PATH only.
+        // `where` is in System32 on Windows and `uname` in /usr/bin: both are found through the PATH only. The PATH
+        // is the one Dictate builds, from the real system folders and a PATH of normal length: under `cargo test`
+        // on Windows the PATH of the test process is about 15000 characters, and cmd.exe ignores a PATH longer
+        // than 8191 altogether, so no order of the folders would let cmd find `where` there.
+        let short_path = std::env::join_paths(short_system_path()).unwrap();
+        let path = search_path_from(system_folders(), Some(short_path), dirs::home_dir(), None);
         let (program, args) = shell("command -v uname", "where ping");
         let mut lines = Vec::new();
 
-        let exit = run(&program, &args, &CancellationToken::new(), |l| {
+        let exit = run_with_path(&program, &args, &path, &CancellationToken::new(), |l| {
             lines.push(l.to_string())
         })
         .await
@@ -763,11 +782,28 @@ mod tests {
         assert_eq!(
             exit.code,
             Some(0),
-            "{lines:?} with the PATH ({} characters) {:?}",
-            search_path().len(),
-            search_path()
+            "{lines:?} with the PATH ({} characters) {path:?}",
+            path.len()
         );
         assert!(!lines.is_empty());
+    }
+
+    /// A PATH as short as the one a desktop app gets: the folders of the system's own programs.
+    fn short_system_path() -> Vec<PathBuf> {
+        if cfg!(windows) {
+            let root = PathBuf::from(
+                std::env::var_os("SystemRoot").expect("Windows always sets SystemRoot"),
+            );
+            vec![
+                root.join("System32"),
+                root.join("System32").join("Wbem"),
+                root,
+            ]
+        } else {
+            ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+                .map(PathBuf::from)
+                .to_vec()
+        }
     }
 
     #[tokio::test]
