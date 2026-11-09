@@ -238,5 +238,9 @@
   "meetings.error.cancelled": "Đã hủy",
   "meetings.error.other": "{detail}",
   "meetings.error.generic": "Có lỗi khi xử lý.",
-  "meetings.error.invalid_link": "Link không hợp lệ."
+  "meetings.error.invalid_link": "Link không hợp lệ.",
+  "meetings.error.busy": "Bản ghi này đang được xử lý. Hãy thử lại khi xong.",
+  "meetings.error.no_ai": "Chưa cấu hình API trong Cài đặt.",
+  "meetings.error.empty_question": "Câu hỏi đang trống.",
+  "meetings.error.no_transcript": "Chưa có transcript."
 }

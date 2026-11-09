@@ -140,7 +140,7 @@ mod tests {
         );
         let opened = AtomicUsize::new(0);
 
-        start_up(library.dir(), &state, || {
+        start_up(&library.dir(), &state, || {
             // At the moment the jobs are let go the folders are clean and the flags are read.
             assert!(!stale.exists(), "a job would have met the leftovers");
             assert_eq!(secrets.gets(), 2, "both keys were asked for");

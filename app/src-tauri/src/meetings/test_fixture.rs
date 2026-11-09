@@ -1,7 +1,7 @@
 //! A throwaway library of recordings for the tests of the meetings module, removed when dropped.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use dictate_core::meetings::library::{files, MeetingLibrary, SCREEN_SOURCE};
 use serde_json::{json, Value};
@@ -43,15 +43,28 @@ pub const SCREEN: &str = "2026-10-19 22-20-58";
 pub const LINK: &str = "2026-10-18 11-50-17";
 pub const FILE: &str = "2026-10-17 09-00-00";
 
+/// The library is a folder of its own inside a private root, so that a test that lists the folder beside it (the exports, the
+/// media files) sees only what that test made: the system's temporary folder is shared with every other process, and with
+/// the other tests, which run at the same time.
 pub struct Fixture {
-    dir: tempfile::TempDir,
+    root: tempfile::TempDir,
 }
 
 impl Fixture {
     pub fn empty() -> Fixture {
-        Fixture {
-            dir: tempfile::tempdir().expect("a temp dir"),
-        }
+        let fixture = Fixture {
+            root: tempfile::tempdir().expect("a temp dir"),
+        };
+        fs::create_dir(fixture.dir()).expect("the library's folder");
+        fixture
+    }
+
+    /// A folder beside the library, private to this fixture: where a test puts media files and exports, and what must stay
+    /// out of the library.
+    pub fn outside(&self) -> PathBuf {
+        let outside = self.root.path().join("outside");
+        fs::create_dir_all(&outside).expect("the folder beside the library");
+        outside
     }
 
     /// Three recordings, newest first:
@@ -95,12 +108,13 @@ impl Fixture {
         f
     }
 
-    pub fn dir(&self) -> &Path {
-        self.dir.path()
+    /// The library folder; recordings are its sub-folders.
+    pub fn dir(&self) -> PathBuf {
+        self.root.path().join("library")
     }
 
     pub fn library(&self) -> MeetingLibrary {
-        MeetingLibrary::new(self.dir().to_path_buf())
+        MeetingLibrary::new(self.dir())
     }
 
     pub fn folder(&self, id: &str) -> PathBuf {

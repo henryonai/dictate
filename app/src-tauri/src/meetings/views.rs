@@ -120,10 +120,48 @@ impl From<MeetingError> for ErrorView {
     }
 }
 
+/// The keys of the errors that the app answers a command with, besides the pipeline's own (`meetings::error::key` of the
+/// services). Their texts are in `notify::TEXTS` and in both locale files.
+pub mod key {
+    /// The recording has a job: what was asked can't be done while it runs.
+    pub const BUSY: &str = "meetings.error.busy";
+    /// The AI model that answers questions and writes summaries is not set up.
+    pub const NO_AI: &str = "meetings.error.no_ai";
+    pub const EMPTY_QUESTION: &str = "meetings.error.empty_question";
+    pub const NO_TRANSCRIPT: &str = "meetings.error.no_transcript";
+}
+
 impl ErrorView {
     /// An error with no key of its own: the English `detail` is the whole message.
     pub fn other(detail: impl Into<String>) -> Self {
         MeetingError::other(detail).into()
+    }
+
+    /// An error that is all in its key's text.
+    fn keyed(kind: &str, key: &str) -> Self {
+        ErrorView {
+            kind: kind.to_owned(),
+            key: key.to_owned(),
+            detail: None,
+            command: None,
+        }
+    }
+
+    pub fn busy() -> Self {
+        Self::keyed("Other", key::BUSY)
+    }
+
+    /// Of kind `Api`: the error card offers to open the API settings.
+    pub fn no_ai() -> Self {
+        Self::keyed("Api", key::NO_AI)
+    }
+
+    pub fn empty_question() -> Self {
+        Self::keyed("Other", key::EMPTY_QUESTION)
+    }
+
+    pub fn no_transcript() -> Self {
+        Self::keyed("Other", key::NO_TRANSCRIPT)
     }
 }
 
@@ -608,6 +646,23 @@ mod tests {
     }
 
     #[test]
+    fn the_errors_the_app_answers_with_have_a_key_and_no_english_in_them() {
+        let shown = |view: ErrorView| (view.kind, view.key, view.detail, view.command);
+        let expect = |kind: &str, key: &str| (kind.to_owned(), key.to_owned(), None, None);
+        // The "API error" kind brings the buttons that open the API settings.
+        assert_eq!(shown(ErrorView::no_ai()), expect("Api", key::NO_AI));
+        assert_eq!(shown(ErrorView::busy()), expect("Other", key::BUSY));
+        assert_eq!(
+            shown(ErrorView::empty_question()),
+            expect("Other", key::EMPTY_QUESTION)
+        );
+        assert_eq!(
+            shown(ErrorView::no_transcript()),
+            expect("Other", key::NO_TRANSCRIPT)
+        );
+    }
+
+    #[test]
     fn the_detail_of_an_error_view_is_capped_like_the_one_of_a_job() {
         let view = ErrorView::other("é".repeat(10_000));
         assert_eq!(
@@ -971,7 +1026,7 @@ mod tests {
     #[test]
     fn detail_prefers_existing_media_then_audio_m4a() {
         let f = Fixture::empty();
-        let original = f.dir().join("Phim ảnh").join("cuộc gọi.MP4");
+        let original = f.outside().join("Phim ảnh").join("cuộc gọi.MP4");
         std::fs::create_dir_all(original.parent().unwrap()).unwrap();
         std::fs::write(&original, b"video").unwrap();
         let url = |path: &Path| format!("http://media.test/{}", path.display());
@@ -1049,7 +1104,7 @@ mod tests {
             ("a.mkv", false),
             ("a", false),
         ] {
-            let file = f.dir().join(name);
+            let file = f.outside().join(name);
             std::fs::write(&file, b"x").unwrap();
             let record = with_media(&f, &format!("r-{name}"), file.to_str().unwrap());
             let shown = detail(&record, None, None, &url);

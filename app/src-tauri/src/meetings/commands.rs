@@ -198,23 +198,32 @@ pub async fn meeting_cancel(meetings: State<'_, Meetings>, id: String) -> Result
 
 /// "Transcribe + summarize again from scratch".
 #[tauri::command]
-pub async fn meeting_rerun(meetings: State<'_, Meetings>, id: String) -> Result<(), String> {
+pub async fn meeting_rerun(meetings: State<'_, Meetings>, id: String) -> Result<(), ErrorView> {
     let meetings = meetings.inner().clone();
-    blocking(move || meetings.rerun(&id)).await?
+    blocking(move || meetings.rerun(&id))
+        .await
+        .map_err(ErrorView::other)?
 }
 
 /// "Summarize again".
 #[tauri::command]
-pub async fn meeting_resummarize(meetings: State<'_, Meetings>, id: String) -> Result<(), String> {
+pub async fn meeting_resummarize(
+    meetings: State<'_, Meetings>,
+    id: String,
+) -> Result<(), ErrorView> {
     let meetings = meetings.inner().clone();
-    blocking(move || meetings.resummarize(&id)).await?
+    blocking(move || meetings.resummarize(&id))
+        .await
+        .map_err(ErrorView::other)?
 }
 
 /// "Try again", from the step that failed.
 #[tauri::command]
-pub async fn meeting_retry(meetings: State<'_, Meetings>, id: String) -> Result<(), String> {
+pub async fn meeting_retry(meetings: State<'_, Meetings>, id: String) -> Result<(), ErrorView> {
     let meetings = meetings.inner().clone();
-    blocking(move || meetings.retry(&id)).await?
+    blocking(move || meetings.retry(&id))
+        .await
+        .map_err(ErrorView::other)?
 }
 
 #[tauri::command]
@@ -314,9 +323,14 @@ pub async fn meeting_open_media(
     app: AppHandle,
     meetings: State<'_, Meetings>,
     id: String,
-) -> Result<(), String> {
+) -> Result<(), ErrorView> {
     let meetings = meetings.inner().clone();
-    blocking(move || open(&app, &meetings.media_path(&id)?)).await?
+    blocking(move || {
+        let media = meetings.media_path(&id)?;
+        open(&app, &media).map_err(ErrorView::other)
+    })
+    .await
+    .map_err(ErrorView::other)?
 }
 
 fn open(app: &AppHandle, path: &Path) -> Result<(), String> {

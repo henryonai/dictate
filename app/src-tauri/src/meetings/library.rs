@@ -210,30 +210,31 @@ impl Meetings {
         Ok(id)
     }
 
-    /// Starts the job of the recording from where `from` says.
+    /// Starts the job of the recording from where `from` says. A recording that has a job says so, with a key: a second click
+    /// on "Try again" can reach it.
     fn restart(
         &self,
         id: &str,
         from: impl FnOnce(&MeetingRecord) -> StartAt,
-    ) -> Result<(), String> {
-        let record = self.record(id)?;
+    ) -> Result<(), ErrorView> {
+        let record = self.record(id).map_err(ErrorView::other)?;
         self.registry
             .start(Self::spec_for(&record), from(&record))
-            .map_err(|_| "This recording is already being processed.".to_owned())
+            .map_err(|_| ErrorView::busy())
     }
 
     /// "Transcribe + summarize again from scratch".
-    pub fn rerun(&self, id: &str) -> Result<(), String> {
+    pub fn rerun(&self, id: &str) -> Result<(), ErrorView> {
         self.restart(id, |_| StartAt::Audio)
     }
 
     /// "Summarize again". A recording with no transcript starts from the audio: the pipeline sees to that.
-    pub fn resummarize(&self, id: &str) -> Result<(), String> {
+    pub fn resummarize(&self, id: &str) -> Result<(), ErrorView> {
         self.restart(id, |_| StartAt::Summary)
     }
 
     /// "Try again": from the step that failed.
-    pub fn retry(&self, id: &str) -> Result<(), String> {
+    pub fn retry(&self, id: &str) -> Result<(), ErrorView> {
         self.restart(id, retry_start)
     }
 
@@ -274,9 +275,7 @@ impl Meetings {
     ) -> Result<Vec<(String, String)>, ErrorView> {
         let record = self.record(id).map_err(ErrorView::other)?;
         if self.registry.is_running(id) {
-            return Err(ErrorView::other(
-                "This recording is being processed. Try again when it is done.",
-            ));
+            return Err(ErrorView::busy());
         }
         let applied = record
             .rename_speakers(names)
@@ -287,7 +286,10 @@ impl Meetings {
         self.events.changed();
         if resummarize {
             if let Err(e) = self.resummarize(id) {
-                log::warn!("Could not summarize {id} again after renaming speakers: {e}");
+                log::warn!(
+                    "Could not summarize {id} again after renaming speakers: {}",
+                    e.key
+                );
             }
         }
         Ok(applied)
@@ -328,12 +330,14 @@ impl Meetings {
         }
     }
 
-    /// The media file of the recording, when it is there and is audio or video.
-    pub fn media_path(&self, id: &str) -> Result<PathBuf, String> {
-        self.record(id)?
+    /// The media file of the recording, when it is there and is audio or video. The original of an imported file may have
+    /// been moved since the window last looked, so this is an error a person can reach.
+    pub fn media_path(&self, id: &str) -> Result<PathBuf, ErrorView> {
+        self.record(id)
+            .map_err(ErrorView::other)?
             .media()
             .filter(|path| path.is_file() && is_media_file(path))
-            .ok_or_else(|| "The media file is not there.".to_owned())
+            .ok_or_else(|| MeetingError::no_media().into())
     }
 
     /// The folder of the recording, for the file manager.
@@ -373,24 +377,29 @@ impl Meetings {
     ) -> Result<String, ErrorView> {
         let question = question.trim();
         if question.is_empty() {
-            return Err(ErrorView::other("The question is empty."));
+            return Err(ErrorView::empty_question());
         }
-        let record = self.record(id).map_err(ErrorView::other)?;
-        let Some((transcript, _)) = record.transcript() else {
-            return Err(ErrorView::other("This recording has no transcript yet."));
-        };
-        // The key store is asked on a blocking thread, and only when the flags say that a key is there.
-        let state = state.clone();
-        let config = tauri::async_runtime::spawn_blocking(move || {
+        // The recording's files are read, and the key store asked (only when the flags say that a key is there), on a blocking
+        // thread.
+        let (meetings, state, id) = (self.clone(), state.clone(), id.to_owned());
+        let (config, title, transcript) = tauri::async_runtime::spawn_blocking(move || {
+            let record = meetings.record(&id).map_err(ErrorView::other)?;
+            let Some((transcript, _)) = record.transcript() else {
+                return Err(ErrorView::no_transcript());
+            };
             if !ai_ready(&state.settings.get(), state.loaded_keys()) {
-                return Err("API not set up in Settings.".to_owned());
+                return Err(ErrorView::no_ai());
             }
-            summary_ai_config(&state.settings, &*state.secrets)
+            let config = summary_ai_config(&state.settings, &*state.secrets).map_err(|e| {
+                // The settings say a key is saved and the store does not give it: as good as none.
+                log::warn!("The AI is not set up for a question: {e}");
+                ErrorView::no_ai()
+            })?;
+            Ok((config, record.title, transcript))
         })
         .await
-        .map_err(|e| ErrorView::other(format!("The work stopped unexpectedly: {e}")))?
-        .map_err(ErrorView::other)?;
-        summary::ask(&config, &record.title, &transcript, question)
+        .map_err(|e| ErrorView::other(format!("The work stopped unexpectedly: {e}")))??;
+        summary::ask(&config, &title, &transcript, question)
             .await
             .map_err(|e| ErrorView::other(api_error_text(&e)))
     }
@@ -498,6 +507,8 @@ mod tests {
         trash: Arc<FakeTrash>,
         heard: Arc<Heard>,
         ended: mpsc::Receiver<JobView>,
+        /// The ends of jobs that `ended` met on its way to another one.
+        skipped: Mutex<Vec<JobView>>,
         library: Fixture,
     }
 
@@ -537,6 +548,7 @@ mod tests {
                 trash,
                 heard,
                 ended,
+                skipped: Mutex::new(Vec::new()),
                 library,
             }
         }
@@ -549,13 +561,18 @@ mod tests {
             Rig::with(backend, Fixture::empty(), None)
         }
 
-        /// Waits for the job of `id` to end.
+        /// Waits for the job of `id` to end. The ends of other recordings' jobs that come first are kept for the test to ask
+        /// for, not thrown away: two jobs that run at once end in any order.
         fn ended(&self, id: &str) -> JobView {
             loop {
-                let view = self.ended.recv_timeout(PATIENCE).expect("the job to end");
-                if view.id == id {
-                    return view;
+                {
+                    let mut kept = lock(&self.skipped);
+                    if let Some(at) = kept.iter().position(|view| view.id == id) {
+                        return kept.remove(at);
+                    }
                 }
+                let view = self.ended.recv_timeout(PATIENCE).expect("the job to end");
+                lock(&self.skipped).push(view);
             }
         }
 
@@ -570,7 +587,7 @@ mod tests {
         /// Gives the recording a media file that is there, as an import of a file would have: without one its job ends at the audio
         /// before the backend is asked for anything.
         fn give_media(&self, id: &str) -> PathBuf {
-            let media = media_file(self.library.dir().parent().unwrap(), &format!("{id}.m4a"));
+            let media = media_file(&self.library.outside(), &format!("{id}.m4a"));
             let mut meta = self.meta(id);
             meta.media = media.to_string_lossy().into_owned();
             meta.write(&self.library.folder(id)).unwrap();
@@ -602,6 +619,27 @@ mod tests {
         let mut backend = FakeBackend::new();
         backend.gates.prepare = Some(held);
         (backend, control)
+    }
+
+    #[test]
+    fn the_end_of_a_job_that_came_first_is_kept_for_whoever_asks_for_it_later() {
+        // Two jobs that run at once end in any order; a test that waits for one must not lose the other's end on the way.
+        let rig = Rig::empty(FakeBackend::new());
+        let view = |id: &str| JobView {
+            id: id.into(),
+            step: None,
+            progress: None,
+            step_started_ms: 0,
+            outcome: Some(crate::meetings::views::OutcomeView::Done { summary: true }),
+        };
+        {
+            let ends = lock(&rig.heard.ended);
+            ends.send(view("second")).unwrap();
+            ends.send(view("first")).unwrap();
+        }
+
+        assert_eq!(rig.ended("first").id, "first");
+        assert_eq!(rig.ended("second").id, "second");
     }
 
     // ---- the names of recordings
@@ -638,13 +676,8 @@ mod tests {
     #[test]
     fn nothing_outside_the_library_is_read_or_deleted_by_a_crafted_id() {
         let rig = Rig::new();
-        let outside = rig
-            .library
-            .dir()
-            .parent()
-            .unwrap()
-            .join("dictate-test-outside");
-        fs::create_dir_all(&outside).unwrap();
+        // The folder beside the library: `..` from a recording's id reaches it.
+        let outside = rig.library.outside();
         fs::write(outside.join("transcript.txt"), "secret").unwrap();
         let id = format!("../{}", outside.file_name().unwrap().to_string_lossy());
 
@@ -659,7 +692,6 @@ mod tests {
             "the Trash was asked for a folder outside the library"
         );
         assert!(outside.join("transcript.txt").exists());
-        fs::remove_dir_all(&outside).unwrap();
     }
 
     // ---- the list and the detail
@@ -803,8 +835,8 @@ mod tests {
         let mut backend = FakeBackend::new();
         backend.ai_ready = false;
         let rig = Rig::empty(backend);
-        let original = media_file(rig.library.dir().parent().unwrap(), "cuộc họp tuần 1.MP4");
-        let again = media_file(rig.library.dir().parent().unwrap(), "âm thanh.m4a");
+        let original = media_file(&rig.library.outside(), "cuộc họp tuần 1.MP4");
+        let again = media_file(&rig.library.outside(), "âm thanh.m4a");
 
         let ids = rig.meetings.import_files(&[
             original.to_string_lossy().into_owned(),
@@ -840,7 +872,7 @@ mod tests {
     #[test]
     fn an_imported_file_is_named_by_its_file_until_the_summary_names_it() {
         let rig = Rig::empty(FakeBackend::new());
-        let original = media_file(rig.library.dir().parent().unwrap(), "cuộc họp tuần 1.mp4");
+        let original = media_file(&rig.library.outside(), "cuộc họp tuần 1.mp4");
 
         let ids = rig
             .meetings
@@ -864,7 +896,7 @@ mod tests {
     #[test]
     fn a_file_is_imported_by_its_absolute_path_and_a_folder_is_not_imported() {
         let rig = Rig::empty(FakeBackend::new());
-        let dir = rig.library.dir().parent().unwrap().to_path_buf();
+        let dir = rig.library.outside();
         let original = media_file(&dir, "call.wav");
         let folder = original.parent().unwrap().to_path_buf();
 
@@ -883,7 +915,7 @@ mod tests {
     #[test]
     fn two_files_imported_in_one_second_get_two_folders() {
         let rig = Rig::empty(FakeBackend::new());
-        let dir = rig.library.dir().parent().unwrap().to_path_buf();
+        let dir = rig.library.outside();
         let (one, two) = (media_file(&dir, "one.wav"), media_file(&dir, "two.wav"));
         let ids = rig.meetings.import_files(&[
             one.to_string_lossy().into_owned(),
@@ -934,8 +966,19 @@ mod tests {
         rig.meetings.rerun(SCREEN).unwrap();
         control.started.blocking_recv().unwrap();
 
-        assert!(rig.meetings.rerun(SCREEN).is_err());
-        assert!(rig.meetings.retry(SCREEN).is_err());
+        // A second click is answered with the key of the text that says why, not with English.
+        assert_eq!(
+            rig.meetings.rerun(SCREEN).unwrap_err().key,
+            "meetings.error.busy"
+        );
+        assert_eq!(
+            rig.meetings.resummarize(SCREEN).unwrap_err().key,
+            "meetings.error.busy"
+        );
+        assert_eq!(
+            rig.meetings.retry(SCREEN).unwrap_err().key,
+            "meetings.error.busy"
+        );
         assert!(rig.meetings.cancel(SCREEN));
         rig.ended(SCREEN);
         assert!(!rig.meetings.cancel(SCREEN));
@@ -950,7 +993,7 @@ mod tests {
         // A link whose download did not come to its end has no media: it downloads again.
         assert_eq!(retry_start(&record(LINK)), StartAt::Download);
         // The same link with its media on disk goes on from the transcript it has.
-        let media = media_file(rig.library.dir(), "source.m4a");
+        let media = media_file(&rig.library.outside(), "source.m4a");
         let mut meta = rig.meta(LINK);
         meta.media = media.to_string_lossy().into_owned();
         meta.write(&folder(LINK)).unwrap();
@@ -1096,8 +1139,10 @@ mod tests {
             .rename_speakers(SCREEN, &names, false)
             .unwrap_err();
 
-        assert_eq!(refused.kind, "Other");
-        assert!(refused.detail.unwrap().contains("being processed"));
+        assert_eq!(
+            (refused.kind.as_str(), refused.key.as_str()),
+            ("Other", "meetings.error.busy")
+        );
         assert_eq!(
             fs::read(rig.library.folder(SCREEN).join(files::TRANSCRIPT)).unwrap(),
             before
@@ -1142,23 +1187,18 @@ mod tests {
             "Họp- Q4 - kế hoạch-.md"
         );
 
-        let destination = rig.library.dir().parent().unwrap().join("Xuất ra.md");
+        let destination = rig.library.outside().join("Xuất ra.md");
         rig.meetings.export_to(SCREEN, &destination).unwrap();
         assert_eq!(
             fs::read_to_string(&destination).unwrap(),
             rig.meetings.markdown(SCREEN).unwrap()
         );
-        let leftovers: Vec<_> = fs::read_dir(destination.parent().unwrap())
+        // The folder is this test's own: the export is all that is in it, so no temporary file of the write is left.
+        let names: Vec<String> = fs::read_dir(rig.library.outside())
             .unwrap()
-            .filter_map(|entry| {
-                entry
-                    .ok()
-                    .map(|e| e.file_name().to_string_lossy().into_owned())
-            })
-            .filter(|name| name.ends_with(".tmp"))
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
-        assert!(leftovers.is_empty(), "{leftovers:?}");
-        fs::remove_file(destination).unwrap();
+        assert_eq!(names, ["Xuất ra.md"]);
     }
 
     #[test]
@@ -1191,7 +1231,7 @@ mod tests {
     #[test]
     fn the_media_to_open_is_the_media_file_when_it_is_there() {
         let rig = Rig::new();
-        let dir = rig.library.dir().parent().unwrap().to_path_buf();
+        let dir = rig.library.outside();
         let media = media_file(&dir, "talk.mp4");
         rig.library.write(
             "2026-11-09 10-00-00",
@@ -1205,20 +1245,18 @@ mod tests {
         fs::remove_file(&media).unwrap();
         assert!(rig.meetings.media_path("2026-11-09 10-00-00").is_err());
         // A recording with no media file in `meta.json`.
-        assert!(rig.meetings.media_path(SCREEN).is_err());
+        let none = rig.meetings.media_path(SCREEN).unwrap_err();
+        assert_eq!(
+            (none.kind.as_str(), none.key.as_str()),
+            ("NoMedia", "meetings.error.no_media")
+        );
     }
 
     #[test]
     fn only_a_media_file_is_opened_in_another_app() {
         // `meta.json` is data: a library that came from elsewhere may name anything as the media, and opening it would run it.
         let rig = Rig::new();
-        let dir = rig
-            .library
-            .dir()
-            .parent()
-            .unwrap()
-            .join("dictate-test-media");
-        fs::create_dir_all(&dir).unwrap();
+        let dir = rig.library.outside();
         let named = |name: &str| {
             let path = dir.join(name);
             fs::write(&path, b"x").unwrap();
@@ -1252,7 +1290,6 @@ mod tests {
                 "{name}"
             );
         }
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     // ---- deleting
@@ -1338,8 +1375,8 @@ mod tests {
         for blank in ["", "   ", "\n\t "] {
             let error = tauri::async_runtime::block_on(rig.meetings.ask(&state, SCREEN, blank))
                 .unwrap_err();
-            assert_eq!(error.key, "meetings.error.other", "{blank:?}");
-            assert_eq!(error.detail.as_deref(), Some("The question is empty."));
+            assert_eq!(error.key, "meetings.error.empty_question", "{blank:?}");
+            assert_eq!(error.kind, "Other");
         }
         assert_eq!(secrets.gets(), 0, "the key store was not asked");
     }
@@ -1360,9 +1397,10 @@ mod tests {
         let error =
             tauri::async_runtime::block_on(rig.meetings.ask(&state, SCREEN, "Who owns the docs?"))
                 .unwrap_err();
-        assert!(
-            error.detail.unwrap().contains("API"),
-            "the AI is not set up"
+        // The window says it in its own language, from the key; the buttons of an API error are for it.
+        assert_eq!(
+            (error.kind.as_str(), error.key.as_str(), error.detail),
+            ("Api", "meetings.error.no_ai", None)
         );
         assert_eq!(secrets.gets(), asked);
 
@@ -1371,7 +1409,7 @@ mod tests {
         let error =
             tauri::async_runtime::block_on(rig.meetings.ask(&state, FILE, "Who owns the docs?"))
                 .unwrap_err();
-        assert!(error.detail.unwrap().contains("transcript"));
+        assert_eq!(error.key, "meetings.error.no_transcript");
         let error =
             tauri::async_runtime::block_on(rig.meetings.ask(&state, "no such recording", "Who?"))
                 .unwrap_err();
@@ -1394,14 +1432,14 @@ mod tests {
         // Files of the library folder itself are not a recording's.
         fs::write(f.dir().join("notes.tmp"), b"x").unwrap();
 
-        assert_eq!(sweep_library(f.dir()), 5);
+        assert_eq!(sweep_library(&f.dir()), 5);
 
         // What is whole stays, with the cache of the API parts a second run continues from.
         assert!(f.folder(SCREEN).join(files::TRANSCRIPT).is_file());
         assert!(f.folder(SCREEN).join(files::SUMMARY).is_file());
         assert!(f.folder(LINK).join("api-parts").join("0.json").is_file());
         assert!(f.dir().join("notes.tmp").is_file());
-        assert_eq!(sweep_library(f.dir()), 0);
+        assert_eq!(sweep_library(&f.dir()), 0);
         assert_eq!(sweep_library(&f.dir().join("no such library")), 0);
     }
 

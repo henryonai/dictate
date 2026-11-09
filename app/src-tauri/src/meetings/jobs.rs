@@ -128,9 +128,14 @@ impl Registry {
             step_started_ms: (inner.now)(),
             outcome: None,
         };
-        lock(&inner.views).insert(spec.id.clone(), view.clone());
-        inner.events.job(&view);
-        inner.events.changed();
+        {
+            // Told while the table is locked, like the end of a job, so that the events of a recording come in the order in
+            // which the table changed.
+            let mut views = lock(&inner.views);
+            views.insert(spec.id.clone(), view.clone());
+            inner.events.job(&view);
+            inner.events.changed();
+        }
 
         // A second task watches the first: a job that panics would otherwise stay "running" in the window for ever.
         let (watcher, id_and_folder) = (self.inner.clone(), spec.clone());
@@ -270,7 +275,16 @@ impl Inner {
     /// Tells whoever waits for the job, the window and the person that it ended.
     fn announce(self: &Arc<Self>, spec: &JobSpec, view: &JobView, outcome: Outcome) {
         self.ended.notify_waiters();
-        self.events.job(view);
+        {
+            // The recording was free from the moment `finish` gave up its place, and the window may have started another job
+            // since: its start was told, and an end that comes after would look like the end of that one. The table is locked
+            // while this is told, as `Registry::start` locks it while it tells a start: either the start is told first and this
+            // is not, or this is told first.
+            let views = lock(&self.views);
+            if views.get(&spec.id) == Some(view) {
+                self.events.job(view);
+            }
+        }
         self.events.changed();
 
         // A job that was cancelled is what the person asked for.
@@ -389,6 +403,8 @@ mod tests {
         heard: Arc<Heard>,
         events: mpsc::Receiver<Seen>,
         notices: mpsc::Receiver<Notice>,
+        /// The ends of jobs that `ended` met on its way to another one.
+        skipped: Mutex<Vec<JobView>>,
         library: Fixture,
     }
 
@@ -422,6 +438,7 @@ mod tests {
                 heard,
                 events,
                 notices,
+                skipped: Mutex::new(Vec::new()),
                 library: Fixture::empty(),
             }
         }
@@ -434,7 +451,7 @@ mod tests {
 
         /// An imported file called `id`'s title, with a media file there, as an import leaves it.
         fn recording(&self, id: &str, title: &str) -> JobSpec {
-            let media = self.library.dir().join(format!("{id}.m4a"));
+            let media = self.library.outside().join(format!("{id}.m4a"));
             std::fs::write(&media, b"audio").unwrap();
             self.library.write(
                 id,
@@ -466,12 +483,33 @@ mod tests {
             }
         }
 
-        /// Waits for the event that says the job of `id` has ended, and gives its view.
+        /// Waits for the event that says the job of `id` has ended, and gives its view. The ends of other recordings' jobs that
+        /// come first are kept for a later call, not thrown away: jobs that run at once end in any order.
         fn ended(&self, id: &str) -> JobView {
-            self.wait("end of the job", |seen| match seen {
-                Seen::Job(view) if view.id == id && view.outcome.is_some() => Some(view),
-                _ => None,
-            })
+            loop {
+                {
+                    let mut kept = lock(&self.skipped);
+                    if let Some(at) = kept.iter().position(|view| view.id == id) {
+                        return kept.remove(at);
+                    }
+                }
+                let view = self.wait("end of a job", |seen| match seen {
+                    Seen::Job(view) if view.outcome.is_some() => Some(view),
+                    _ => None,
+                });
+                if view.id == id {
+                    return view;
+                }
+                lock(&self.skipped).push(view);
+            }
+        }
+
+        /// Waits for the list to be told that the job is over: `announce` tells the end of a job, and then the list, so a test that
+        /// has just heard the end has not heard the list yet.
+        fn list_told_of_the_end(&self) {
+            self.wait("the list to be told of the end", |seen| {
+                (seen == Seen::Changed).then_some(())
+            });
         }
 
         /// Everything heard so far.
@@ -549,6 +587,7 @@ mod tests {
 
         rig.registry.start(spec.clone(), StartAt::Audio).unwrap();
         rig.ended(&spec.id);
+        rig.list_told_of_the_end();
 
         let all = rig.all();
         assert_eq!(
@@ -720,28 +759,66 @@ mod tests {
     }
 
     #[test]
-    fn a_job_can_be_started_again_by_whoever_hears_that_it_ended() {
+    fn the_recording_is_free_by_the_time_its_end_is_told() {
         let mut backend = FakeBackend::new();
         backend.summary = Err("API error 401".into());
         let rig = Rig::new(backend);
         let spec = rig.recording("2026-11-09 10-00-00", "Weekly");
-        // "Try again" is the window's answer to the event that showed the error: it starts the job from inside that event.
-        let (registry, again, answer) = (
+        // "Try again" is the window's answer to the event that showed the error. Whoever hears that the job ended must find the
+        // recording free, or the answer meets "already running".
+        let (registry, id, answer) = (
             rig.registry.clone(),
-            spec.clone(),
+            spec.id.clone(),
             Arc::new(Mutex::new(None)),
         );
         let told = answer.clone();
         *lock(&rig.heard.on_end) = Some(Box::new(move || {
-            *lock(&told) = Some(registry.start(again.clone(), StartAt::Summary));
+            *lock(&told) = Some(registry.is_running(&id));
         }));
 
         rig.registry.start(spec.clone(), StartAt::Audio).unwrap();
         rig.ended(&spec.id);
 
-        assert_eq!(*lock(&answer), Some(Ok(())), "the recording was not free");
-        // And that job ends too.
+        assert_eq!(*lock(&answer), Some(false), "the recording was not free");
+        // And so the start that follows the end works.
+        assert_eq!(rig.registry.start(spec.clone(), StartAt::Summary), Ok(()));
         rig.ended(&spec.id);
+    }
+
+    #[test]
+    fn the_end_of_a_job_is_not_told_after_a_newer_job_of_the_recording_started() {
+        // The recording is free as soon as its job has ended, and the window may start another one before the end of the
+        // first is told: its start is told first, and the end that comes after would look like the end of the new job.
+        let rig = Rig::new(FakeBackend::new());
+        let spec = rig.recording("2026-11-09 10-00-00", "Weekly");
+        let inner = rig.registry.inner.clone();
+        let done = Outcome::Done { summary: true };
+        let stale = inner.keep(&spec, &done);
+        let newer = JobView {
+            id: spec.id.clone(),
+            step: Some(StepView::Audio),
+            progress: None,
+            step_started_ms: 5_000,
+            outcome: None,
+        };
+        lock(&inner.views).insert(spec.id.clone(), newer.clone());
+        rig.heard.job(&newer);
+
+        inner.announce(&spec, &stale, done.clone());
+
+        assert_eq!(
+            rig.job_views(),
+            std::slice::from_ref(&newer),
+            "the stale end was told"
+        );
+        assert_eq!(rig.registry.status(&spec.id), Some(newer));
+        // The list is still told: it reloads whatever it holds.
+        assert_eq!(rig.all().last(), Some(&Seen::Changed));
+
+        // The end of the job that is the latest is told.
+        let latest = inner.keep(&spec, &done);
+        inner.announce(&spec, &latest, done);
+        assert_eq!(rig.job_views().last(), Some(&latest));
     }
 
     #[test]
@@ -780,6 +857,7 @@ mod tests {
 
         rig.registry.start(spec.clone(), StartAt::Audio).unwrap();
         rig.ended(&spec.id);
+        rig.list_told_of_the_end();
 
         assert_eq!(Meta::read(&spec.folder).unwrap().title, "Weekly sync");
         let changes = rig

@@ -238,5 +238,9 @@
   "meetings.error.cancelled": "Cancelled",
   "meetings.error.other": "{detail}",
   "meetings.error.generic": "Something went wrong.",
-  "meetings.error.invalid_link": "Invalid link."
+  "meetings.error.invalid_link": "Invalid link.",
+  "meetings.error.busy": "This recording is being processed. Try again when it is done.",
+  "meetings.error.no_ai": "API not set up in Settings.",
+  "meetings.error.empty_question": "The question is empty.",
+  "meetings.error.no_transcript": "No transcript yet."
 }

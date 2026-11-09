@@ -182,6 +182,27 @@ pub const TEXTS: &[(&str, &str, &str)] = &[
         "Invalid link.",
         "Link không hợp lệ.",
     ),
+    // What a command answers when it can't do what was asked (`views::key`).
+    (
+        "meetings.error.busy",
+        "This recording is being processed. Try again when it is done.",
+        "Bản ghi này đang được xử lý. Hãy thử lại khi xong.",
+    ),
+    (
+        "meetings.error.no_ai",
+        "API not set up in Settings.",
+        "Chưa cấu hình API trong Cài đặt.",
+    ),
+    (
+        "meetings.error.empty_question",
+        "The question is empty.",
+        "Câu hỏi đang trống.",
+    ),
+    (
+        "meetings.error.no_transcript",
+        "No transcript yet.",
+        "Chưa có transcript.",
+    ),
 ];
 
 /// The text for `key` in `lang`, with each `{name}` filled from `vars`. A key that is not here is the key itself.
@@ -431,6 +452,39 @@ mod tests {
         }
         let unique: BTreeSet<_> = TEXTS.iter().map(|(key, _, _)| key).collect();
         assert_eq!(unique.len(), TEXTS.len(), "a key is there twice");
+    }
+
+    #[test]
+    fn every_key_the_app_answers_with_has_words_in_both_languages() {
+        use crate::meetings::views::key as app_key;
+        for key in [
+            app_key::BUSY,
+            app_key::NO_AI,
+            app_key::EMPTY_QUESTION,
+            app_key::NO_TRANSCRIPT,
+        ] {
+            let entry = TEXTS.iter().find(|(known, _, _)| *known == key);
+            let (_, en, vi) = entry.unwrap_or_else(|| panic!("no words for {key}"));
+            assert!(!en.is_empty() && !vi.is_empty(), "{key}");
+            assert!(key.starts_with("meetings.error."), "{key}");
+        }
+        // R8's words for the one it has.
+        assert_eq!(
+            text(Lang::En, app_key::NO_AI, &[]),
+            "API not set up in Settings."
+        );
+        assert_eq!(
+            text(Lang::Vi, app_key::NO_AI, &[]),
+            "Chưa cấu hình API trong Cài đặt."
+        );
+        assert_eq!(
+            text(Lang::En, app_key::NO_TRANSCRIPT, &[]),
+            "No transcript yet."
+        );
+        assert_eq!(
+            text(Lang::Vi, app_key::NO_TRANSCRIPT, &[]),
+            "Chưa có transcript."
+        );
     }
 
     /// The locale file of the UI as a map of keys to texts.
