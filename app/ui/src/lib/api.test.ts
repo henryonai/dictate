@@ -2,7 +2,7 @@ import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { emit } from "@tauri-apps/api/event";
 import { afterEach, describe, expect, test } from "vitest";
 import { api } from "./api";
-import { fakeSettings } from "../test-helpers";
+import { fakePanelState, fakeSettings } from "../test-helpers";
 
 type Call = { cmd: string; args: unknown };
 
@@ -29,6 +29,9 @@ describe("each wrapper calls its command with the argument names the Rust side e
     ["setAiProvider", "set_ai_provider", { p: "openai" }, () => api.setAiProvider("openai")],
     ["setTranscribePreset", "set_transcribe_preset", { p: "groq" }, () => api.setTranscribePreset("groq")],
     ["setSecret", "set_secret", { account: "ai", value: "k" }, () => api.setSecret("ai", "k")],
+    ["setHotkey", "set_hotkey", { accel: "Ctrl+Alt+D" }, () => api.setHotkey("Ctrl+Alt+D")],
+    ["hotkeyStatus", "hotkey_status", undefined, () => api.hotkeyStatus()],
+    ["hotkeyRecording", "hotkey_recording", { active: true }, () => api.hotkeyRecording(true)],
     ["checkAi", "check_ai", undefined, () => api.checkAi()],
     ["checkTranscribe", "check_transcribe", undefined, () => api.checkTranscribe()],
     ["listModels", "list_models", undefined, () => api.listModels()],
@@ -41,6 +44,24 @@ describe("each wrapper calls its command with the argument names the Rust side e
     ["editPresets", "edit_presets", undefined, () => api.editPresets()],
     ["transcribePresets", "transcribe_presets", undefined, () => api.transcribePresets()],
     ["openMeetingsFolder", "open_meetings_folder", undefined, () => api.openMeetingsFolder()],
+    ["dictationLanguages", "dictation_languages", undefined, () => api.dictationLanguages()],
+    ["dictationStop", "dictation_stop", undefined, () => api.dictationStop()],
+    ["dictationCancel", "dictation_cancel", undefined, () => api.dictationCancel()],
+    ["dictationSetLanguage", "dictation_set_language", { lang: "vi-VN" }, () => api.dictationSetLanguage("vi-VN")],
+    ["dictationRewrite", "dictation_rewrite", { style: "concise" }, () => api.dictationRewrite("concise")],
+    ["dictationCustom", "dictation_custom", { instruction: "polite" }, () => api.dictationCustom("polite")],
+    ["dictationOpenCard", "dictation_open_card", { custom: true }, () => api.dictationOpenCard(true)],
+    ["dictationCopy", "dictation_copy", { text: "Hello" }, () => api.dictationCopy("Hello")],
+    ["dictationCardText", "dictation_card_text", { text: "Hello" }, () => api.dictationCardText("Hello")],
+    ["dictationUndo", "dictation_undo", undefined, () => api.dictationUndo()],
+    ["dictationPasteCard", "dictation_paste_card", { text: "Hello" }, () => api.dictationPasteCard("Hello")],
+    ["dictationChipHover", "dictation_chip_hover", { hovering: true }, () => api.dictationChipHover(true)],
+    ["dictationMenuOpen", "dictation_menu_open", { open: false }, () => api.dictationMenuOpen(false)],
+    ["dictationGrantAccessibility", "dictation_grant_accessibility", undefined, () => api.dictationGrantAccessibility()],
+    ["dictationOpenSettings", "dictation_open_settings", undefined, () => api.dictationOpenSettings()],
+    ["panelState", "panel_state", undefined, () => api.panelState()],
+    ["panelResized", "panel_resized", { label: "bubble", width: 428, height: 100 }, () => api.panelResized("bubble", 428, 100)],
+    ["panelLanguage", "panel_language", undefined, () => api.panelLanguage()],
     ["openUrl", "plugin:opener|open_url", { url: "https://example.com/keys" }, () => api.openUrl("https://example.com/keys")],
   ];
 
@@ -75,5 +96,44 @@ test("the model-download event reaches the listener, until it is removed", async
 
   stop();
   await emit("model-download", event);
+  expect(heard).toHaveLength(1);
+});
+
+test("the hotkey-status event reaches the listener", async () => {
+  recordCalls();
+  const heard: unknown[] = [];
+  const stop = await api.onHotkeyStatus((status) => heard.push(status));
+
+  const status = { label: "Ctrl+Alt+D", backend: "portal", error: null };
+  await emit("hotkey-status", status);
+  expect(heard).toEqual([status]);
+
+  stop();
+});
+
+test("the settings-changed event brings the settings that changed, until it is removed", async () => {
+  recordCalls();
+  const heard: unknown[] = [];
+  const stop = await api.onSettingsChanged((patch) => heard.push(patch));
+
+  await emit("settings-changed", { dictation_language: "vi-VN" });
+  expect(heard).toEqual([{ dictation_language: "vi-VN" }]);
+
+  stop();
+  await emit("settings-changed", { dictation_language: "en-US" });
+  expect(heard).toHaveLength(1);
+});
+
+test("the panel-state event reaches the listener, until it is removed", async () => {
+  recordCalls();
+  const heard: unknown[] = [];
+  const stop = await api.onPanelState((state) => heard.push(state));
+
+  const state = fakePanelState({ view: "pill", durationS: 12 });
+  await emit("panel-state", state);
+  expect(heard).toEqual([state]);
+
+  stop();
+  await emit("panel-state", state);
   expect(heard).toHaveLength(1);
 });

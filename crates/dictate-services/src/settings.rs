@@ -151,15 +151,20 @@ pub fn effective_transcribe_key(
     let ai = ai_key.filter(|k| !k.is_empty());
     match (own, ai) {
         (Some(key), _) => Some(key.into()),
-        (None, Some(key))
-            if s.transcribe_preset == TranscribePreset::OpenRouter
-                && is_openrouter_url(&s.ai_base_url)
-                && is_openrouter_url(&s.transcribe_base_url) =>
-        {
-            Some(key.into())
-        }
+        (None, Some(key)) if shares_ai_key(s, true, false) => Some(key.into()),
         _ => None,
     }
+}
+
+/// Whether transcription uses the AI key: there is one, the transcription service has none of its own, and both
+/// services are OpenRouter (see `effective_transcribe_key`). It takes only whether the keys exist, so that the
+/// settings view can tell without reading them.
+pub fn shares_ai_key(s: &Settings, has_ai_key: bool, has_transcribe_key: bool) -> bool {
+    has_ai_key
+        && !has_transcribe_key
+        && s.transcribe_preset == TranscribePreset::OpenRouter
+        && is_openrouter_url(&s.ai_base_url)
+        && is_openrouter_url(&s.transcribe_base_url)
 }
 
 /// Whether the URL is an `https` one on the host `openrouter.ai` itself, not a path, a query, a user name or a
@@ -276,11 +281,21 @@ impl SettingsStore {
     /// Write the file atomically (temp file, then rename) and make `s` the current settings.
     pub fn save(&self, s: &Settings) -> io::Result<()> {
         let mut current = lock(&self.current);
-        let mut json = serde_json::to_vec_pretty(s)?;
-        json.push(b'\n');
-        write_atomic(&self.path, &json)?;
+        write_settings(&self.path, s)?;
         *current = s.clone();
         Ok(())
+    }
+
+    /// Change the settings: read, change and write happen under one lock, so two updates running at the same
+    /// time both take effect (with `get` then `save`, the second would write back the first one's old copy).
+    /// Returns the settings as saved. When the file can't be written the settings stay as they were.
+    pub fn update(&self, f: impl FnOnce(&mut Settings)) -> io::Result<Settings> {
+        let mut current = lock(&self.current);
+        let mut updated = current.clone();
+        f(&mut updated);
+        write_settings(&self.path, &updated)?;
+        *current = updated.clone();
+        Ok(updated)
     }
 }
 
@@ -343,6 +358,12 @@ fn keep_backup(path: &Path, lead: &str) -> LoadWarning {
     }
 }
 
+fn write_settings(path: &Path, s: &Settings) -> io::Result<()> {
+    let mut json = serde_json::to_vec_pretty(s)?;
+    json.push(b'\n');
+    write_atomic(path, &json)
+}
+
 fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         fs::create_dir_all(dir)?;
@@ -365,6 +386,7 @@ mod tests {
     use super::*;
     use crate::presets::{AiProvider, TranscribePreset};
     use std::fs;
+    use std::thread;
 
     fn store_in(dir: &tempfile::TempDir) -> (SettingsStore, Option<LoadWarning>) {
         SettingsStore::open(dir.path().join("settings.json"))
@@ -507,6 +529,23 @@ mod tests {
         );
         assert_eq!(effective_transcribe_key(&s, None, None), None);
         assert_eq!(effective_transcribe_key(&s, Some(""), Some("")), None);
+    }
+
+    #[test]
+    fn shares_the_ai_key_only_when_it_is_the_one_in_use() {
+        let s = openrouter_with(
+            "https://openrouter.ai/api/v1",
+            "https://openrouter.ai/api/v1",
+        );
+        assert!(shares_ai_key(&s, true, false));
+        // Nothing to share without an AI key, and nothing is shared when the service has a key of its own.
+        assert!(!shares_ai_key(&s, false, false));
+        assert!(!shares_ai_key(&s, true, true));
+        assert!(!shares_ai_key(&s, false, true));
+        // Not outside OpenRouter.
+        let elsewhere = openrouter_with("https://openrouter.ai/api/v1", "https://stt.example.com");
+        assert!(!shares_ai_key(&elsewhere, true, false));
+        assert!(!shares_ai_key(&Settings::default(), true, false));
     }
 
     #[test]
@@ -676,6 +715,63 @@ mod tests {
         let (reopened, warning) = store_in(&dir);
         assert!(warning.is_none());
         assert_eq!(reopened.get().vocabulary, "kept");
+    }
+
+    #[test]
+    fn update_is_atomic_under_contention() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, _) = store_in(&dir);
+
+        // Eight threads each add a character 50 times: if two of them read the same settings before either
+        // writes, one addition is lost and the vocabulary ends up short.
+        thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    for _ in 0..50 {
+                        store.update(|s| s.vocabulary.push('x')).unwrap();
+                    }
+                });
+            }
+        });
+
+        assert_eq!(store.get().vocabulary.len(), 400);
+        let (reopened, warning) = store_in(&dir);
+        assert!(warning.is_none(), "the file must still parse");
+        assert_eq!(reopened.get().vocabulary.len(), 400);
+        assert!(!dir.path().join("settings.json.tmp").exists());
+    }
+
+    #[test]
+    fn update_returns_the_new_settings_and_writes_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, _) = store_in(&dir);
+
+        let updated = store
+            .update(|s| {
+                s.vocabulary = "Dictate".into();
+                s.push_to_talk = true;
+            })
+            .unwrap();
+
+        assert_eq!(updated, store.get());
+        assert_eq!(updated.vocabulary, "Dictate");
+        assert!(updated.push_to_talk);
+        let (reopened, warning) = store_in(&dir);
+        assert!(warning.is_none());
+        assert_eq!(reopened.get(), updated);
+    }
+
+    #[test]
+    fn a_failed_update_keeps_the_settings_as_they_were() {
+        // The settings file cannot be written: its folder is a file.
+        let dir = tempfile::tempdir().unwrap();
+        let in_the_way = dir.path().join("in-the-way");
+        fs::write(&in_the_way, b"x").unwrap();
+        let (store, _) = SettingsStore::open(in_the_way.join("settings.json"));
+
+        assert!(store.update(|s| s.vocabulary = "lost".into()).is_err());
+
+        assert_eq!(store.get(), Settings::default());
     }
 
     #[test]

@@ -7,17 +7,23 @@ license.workspace = true
 description = "Services for the Dictate app: settings, secrets, AI and transcription clients"
 
 [dependencies]
+# Lets the stop pipeline's Backend be used as a trait object: native async fn in traits is not dyn-compatible.
+async-trait = "0.1.92"
 base64 = "0.22.1"
+# Microphone capture. 0.18 needs Rust 1.85; ALSA headers (libasound2-dev) must be installed to build on Linux.
+cpal = "0.18.2"
 dictate-core = { path = "../dictate-core" }
 dirs = "7.0.0"
 hound = "3.5.1"
 keyring = "3.6.3"
 reqwest = { version = "0.12.28", default-features = false, features = ["json", "multipart", "rustls-tls", "stream"] }
+# Resampling the microphone to 16 kHz. 5.x needs Rust 1.87: stay on 4.0 until the minimum Rust version moves up.
+rubato = "4.0.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 # Only the memory figures: the default features pull in disks, networks, users and components too.
 sysinfo = { version = "0.36.1", default-features = false, features = ["system"] }
-tokio = { version = "1.54.1", features = ["fs", "io-util", "time"] }
+tokio = { version = "1.54.1", features = ["fs", "io-util", "macros", "time"] }
 tokio-util = { version = "0.7.20", default-features = false }
 # whisper-rs 0.16 needs Rust 1.88: stay on 0.15 until the minimum Rust version moves up.
 # log_backend sends whisper.cpp's logging to the `log` crate instead of stderr.

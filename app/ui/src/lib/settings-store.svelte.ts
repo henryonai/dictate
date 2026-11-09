@@ -9,7 +9,7 @@
 // change to a setting wins. A call sends the same, but only up to its own change: the ones made after it come with
 // their own calls.
 import { api, errorText } from "./api";
-import type { Account, AiProvider, Settings, SettingsView, TranscribePreset } from "./api";
+import type { Account, AiProvider, HotkeyStatus, Settings, SettingsView, TranscribePreset } from "./api";
 import { setLanguage } from "./i18n";
 
 /** The settings without what the view adds to them. */
@@ -37,9 +37,13 @@ export class SettingsStore {
   error = $state("");
   /** True while the settings are being read; the window has nothing to show before that has worked once. */
   loading = $state(true);
+  /** What the Rust side says about the shortcut; null until it has said, and for good if it can't. */
+  hotkey = $state.raw<HotkeyStatus | null>(null);
 
   /** What the Rust side last confirmed. */
   private saved: SettingsView | null = null;
+  /** What the Rust side changed by itself while a call was on its way, or null when none is. See `fold`. */
+  private heard: Partial<Settings> | null = null;
   private pending: Pending[] = [];
   private failures = 0;
   private queue: Promise<unknown> = Promise.resolve();
@@ -52,11 +56,46 @@ export class SettingsStore {
       this.saved = view;
       this.loadWarning = view.load_warning ?? this.loadWarning;
       this.show();
+      void this.refreshHotkey();
     } catch (e) {
       this.error = errorText(e);
     } finally {
       this.loading = false;
     }
+  }
+
+  /** Asks how the shortcut stands. Without an answer the window shows the shortcut as the settings have it. */
+  private async refreshHotkey(): Promise<void> {
+    try {
+      this.hotkey = await api.hotkeyStatus();
+    } catch {
+      // Nothing to tell: the settings' own text of the shortcut stands in.
+    }
+  }
+
+  /** Follows what the Rust side says about the shortcut by itself (the desktop answers the portal late). Resolves with the function that stops it. */
+  watchHotkey(): Promise<() => void> {
+    return api.onHotkeyStatus((status) => {
+      this.hotkey = status;
+    });
+  }
+
+  /**
+   * Follows the settings that the Rust side changes without the window: the language menu of the dictation chip saves
+   * the dictation language while this window is only hidden. Without it the window would show the old value and send
+   * it back with its next save. Resolves with the function that stops it.
+   */
+  watchSettings(): Promise<() => void> {
+    return api.onSettingsChanged((patch) => this.fold(patch));
+  }
+
+  /** What the Rust side changed joins what it confirmed. The changes of the window that wait for their save stay on top. */
+  private fold(patch: Partial<Settings>): void {
+    if (!this.saved) return;
+    this.saved = { ...this.saved, ...patch };
+    // The answer of a call that is on its way was made before this and doesn't know it.
+    if (this.heard) Object.assign(this.heard, patch);
+    this.show();
   }
 
   dismissWarning(): void {
@@ -84,6 +123,24 @@ export class SettingsStore {
   /** Same for the transcription service: its base URL and models come with the answer. */
   setTranscribePreset(preset: TranscribePreset): Promise<boolean> {
     return this.send({ transcribe_preset: preset }, () => api.setTranscribePreset(preset));
+  }
+
+  /**
+   * The Rust side registers the shortcut, and saves it only when that worked. Resolves with "" when it did, else
+   * with why it didn't: a key of the texts (`hotkey.taken`, `hotkey.invalid`) or a sentence. The recorder shows
+   * that next to the shortcut, so it is not also a banner of the window.
+   */
+  async setHotkey(accel: string): Promise<string> {
+    let failure = "";
+    const saved = await this.send(
+      { hotkey: accel },
+      () => api.setHotkey(accel),
+      (e) => {
+        failure = errorText(e);
+      },
+    );
+    if (saved) await this.refreshHotkey();
+    return saved ? "" : failure;
   }
 
   /** An empty `value` deletes the key. The answer says whether a key is saved, never what it is. */
@@ -117,23 +174,41 @@ export class SettingsStore {
     setLanguage(view.ui_language, view.system_language);
   }
 
-  /** `call` gets the settings to send as the call starts; the calls that don't send settings ignore them. */
-  private send(patch: Partial<Settings>, call: (settings: Settings | null) => Promise<SettingsView>): Promise<boolean> {
+  /**
+   * `call` gets the settings to send as the call starts; the calls that don't send settings ignore them. A failure
+   * goes to `onFailure` when there is one, and is the window's `error` otherwise.
+   */
+  private send(
+    patch: Partial<Settings>,
+    call: (settings: Settings | null) => Promise<SettingsView>,
+    onFailure?: (error: unknown) => void,
+  ): Promise<boolean> {
     const entry: Pending = { patch, failuresBefore: this.failures };
     this.pending.push(entry);
     this.show();
     const sent = this.queue.then(async () => {
+      const heard: Partial<Settings> = {};
       try {
-        this.saved = await call(this.saved && settingsOf(this.laidOn(this.saved, entry)));
+        const sending = this.saved && settingsOf(this.laidOn(this.saved, entry));
+        this.heard = heard;
+        const answer = await call(sending);
+        // What the Rust side changed by itself meanwhile is newer than the answer, except for what this very call set.
+        const newer = Object.fromEntries(Object.entries(heard).filter(([key]) => !(key in entry.patch)));
+        this.saved = { ...answer, ...newer };
         this.loadWarning = this.saved.load_warning ?? this.loadWarning;
         // A call that was queued before a failure doesn't make that failure go away.
         if (this.failures === entry.failuresBefore) this.error = "";
         return true;
       } catch (e) {
-        this.failures += 1;
-        this.error = errorText(e);
+        if (onFailure) {
+          onFailure(e);
+        } else {
+          this.failures += 1;
+          this.error = errorText(e);
+        }
         return false;
       } finally {
+        this.heard = null;
         this.pending = this.pending.filter((other) => other !== entry);
         this.show();
       }

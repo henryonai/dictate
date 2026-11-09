@@ -5,11 +5,19 @@
   import type { SettingsStore } from "../lib/settings-store.svelte";
   import ChoiceOrText from "./ChoiceOrText.svelte";
   import Field from "./Field.svelte";
+  import HotkeyRecorder from "./HotkeyRecorder.svelte";
+  import Permissions from "./Permissions.svelte";
   import Toggle from "./Toggle.svelte";
 
   // `store` has loaded its view before this page is shown.
   let { store }: { store: SettingsStore } = $props();
   const view = $derived(store.view!);
+
+  // What the Rust side says about the shortcut. Before it has said, the shortcut is as the settings write it.
+  const hotkey = $derived(store.hotkey);
+  const hotkeyLabel = $derived(hotkey?.label ?? view.hotkey);
+  // Where the desktop owns the shortcut, or offers none, changing it here would do nothing.
+  const hotkeyChangeable = $derived(hotkey?.backend !== "portal" && hotkey?.error !== "hotkey.wayland_unavailable");
 
   const UI_LANGUAGES: UiLanguage[] = ["system", "en", "vi"];
   const DICTATION_LANGUAGES = ["en-US", "vi-VN", "ja-JP", "zh-CN", "ko-KR", "fr-FR", "de-DE", "es-ES"];
@@ -17,6 +25,12 @@
   let folderError = $state("");
 
   const dictationLanguages = () => DICTATION_LANGUAGES.map((code) => ({ value: code, label: t(`lang.${code}`) }));
+
+  // While the recorder listens, the shortcut that is set must not start a dictation. If the Rust side can't be asked, the
+  // recorder works as well; the pause ends there by itself.
+  function pauseHotkey(active: boolean) {
+    api.hotkeyRecording(active).catch(() => {});
+  }
 
   async function openMeetingsFolder() {
     folderError = "";
@@ -57,9 +71,19 @@
     value={view.dictation_language}
     onchange={(language) => store.update({ dictation_language: language })}
   />
-  <Field label={t("general.hotkey")}>
-    <input type="text" readonly value={view.hotkey} />
-  </Field>
+  <HotkeyRecorder
+    label={hotkeyLabel}
+    canChange={hotkeyChangeable}
+    onrecord={(accelerator) => store.setHotkey(accelerator)}
+    onlistening={pauseHotkey}
+  />
+  {#if hotkey?.error === "hotkey.wayland_unavailable"}
+    <p class="hint">{t(hotkey.error)}</p>
+  {:else if hotkey?.error}
+    <p class="error" role="alert">{t(hotkey.error)}</p>
+  {:else if hotkey?.backend === "portal"}
+    <p class="hint">{t("general.hotkey_portal_hint")}</p>
+  {/if}
   <p class="hint">{t("general.hotkey_hint")}</p>
   <Field label={t("general.mode")}>
     <select
@@ -82,6 +106,9 @@
     onchange={(checked) => store.update({ save_recordings: checked })}
   />
 </section>
+
+<!-- macOS only: it shows nothing where the system asks for no permission. -->
+<Permissions />
 
 <section class="group" aria-labelledby="general-meetings">
   <h2 id="general-meetings">{t("general.meetings")}</h2>

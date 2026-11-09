@@ -7,19 +7,20 @@
 //! runtime's own.
 
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use dictate_core::meetings::library::MeetingLibrary;
 use dictate_core::text::segments::Segment;
 use dictate_core::text::timestamp;
-use dictate_services::ai::{self, AiConfig};
+use dictate_services::ai;
 use dictate_services::http::ApiError;
 use dictate_services::presets::{AiProvider, TranscribePreset, EDIT_PRESETS};
 use dictate_services::secrets::{Account, SecretStore};
 use dictate_services::settings::{self, Settings, SettingsStore};
 use dictate_services::system;
-use dictate_services::transcribe_api::{self, TranscribeConfig, TranscribeError};
+use dictate_services::transcribe_api::{self, TranscribeError};
 use dictate_services::whisper::local::{read_wav_16k_mono, LocalWhisper};
 use dictate_services::whisper::models::{
     self, DownloadError, ModelDir, ModelStatus, HUGGING_FACE_BASE_URL,
@@ -30,11 +31,18 @@ use tauri_plugin_autostart::ManagerExt as _;
 use tauri_plugin_opener::OpenerExt as _;
 use tokio_util::sync::CancellationToken;
 
-use crate::state::{lock, AppState, Job};
+use crate::config::{ai_config, local_model, transcribe_config};
+use crate::dictation::save::SavePaths;
+use crate::hotkey::{ChangeError, HotkeyStatus, Hotkeys, INVALID, TAKEN};
+use crate::platform::rules::Os;
+use crate::platform::{Permission, Platform, SystemPlatform};
+use crate::state::{lock, AppState, Job, KeyFlags};
 use crate::tray;
 
 /// The event that tells how a model download goes.
 const DOWNLOAD_EVENT: &str = "model-download";
+/// The event that tells the Settings window of settings that changed without it (see [`emit_language`]).
+const SETTINGS_EVENT: &str = "settings-changed";
 
 /// The settings plus what the UI may know about the keys.
 ///
@@ -113,28 +121,112 @@ pub struct TranscribePresetView {
 
 // ---- the plain functions behind the commands
 
-/// The key saved for an account. A key store that fails counts as no key: the settings stay usable and saving a
-/// key says what is wrong.
-fn saved_key(secrets: &dyn SecretStore, account: Account) -> Option<String> {
-    match secrets.get(account) {
-        Ok(key) => key.filter(|key| !key.is_empty()),
-        Err(e) => {
-            log::warn!("Could not read the {} key: {e}", account.name());
-            None
+/// What the system says about the two permissions dictation needs. Only macOS has them: elsewhere both are
+/// `NotNeeded`, which is how the Settings window knows to show no Permissions section.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct PermissionsView {
+    pub microphone: Permission,
+    pub accessibility: Permission,
+}
+
+impl PermissionsView {
+    /// Whether the person has something to do about the permissions, which is when Settings opens by itself at the
+    /// start. A microphone nobody asked about yet: until it is answered. Accessibility missing: once (`shown_before`
+    /// is the guide's mark), and only when text is written into fields (`auto_write`): with the card alone nothing
+    /// needs it, and a person who skipped it is not sent to Settings at every login. A microphone that was refused is
+    /// the person's answer, and Settings doesn't open at every start for it.
+    pub fn needs_a_guide(&self, auto_write: bool, shown_before: bool) -> bool {
+        self.microphone == Permission::NotDetermined
+            || (auto_write && !shown_before && self.accessibility == Permission::Denied)
+    }
+}
+
+/// The mark that Settings was opened by itself, at a start, for the permissions. A file beside the settings: the
+/// settings are the window's to write whole, and this is not something it should know of.
+pub struct GuideMark(PathBuf);
+
+impl GuideMark {
+    /// The mark that goes with the settings file `settings`.
+    pub fn beside(settings: &Path) -> GuideMark {
+        GuideMark(settings.with_file_name("permission-guide-shown"))
+    }
+
+    /// Whether the guide was shown before.
+    pub fn shown(&self) -> bool {
+        self.0.exists()
+    }
+
+    /// Remembers that the guide was shown. If that can't be written the guide is shown again at the next start, which
+    /// is a nuisance and nothing worse.
+    pub fn set(&self) {
+        let written = self
+            .0
+            .parent()
+            .map_or(Ok(()), fs::create_dir_all)
+            .and_then(|()| fs::write(&self.0, b""));
+        if let Err(e) = written {
+            log::warn!("Could not remember that the permissions guide was shown: {e}");
         }
     }
 }
 
-fn get_settings_view(store: &SettingsStore, secrets: &dyn SecretStore) -> SettingsView {
+/// Whether Settings opens by itself at this start, for the permissions; when it does, that is remembered.
+pub fn open_guide_at_start(view: &PermissionsView, auto_write: bool, mark: &GuideMark) -> bool {
+    if !view.needs_a_guide(auto_write, mark.shown()) {
+        return false;
+    }
+    mark.set();
+    true
+}
+
+/// Asks the system for both permissions.
+pub fn permissions_view(platform: &dyn Platform) -> PermissionsView {
+    PermissionsView {
+        microphone: platform.microphone(),
+        accessibility: platform.accessibility(),
+    }
+}
+
+/// Shows the system's prompt for the permission `kind` names ("microphone" or "accessibility"), and doesn't wait
+/// for the answer: the window asks for the status every second.
+fn request_permission_now(platform: &dyn Platform, kind: &str) -> Result<(), String> {
+    match kind {
+        "microphone" => platform.request_microphone(Box::new(|_| {})),
+        "accessibility" => platform.request_accessibility(),
+        other => return Err(format!("{other:?} is not a permission of this app")),
+    }
+    Ok(())
+}
+
+/// The link to the pane of System Settings where the permission `kind` names is turned on. A fixed list: the window
+/// can't have this command open any other link. Only the Mac has such panes: on another system an address like this is
+/// one that the opener would hand to the browser.
+fn permission_settings_url(os: Os, kind: &str) -> Result<&'static str, String> {
+    if os != Os::Mac {
+        return Err("The permissions are managed in System Settings on a Mac only".to_owned());
+    }
+    match kind {
+        "microphone" => {
+            Ok("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
+        }
+        "accessibility" => {
+            Ok("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+        }
+        other => Err(format!("{other:?} is not a permission of this app")),
+    }
+}
+
+/// The settings plus which keys exist. The flags are what the key store said at the start and what saving or
+/// removing a key has done since: asking the key store itself on every view could make the OS show a prompt each
+/// time.
+fn get_settings_view(store: &SettingsStore, keys: &KeyFlags) -> SettingsView {
     let settings = store.get();
-    let ai_key = saved_key(secrets, Account::Ai);
-    let own_key = saved_key(secrets, Account::Transcribe);
-    let used_key =
-        settings::effective_transcribe_key(&settings, ai_key.as_deref(), own_key.as_deref());
+    let has_ai_key = keys.get(Account::Ai);
+    let has_transcribe_key = keys.get(Account::Transcribe);
     SettingsView {
-        has_ai_key: ai_key.is_some(),
-        has_transcribe_key: own_key.is_some(),
-        shares_openrouter_key: own_key.is_none() && used_key.is_some(),
+        has_ai_key,
+        has_transcribe_key,
+        shares_openrouter_key: settings::shares_ai_key(&settings, has_ai_key, has_transcribe_key),
         load_warning: None,
         system_language: tray::system_language(),
         settings,
@@ -149,9 +241,11 @@ fn parse_account(name: &str) -> Result<Account, String> {
     }
 }
 
-/// Saves a key; an empty one (after trimming what was pasted around it) deletes it.
+/// Saves a key; an empty one (after trimming what was pasted around it) deletes it. The flag follows only once the
+/// key store has done it.
 fn set_secret_inner(
     store: &SettingsStore,
+    keys: &KeyFlags,
     secrets: &dyn SecretStore,
     account: &str,
     value: &str,
@@ -169,42 +263,58 @@ fn set_secret_inner(
         log::warn!("Could not change the {} key: {e}", account.name());
         e.to_string()
     })?;
-    Ok(get_settings_view(store, secrets))
+    keys.set(account, !value.is_empty());
+    Ok(get_settings_view(store, keys))
 }
 
-fn save(store: &SettingsStore, settings: &Settings) -> Result<(), String> {
-    store
-        .save(settings)
-        .map_err(|e| format!("Could not save the settings: {e}"))
+fn saving_failed(e: io::Error) -> String {
+    format!("Could not save the settings: {e}")
 }
 
 fn set_ai_provider_inner(
     store: &SettingsStore,
-    secrets: &dyn SecretStore,
+    keys: &KeyFlags,
     provider: AiProvider,
 ) -> Result<SettingsView, String> {
-    let mut settings = store.get();
-    settings.set_ai_provider(provider);
-    save(store, &settings)?;
-    Ok(get_settings_view(store, secrets))
+    store
+        .update(|settings| settings.set_ai_provider(provider))
+        .map_err(saving_failed)?;
+    Ok(get_settings_view(store, keys))
 }
 
 fn set_transcribe_preset_inner(
     store: &SettingsStore,
-    secrets: &dyn SecretStore,
+    keys: &KeyFlags,
     preset: TranscribePreset,
 ) -> Result<SettingsView, String> {
-    let mut settings = store.get();
-    settings.set_transcribe_preset(preset);
-    save(store, &settings)?;
-    Ok(get_settings_view(store, secrets))
+    store
+        .update(|settings| settings.set_transcribe_preset(preset))
+        .map_err(saving_failed)?;
+    Ok(get_settings_view(store, keys))
+}
+
+/// Registers the shortcut and saves it. The errors that the person can do something about are keys of the UI's
+/// texts, which it translates; the rest is a sentence.
+fn set_hotkey_inner(
+    store: &SettingsStore,
+    keys: &KeyFlags,
+    hotkeys: &Hotkeys,
+    accel: &str,
+) -> Result<SettingsView, String> {
+    hotkeys.change(store, accel).map_err(|e| match e {
+        ChangeError::Invalid => INVALID.to_string(),
+        ChangeError::Taken => TAKEN.to_string(),
+        ChangeError::Save(e) => saving_failed(e),
+    })?;
+    Ok(get_settings_view(store, keys))
 }
 
 /// Saves `settings`. `apply_launch_at_login` is called, with the new value, only when that setting changes; if it
-/// fails nothing is saved, so the file never says something the system doesn't do.
+/// fails nothing is saved, so the file never says something the system doesn't do. The same goes for the shortcut,
+/// which only `set_hotkey` changes: what the window sends for it is ignored.
 fn save_settings_inner(
     store: &SettingsStore,
-    secrets: &dyn SecretStore,
+    keys: &KeyFlags,
     settings: Settings,
     mut apply_launch_at_login: impl FnMut(bool) -> Result<(), String>,
 ) -> Result<SettingsView, String> {
@@ -213,58 +323,24 @@ fn save_settings_inner(
     if changed {
         apply_launch_at_login(settings.launch_at_login)?;
     }
-    if let Err(e) = save(store, &settings) {
+    let saved = store.update(|current| {
+        let hotkey = std::mem::take(&mut current.hotkey);
+        *current = settings;
+        current.hotkey = hotkey;
+    });
+    if let Err(e) = saved {
         if changed {
             // Put the system back to what the file still says.
             let _ = apply_launch_at_login(before);
         }
-        return Err(e);
+        return Err(saving_failed(e));
     }
-    Ok(get_settings_view(store, secrets))
-}
-
-/// The AI provider as configured, with its key.
-fn ai_config(store: &SettingsStore, secrets: &dyn SecretStore) -> Result<AiConfig, String> {
-    let settings = store.get();
-    let key = saved_key(secrets, Account::Ai);
-    if !settings::is_ai_configured(&settings, key.is_some()) {
-        return Err(
-            if settings.ai_provider == AiProvider::OpenAi && key.is_some() {
-                "Enter the base URL of the AI provider first.".to_string()
-            } else {
-                "Add the API key of the AI provider first.".to_string()
-            },
-        );
-    }
-    Ok(AiConfig {
-        provider: settings.ai_provider,
-        base_url: settings.ai_base_url,
-        model: settings.ai_model,
-        api_key: key,
-        vocabulary: settings.vocabulary,
-    })
-}
-
-/// The transcription service as configured, with the key it uses.
-fn transcribe_config(store: &SettingsStore, secrets: &dyn SecretStore) -> TranscribeConfig {
-    let settings = store.get();
-    let ai_key = saved_key(secrets, Account::Ai);
-    let own_key = saved_key(secrets, Account::Transcribe);
-    let key = settings::effective_transcribe_key(&settings, ai_key.as_deref(), own_key.as_deref());
-    let language = settings.transcribe_language.trim();
-    TranscribeConfig {
-        base_url: settings.transcribe_base_url,
-        model: settings.transcribe_model,
-        api_key: key.unwrap_or_default(),
-        language: (!language.is_empty()).then(|| language.to_string()),
-        prompt: settings.vocabulary,
-        chat: settings.transcribe_preset.uses_chat(),
-    }
+    Ok(get_settings_view(store, keys))
 }
 
 /// An API error as shown to the user. An error status with no message gets the HTTP reason phrase, so that a
 /// reply with an empty body doesn't end in "API error 301: ".
-fn api_error_text(error: &ApiError) -> String {
+pub(crate) fn api_error_text(error: &ApiError) -> String {
     match error {
         ApiError::Status { status, message } if message.trim().is_empty() => {
             match reqwest::StatusCode::from_u16(*status)
@@ -279,7 +355,7 @@ fn api_error_text(error: &ApiError) -> String {
     }
 }
 
-fn transcribe_error_text(error: &TranscribeError) -> String {
+pub(crate) fn transcribe_error_text(error: &TranscribeError) -> String {
     match error {
         TranscribeError::Api(e) => api_error_text(e),
         other => other.to_string(),
@@ -300,26 +376,6 @@ fn format_transcript(segments: &[Segment]) -> String {
         .map(|segment| format!("[{}] {}", timestamp::format(segment.start), segment.text))
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-/// The model local transcription uses: the chosen one, else the one recommended for this much RAM. It must be
-/// downloaded.
-fn local_model(
-    settings: &Settings,
-    models: &ModelDir,
-    ram_gb: u64,
-) -> Result<(String, PathBuf), String> {
-    let id = settings
-        .whisper_model
-        .clone()
-        .unwrap_or_else(|| models::recommended(ram_gb).to_string());
-    if !models.is_downloaded(&id) {
-        return Err(format!(
-            "The {id} model isn't downloaded yet. Download it in Settings first."
-        ));
-    }
-    let path = models.path(&id);
-    Ok((id, path))
 }
 
 /// The last event of a download, from how it ended and how far it had come.
@@ -424,7 +480,10 @@ fn delete_model_inner(state: &AppState, id: &str) -> Result<(), String> {
     state
         .models
         .delete(id)
-        .map_err(|e| format!("Could not delete the model: {e}"))
+        .map_err(|e| format!("Could not delete the model: {e}"))?;
+    // Its place in memory goes with its file, when it was the model in use.
+    state.whisper.forget(id);
+    Ok(())
 }
 
 fn edit_presets_list() -> Vec<EditPresetView> {
@@ -485,22 +544,47 @@ fn set_launch_at_login(app: &AppHandle, enabled: bool) -> Result<(), String> {
     changed.map_err(|e| format!("Could not change launch at login: {e}"))
 }
 
-/// Opens the meetings folder in the file manager, creating it first if needed.
-pub fn open_meetings_folder_now(app: &AppHandle) -> Result<(), String> {
-    let folder = MeetingLibrary::default_directory();
-    ensure_directory(&folder)?;
+/// Opens a folder in the file manager, creating it first if needed.
+fn open_folder(app: &AppHandle, folder: &Path) -> Result<(), String> {
+    ensure_directory(folder)?;
     app.opener()
         .open_path(folder.to_string_lossy().into_owned(), None::<String>)
         .map_err(|e| format!("Could not open {}: {e}", folder.display()))
 }
 
+/// Opens the meetings folder in the file manager, creating it first if needed.
+pub fn open_meetings_folder_now(app: &AppHandle) -> Result<(), String> {
+    open_folder(app, &MeetingLibrary::default_directory())
+}
+
+/// Opens the folder of the saved dictations (`Dictate/Dictations`), creating it first if needed.
+pub fn open_dictations_folder_now(app: &AppHandle) -> Result<(), String> {
+    let paths = SavePaths::system().ok_or("The system has no folder for the app's data.")?;
+    open_folder(app, &paths.dir)
+}
+
 // ---- the commands
+
+/// Tells the Settings window that the dictation language was changed without it (by the language menu of the chip),
+/// with only that setting: the window keeps a copy of all of them and sends it back whole with every save.
+pub(crate) fn emit_language<R: tauri::Runtime>(app: &AppHandle<R>, lang: &str) {
+    #[derive(Serialize, Clone)]
+    struct Changed<'a> {
+        dictation_language: &'a str,
+    }
+    let changed = Changed {
+        dictation_language: lang,
+    };
+    if let Err(e) = app.emit(SETTINGS_EVENT, changed) {
+        log::warn!("Could not tell the Settings window of the new language: {e}");
+    }
+}
 
 #[tauri::command]
 pub async fn get_settings(state: State<'_, AppState>) -> Result<SettingsView, String> {
     let state = state.inner().clone();
     blocking(move || {
-        let mut view = get_settings_view(&state.settings, &*state.secrets);
+        let mut view = get_settings_view(&state.settings, state.loaded_keys());
         view.load_warning = state.take_load_warning();
         view
     })
@@ -516,7 +600,7 @@ pub async fn save_settings(
     let state = state.inner().clone();
     let handle = app.clone();
     let view = blocking(move || {
-        save_settings_inner(&state.settings, &*state.secrets, settings, |enabled| {
+        save_settings_inner(&state.settings, state.loaded_keys(), settings, |enabled| {
             set_launch_at_login(&handle, enabled)
         })
     })
@@ -531,7 +615,7 @@ pub async fn set_ai_provider(
     p: AiProvider,
 ) -> Result<SettingsView, String> {
     let state = state.inner().clone();
-    blocking(move || set_ai_provider_inner(&state.settings, &*state.secrets, p)).await?
+    blocking(move || set_ai_provider_inner(&state.settings, state.loaded_keys(), p)).await?
 }
 
 #[tauri::command]
@@ -540,7 +624,43 @@ pub async fn set_transcribe_preset(
     p: TranscribePreset,
 ) -> Result<SettingsView, String> {
     let state = state.inner().clone();
-    blocking(move || set_transcribe_preset_inner(&state.settings, &*state.secrets, p)).await?
+    blocking(move || set_transcribe_preset_inner(&state.settings, state.loaded_keys(), p)).await?
+}
+
+/// Changes the shortcut that starts dictation. The answer is the settings; the errors are `hotkey.invalid`,
+/// `hotkey.taken` (another app has the shortcut) or a sentence about the file.
+#[tauri::command]
+pub async fn set_hotkey(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    hotkeys: State<'_, Hotkeys>,
+    accel: String,
+) -> Result<SettingsView, String> {
+    let state = state.inner().clone();
+    let hotkeys = hotkeys.inner().clone();
+    let view = blocking({
+        let hotkeys = hotkeys.clone();
+        move || set_hotkey_inner(&state.settings, state.loaded_keys(), &hotkeys, &accel)
+    })
+    .await??;
+    log::info!("The shortcut is now {}", hotkeys.status().label);
+    // The item of the tray menu that starts dictation names the shortcut.
+    tray::refresh(&app, &view.settings);
+    Ok(view)
+}
+
+/// The recorder in Settings starts (`true`) or stops (`false`) listening for a new shortcut. While it listens the
+/// current shortcut doesn't start a dictation; the pause ends by itself after a minute.
+#[tauri::command]
+pub async fn hotkey_recording(hotkeys: State<'_, Hotkeys>, active: bool) -> Result<(), String> {
+    hotkeys.set_recording(active);
+    Ok(())
+}
+
+/// What the shortcut is and whether it works.
+#[tauri::command]
+pub async fn hotkey_status(hotkeys: State<'_, Hotkeys>) -> Result<HotkeyStatus, String> {
+    Ok(hotkeys.status())
 }
 
 /// `account` is `"ai"` or `"transcribe"`; an empty `value` deletes the key.
@@ -551,7 +671,16 @@ pub async fn set_secret(
     value: String,
 ) -> Result<SettingsView, String> {
     let state = state.inner().clone();
-    blocking(move || set_secret_inner(&state.settings, &*state.secrets, &account, &value)).await?
+    blocking(move || {
+        set_secret_inner(
+            &state.settings,
+            state.loaded_keys(),
+            &*state.secrets,
+            &account,
+            &value,
+        )
+    })
+    .await?
 }
 
 #[tauri::command]
@@ -668,18 +797,55 @@ pub async fn open_meetings_folder(app: AppHandle) -> Result<(), String> {
     blocking(move || open_meetings_folder_now(&app)).await?
 }
 
+#[tauri::command]
+pub async fn permissions_status(
+    platform: State<'_, SystemPlatform>,
+) -> Result<PermissionsView, String> {
+    let platform = platform.0.clone();
+    blocking(move || permissions_view(&*platform)).await
+}
+
+/// The prompt for a permission, which the system shows once: the person's answer comes with the next status.
+#[tauri::command]
+pub async fn request_permission(
+    kind: String,
+    platform: State<'_, SystemPlatform>,
+) -> Result<(), String> {
+    let platform = platform.0.clone();
+    blocking(move || request_permission_now(&*platform, &kind)).await?
+}
+
+#[tauri::command]
+pub async fn open_permission_settings(kind: String, app: AppHandle) -> Result<(), String> {
+    let url = permission_settings_url(Os::current(), &kind)?;
+    blocking(move || {
+        app.opener()
+            .open_url(url, None::<String>)
+            .map_err(|e| format!("Could not open System Settings: {e}"))
+    })
+    .await?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::Job;
+    use crate::dictation::controller::fakes::{CallLog, FakePlatform};
+    use crate::hotkey::{Backend, Gate, Registry};
+    use crate::platform::rules::Os;
+    use crate::state::{Job, KeyFlags};
+    use crate::test_support::{CountingStore, FakeRegistry, NoKeyring};
     use dictate_services::presets::EDIT_PRESETS;
     use dictate_services::secrets::{Account, MemoryStore, SecretError};
     use dictate_services::settings::UiLanguage;
     use dictate_services::whisper::models::CATALOG;
     use std::io::{Read, Write};
     use std::net::TcpListener;
+    use std::path::PathBuf;
+    use std::sync::atomic::Ordering;
     use std::sync::{Arc, Mutex};
     use std::thread;
+    use std::time::Duration;
+    use tokio::sync::mpsc::unbounded_channel;
 
     const AI_KEY: &str = "sk-ai-secret-123";
     const STT_KEY: &str = "sk-stt-secret-456";
@@ -687,6 +853,7 @@ mod tests {
     struct Fixture {
         _dir: tempfile::TempDir,
         store: SettingsStore,
+        keys: KeyFlags,
         secrets: MemoryStore,
     }
 
@@ -697,22 +864,8 @@ mod tests {
         Fixture {
             _dir: dir,
             store,
+            keys: KeyFlags::default(),
             secrets: MemoryStore::default(),
-        }
-    }
-
-    /// A key store that is down, like a Linux desktop without a Secret Service.
-    struct NoKeyring;
-
-    impl SecretStore for NoKeyring {
-        fn get(&self, _: Account) -> Result<Option<String>, SecretError> {
-            Err(SecretError::Unavailable)
-        }
-        fn set(&self, _: Account, _: &str) -> Result<(), SecretError> {
-            Err(SecretError::Unavailable)
-        }
-        fn delete(&self, _: Account) -> Result<(), SecretError> {
-            Err(SecretError::Unavailable)
         }
     }
 
@@ -740,15 +893,33 @@ mod tests {
     #[test]
     fn view_never_contains_key_values() {
         let f = fixture();
-        f.secrets.set(Account::Ai, AI_KEY).unwrap();
-        f.secrets.set(Account::Transcribe, STT_KEY).unwrap();
+        set_secret_inner(&f.store, &f.keys, &f.secrets, "ai", AI_KEY).unwrap();
+        set_secret_inner(&f.store, &f.keys, &f.secrets, "transcribe", STT_KEY).unwrap();
 
-        let view = get_settings_view(&f.store, &f.secrets);
+        let view = get_settings_view(&f.store, &f.keys);
         let json = serde_json::to_string(&view).unwrap();
 
         assert!(!json.contains(AI_KEY), "{json}");
         assert!(!json.contains(STT_KEY), "{json}");
         assert!(view.has_ai_key && view.has_transcribe_key);
+    }
+
+    #[test]
+    fn view_does_not_read_the_keychain() {
+        let dir = tempfile::tempdir().unwrap();
+        let counting = Arc::new(CountingStore::default());
+        counting.set(Account::Ai, AI_KEY).unwrap();
+        let state = state_with(&dir, counting.clone());
+        // The start of the app reads the keys.
+        state.loaded_keys();
+        let read_at_start = counting.gets();
+
+        // The window asks for the settings again and again.
+        let view = get_settings_view(&state.settings, state.loaded_keys());
+        get_settings_view(&state.settings, state.loaded_keys());
+
+        assert!(view.has_ai_key && !view.has_transcribe_key);
+        assert_eq!(counting.gets(), read_at_start, "the view read a key");
     }
 
     #[test]
@@ -767,7 +938,7 @@ mod tests {
             let mut s = f.store.get();
             s.ui_language = chosen;
             f.store.save(&s).unwrap();
-            let json = serde_json::to_value(get_settings_view(&f.store, &f.secrets)).unwrap();
+            let json = serde_json::to_value(get_settings_view(&f.store, &f.keys)).unwrap();
             assert_eq!(json["system_language"], wanted, "with {chosen:?} chosen");
         }
     }
@@ -775,7 +946,7 @@ mod tests {
     #[test]
     fn view_has_the_settings_at_the_top_level() {
         let f = fixture();
-        let json = serde_json::to_value(get_settings_view(&f.store, &f.secrets)).unwrap();
+        let json = serde_json::to_value(get_settings_view(&f.store, &f.keys)).unwrap();
         assert_eq!(json["ai_model"], "claude-haiku-5-5");
         assert_eq!(json["hotkey"], "Ctrl+Alt+Space");
         assert_eq!(json["has_ai_key"], false);
@@ -787,52 +958,44 @@ mod tests {
     #[test]
     fn view_reports_which_keys_are_saved() {
         let f = fixture();
-        f.secrets.set(Account::Ai, AI_KEY).unwrap();
-        let view = get_settings_view(&f.store, &f.secrets);
+        f.keys.set(Account::Ai, true);
+        let view = get_settings_view(&f.store, &f.keys);
         assert!(view.has_ai_key);
         assert!(!view.has_transcribe_key);
-        // An empty value counts as no key.
-        f.secrets.set(Account::Transcribe, "").unwrap();
-        assert!(!get_settings_view(&f.store, &f.secrets).has_transcribe_key);
+        f.keys.set(Account::Transcribe, true);
+        assert!(get_settings_view(&f.store, &f.keys).has_transcribe_key);
     }
 
     #[test]
     fn view_flags_the_openrouter_key_that_serves_both() {
         let f = fixture();
-        f.secrets.set(Account::Ai, AI_KEY).unwrap();
+        f.keys.set(Account::Ai, true);
         let mut s = f.store.get();
         s.set_transcribe_preset(TranscribePreset::OpenRouter);
         s.ai_base_url = "https://openrouter.ai/api/v1".into();
         f.store.save(&s).unwrap();
-        assert!(get_settings_view(&f.store, &f.secrets).shares_openrouter_key);
+        assert!(get_settings_view(&f.store, &f.keys).shares_openrouter_key);
 
         // A transcription URL that has moved to another host gets nothing of it.
         s.transcribe_base_url = "https://stt.example.com/v1".into();
         f.store.save(&s).unwrap();
-        assert!(!get_settings_view(&f.store, &f.secrets).shares_openrouter_key);
+        assert!(!get_settings_view(&f.store, &f.keys).shares_openrouter_key);
 
         // With a key of its own, nothing is shared.
         s.transcribe_base_url = "https://openrouter.ai/api/v1".into();
         f.store.save(&s).unwrap();
-        f.secrets.set(Account::Transcribe, STT_KEY).unwrap();
-        assert!(!get_settings_view(&f.store, &f.secrets).shares_openrouter_key);
-    }
-
-    #[test]
-    fn a_keyring_that_is_down_does_not_break_the_view() {
-        let f = fixture();
-        let view = get_settings_view(&f.store, &NoKeyring);
-        assert!(!view.has_ai_key && !view.has_transcribe_key);
+        f.keys.set(Account::Transcribe, true);
+        assert!(!get_settings_view(&f.store, &f.keys).shares_openrouter_key);
     }
 
     #[test]
     fn set_secret_stores_the_key_and_the_view_says_so() {
         let f = fixture();
-        let view = set_secret_inner(&f.store, &f.secrets, "ai", AI_KEY).unwrap();
+        let view = set_secret_inner(&f.store, &f.keys, &f.secrets, "ai", AI_KEY).unwrap();
         assert!(view.has_ai_key && !view.has_transcribe_key);
         assert_eq!(f.secrets.get(Account::Ai), Ok(Some(AI_KEY.to_string())));
 
-        let view = set_secret_inner(&f.store, &f.secrets, "transcribe", STT_KEY).unwrap();
+        let view = set_secret_inner(&f.store, &f.keys, &f.secrets, "transcribe", STT_KEY).unwrap();
         assert!(view.has_transcribe_key);
         assert_eq!(
             f.secrets.get(Account::Transcribe),
@@ -841,11 +1004,28 @@ mod tests {
     }
 
     #[test]
+    fn set_secret_updates_the_flag() {
+        let f = fixture();
+        let secrets = CountingStore::default();
+
+        let view = set_secret_inner(&f.store, &f.keys, &secrets, "ai", AI_KEY).unwrap();
+        assert!(view.has_ai_key);
+        assert!(f.keys.get(Account::Ai));
+
+        let view = set_secret_inner(&f.store, &f.keys, &secrets, "ai", "  ").unwrap();
+        assert!(!view.has_ai_key);
+        assert!(!f.keys.get(Account::Ai));
+
+        assert_eq!(secrets.gets(), 0, "the key store is not read for the view");
+    }
+
+    #[test]
     fn set_secret_empty_deletes() {
         let f = fixture();
         f.secrets.set(Account::Ai, AI_KEY).unwrap();
+        f.keys.set(Account::Ai, true);
 
-        let view = set_secret_inner(&f.store, &f.secrets, "ai", "").unwrap();
+        let view = set_secret_inner(&f.store, &f.keys, &f.secrets, "ai", "").unwrap();
 
         assert!(!view.has_ai_key);
         // Deleted, not stored as an empty string.
@@ -855,35 +1035,55 @@ mod tests {
     #[test]
     fn set_secret_trims_what_was_pasted() {
         let f = fixture();
-        set_secret_inner(&f.store, &f.secrets, "ai", &format!("  {AI_KEY}\n")).unwrap();
+        set_secret_inner(
+            &f.store,
+            &f.keys,
+            &f.secrets,
+            "ai",
+            &format!("  {AI_KEY}\n"),
+        )
+        .unwrap();
         assert_eq!(f.secrets.get(Account::Ai), Ok(Some(AI_KEY.to_string())));
 
         // Only blanks is no key.
-        set_secret_inner(&f.store, &f.secrets, "ai", " \n ").unwrap();
+        set_secret_inner(&f.store, &f.keys, &f.secrets, "ai", " \n ").unwrap();
         assert_eq!(f.secrets.get(Account::Ai), Ok(None));
     }
 
     #[test]
     fn set_secret_knows_two_accounts() {
         let f = fixture();
-        let err = set_secret_inner(&f.store, &f.secrets, "github", AI_KEY).unwrap_err();
+        let err = set_secret_inner(&f.store, &f.keys, &f.secrets, "github", AI_KEY).unwrap_err();
         assert!(err.contains("github"), "{err}");
         assert_eq!(f.secrets.get(Account::Ai), Ok(None));
+        assert!(!f.keys.get(Account::Ai));
     }
 
     #[test]
     fn set_secret_without_a_keyring_says_so() {
         let f = fixture();
-        let err = set_secret_inner(&f.store, &NoKeyring, "ai", AI_KEY).unwrap_err();
+        let err = set_secret_inner(&f.store, &f.keys, &NoKeyring, "ai", AI_KEY).unwrap_err();
         assert_eq!(err, "No system keyring available");
-        let err = set_secret_inner(&f.store, &NoKeyring, "ai", "").unwrap_err();
+        let err = set_secret_inner(&f.store, &f.keys, &NoKeyring, "ai", "").unwrap_err();
         assert_eq!(err, "No system keyring available");
+    }
+
+    #[test]
+    fn a_key_that_could_not_be_written_or_removed_leaves_the_flag_as_it_was() {
+        let f = fixture();
+
+        set_secret_inner(&f.store, &f.keys, &NoKeyring, "ai", AI_KEY).unwrap_err();
+        assert!(!f.keys.get(Account::Ai), "a key that was never saved");
+
+        f.keys.set(Account::Ai, true);
+        set_secret_inner(&f.store, &f.keys, &NoKeyring, "ai", "").unwrap_err();
+        assert!(f.keys.get(Account::Ai), "a key that is still there");
     }
 
     #[test]
     fn set_secret_tells_what_the_platform_said_when_it_refuses() {
         let f = fixture();
-        let err = set_secret_inner(&f.store, &DeniedKeyring, "ai", AI_KEY).unwrap_err();
+        let err = set_secret_inner(&f.store, &f.keys, &DeniedKeyring, "ai", AI_KEY).unwrap_err();
         assert!(err.starts_with("No system keyring available"), "{err}");
         assert!(
             err.contains("The user denied the Keychain prompt (-25293)"),
@@ -895,11 +1095,30 @@ mod tests {
     // ---- saving settings
 
     #[test]
+    fn a_language_that_changed_without_the_window_reaches_the_window_as_the_setting_that_changed() {
+        use tauri::{test::mock_builder, Listener};
+        let app = mock_builder().build(crate::context()).unwrap();
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        let sink = heard.clone();
+        app.listen(SETTINGS_EVENT, move |event| {
+            sink.lock().unwrap().push(event.payload().to_owned());
+        });
+
+        emit_language(app.handle(), "vi-VN");
+
+        // Only the setting that changed: the window's own edits of the others stay as they are.
+        assert_eq!(
+            *heard.lock().unwrap(),
+            [r#"{"dictation_language":"vi-VN"}"#]
+        );
+    }
+
+    #[test]
     fn save_settings_writes_and_returns_the_view() {
         let f = fixture();
         let mut s = f.store.get();
         s.vocabulary = "Dictate, Whisper".into();
-        let view = save_settings_inner(&f.store, &f.secrets, s, |_| Ok(())).unwrap();
+        let view = save_settings_inner(&f.store, &f.keys, s, |_| Ok(())).unwrap();
         assert_eq!(view.settings.vocabulary, "Dictate, Whisper");
         assert_eq!(f.store.get().vocabulary, "Dictate, Whisper");
     }
@@ -911,20 +1130,20 @@ mod tests {
 
         let mut s = f.store.get();
         s.launch_at_login = true;
-        save_settings_inner(&f.store, &f.secrets, s.clone(), |on| {
+        save_settings_inner(&f.store, &f.keys, s.clone(), |on| {
             applied.lock().unwrap().push(on);
             Ok(())
         })
         .unwrap();
         // Saving again with the same value leaves the system alone.
         s.vocabulary = "x".into();
-        save_settings_inner(&f.store, &f.secrets, s.clone(), |on| {
+        save_settings_inner(&f.store, &f.keys, s.clone(), |on| {
             applied.lock().unwrap().push(on);
             Ok(())
         })
         .unwrap();
         s.launch_at_login = false;
-        save_settings_inner(&f.store, &f.secrets, s, |on| {
+        save_settings_inner(&f.store, &f.keys, s, |on| {
             applied.lock().unwrap().push(on);
             Ok(())
         })
@@ -940,7 +1159,7 @@ mod tests {
         s.launch_at_login = true;
         s.vocabulary = "changed".into();
 
-        let err = save_settings_inner(&f.store, &f.secrets, s, |_| {
+        let err = save_settings_inner(&f.store, &f.keys, s, |_| {
             Err("Could not add the login item".to_string())
         })
         .unwrap_err();
@@ -962,7 +1181,7 @@ mod tests {
 
         let mut s = store.get();
         s.launch_at_login = true;
-        let err = save_settings_inner(&store, &MemoryStore::default(), s, |on| {
+        let err = save_settings_inner(&store, &KeyFlags::default(), s, |on| {
             applied.lock().unwrap().push(on);
             Ok(())
         })
@@ -973,10 +1192,109 @@ mod tests {
         assert_eq!(*applied.lock().unwrap(), vec![true, false]);
     }
 
+    // ---- the shortcut
+
+    fn registered_hotkeys(registry: &Arc<FakeRegistry>) -> Hotkeys {
+        let old = shortcut("Ctrl+Alt+Space");
+        registry.register(old).unwrap();
+        let status = HotkeyStatus {
+            label: "Ctrl+Alt+Space".into(),
+            backend: Backend::Global,
+            error: None,
+        };
+        let gate = Gate::shared(Duration::ZERO, unbounded_channel().0);
+        Hotkeys::new(Some(registry.clone()), gate, status, Some(old))
+    }
+
+    fn shortcut(accel: &str) -> tauri_plugin_global_shortcut::Shortcut {
+        accel.parse().unwrap()
+    }
+
+    #[test]
+    fn set_hotkey_rejects_garbage() {
+        let f = fixture();
+        let registry = Arc::new(FakeRegistry::default());
+        let hotkeys = registered_hotkeys(&registry);
+
+        for garbage in [
+            "banana",
+            "D",
+            "",
+            "Ctrl+Alt",
+            "Ctrl+",
+            "Shift+D",
+            "Shift+Space",
+        ] {
+            let err = set_hotkey_inner(&f.store, &f.keys, &hotkeys, garbage).unwrap_err();
+            assert_eq!(err, "hotkey.invalid", "{garbage:?}");
+        }
+
+        assert_eq!(f.store.get().hotkey, "Ctrl+Alt+Space");
+        assert_eq!(registry.registered(), vec![shortcut("Ctrl+Alt+Space")]);
+        assert_eq!(registry.calls(), 1, "only the registration of the start");
+    }
+
+    #[test]
+    fn set_hotkey_answers_with_the_view_that_has_the_new_shortcut() {
+        let f = fixture();
+        let registry = Arc::new(FakeRegistry::default());
+        let hotkeys = registered_hotkeys(&registry);
+
+        let view = set_hotkey_inner(&f.store, &f.keys, &hotkeys, "F6").unwrap();
+
+        assert_eq!(view.settings.hotkey, "F6");
+        assert_eq!(f.store.get().hotkey, "F6");
+        assert_eq!(registry.registered(), vec![shortcut("F6")]);
+    }
+
+    #[test]
+    fn set_hotkey_says_taken_for_a_shortcut_that_another_app_owns() {
+        let f = fixture();
+        let registry = Arc::new(FakeRegistry::default());
+        let hotkeys = registered_hotkeys(&registry);
+        registry.refuse(shortcut("F6"));
+
+        let err = set_hotkey_inner(&f.store, &f.keys, &hotkeys, "F6").unwrap_err();
+
+        assert_eq!(err, "hotkey.taken");
+        assert_eq!(f.store.get().hotkey, "Ctrl+Alt+Space");
+        assert_eq!(registry.registered(), vec![shortcut("Ctrl+Alt+Space")]);
+    }
+
+    #[test]
+    fn set_hotkey_tells_when_the_file_cannot_be_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let in_the_way = dir.path().join("in-the-way");
+        std::fs::write(&in_the_way, b"x").unwrap();
+        let (store, _) = SettingsStore::open(in_the_way.join("settings.json"));
+        let registry = Arc::new(FakeRegistry::default());
+        let hotkeys = registered_hotkeys(&registry);
+
+        let err = set_hotkey_inner(&store, &KeyFlags::default(), &hotkeys, "F6").unwrap_err();
+
+        assert!(err.starts_with("Could not save the settings"), "{err}");
+        assert_eq!(registry.registered(), vec![shortcut("Ctrl+Alt+Space")]);
+    }
+
+    #[test]
+    fn saving_the_settings_never_changes_the_shortcut() {
+        // Only `set_hotkey` does: it registers the shortcut, and a file that says another one would be a lie.
+        let f = fixture();
+        let mut stale = f.store.get();
+        stale.hotkey = "Ctrl+Shift+Z".into();
+        stale.vocabulary = "Dictate".into();
+
+        let view = save_settings_inner(&f.store, &f.keys, stale, |_| Ok(())).unwrap();
+
+        assert_eq!(view.settings.vocabulary, "Dictate");
+        assert_eq!(view.settings.hotkey, "Ctrl+Alt+Space");
+        assert_eq!(f.store.get().hotkey, "Ctrl+Alt+Space");
+    }
+
     #[test]
     fn switching_provider_follows_the_rules_and_is_saved() {
         let f = fixture();
-        let view = set_ai_provider_inner(&f.store, &f.secrets, AiProvider::OpenAi).unwrap();
+        let view = set_ai_provider_inner(&f.store, &f.keys, AiProvider::OpenAi).unwrap();
         assert_eq!(view.settings.ai_provider, AiProvider::OpenAi);
         assert_eq!(view.settings.ai_base_url, "http://localhost:8317/v1");
         assert_eq!(f.store.get().ai_base_url, "http://localhost:8317/v1");
@@ -985,105 +1303,13 @@ mod tests {
     #[test]
     fn switching_transcription_service_follows_the_rules_and_is_saved() {
         let f = fixture();
-        let view =
-            set_transcribe_preset_inner(&f.store, &f.secrets, TranscribePreset::Groq).unwrap();
+        let view = set_transcribe_preset_inner(&f.store, &f.keys, TranscribePreset::Groq).unwrap();
         assert_eq!(view.settings.transcribe_preset, TranscribePreset::Groq);
         assert_eq!(
             view.settings.transcribe_base_url,
             "https://api.groq.com/openai/v1"
         );
         assert_eq!(f.store.get().transcribe_model, "whisper-large-v3-turbo");
-    }
-
-    // ---- the checks
-
-    #[test]
-    fn the_ai_check_needs_a_key_for_anthropic() {
-        let f = fixture();
-        let err = ai_config(&f.store, &f.secrets).unwrap_err();
-        assert!(err.to_lowercase().contains("key"), "{err}");
-    }
-
-    #[test]
-    fn the_ai_config_carries_the_key_and_the_vocabulary() {
-        let f = fixture();
-        f.secrets.set(Account::Ai, AI_KEY).unwrap();
-        let mut s = f.store.get();
-        s.vocabulary = "Dictate".into();
-        s.ai_model = "my-model".into();
-        f.store.save(&s).unwrap();
-
-        let config = ai_config(&f.store, &f.secrets).unwrap();
-        assert_eq!(config.api_key.as_deref(), Some(AI_KEY));
-        assert_eq!(config.vocabulary, "Dictate");
-        assert_eq!(config.model, "my-model");
-        assert_eq!(config.base_url, "https://api.anthropic.com");
-    }
-
-    #[test]
-    fn a_local_ai_server_needs_no_key() {
-        let f = fixture();
-        let mut s = f.store.get();
-        s.set_ai_provider(AiProvider::OpenAi);
-        f.store.save(&s).unwrap();
-        let config = ai_config(&f.store, &f.secrets).unwrap();
-        assert_eq!(config.api_key, None);
-    }
-
-    #[test]
-    fn the_transcription_config_uses_its_own_key_first() {
-        let f = fixture();
-        f.secrets.set(Account::Ai, AI_KEY).unwrap();
-        f.secrets.set(Account::Transcribe, STT_KEY).unwrap();
-        let config = transcribe_config(&f.store, &f.secrets);
-        assert_eq!(config.api_key, STT_KEY);
-        assert_eq!(config.base_url, "https://api.openai.com/v1");
-        assert_eq!(config.model, "whisper-1");
-        assert!(!config.chat);
-    }
-
-    #[test]
-    fn the_transcription_config_shares_the_openrouter_key() {
-        let f = fixture();
-        f.secrets.set(Account::Ai, AI_KEY).unwrap();
-        let mut s = f.store.get();
-        s.ai_base_url = "https://openrouter.ai/api/v1".into();
-        s.set_transcribe_preset(TranscribePreset::OpenRouter);
-        s.transcribe_language = "vi".into();
-        s.vocabulary = "Dictate".into();
-        f.store.save(&s).unwrap();
-
-        let config = transcribe_config(&f.store, &f.secrets);
-        assert_eq!(config.api_key, AI_KEY);
-        assert!(config.chat);
-        assert_eq!(config.language.as_deref(), Some("vi"));
-        assert_eq!(config.prompt, "Dictate");
-    }
-
-    #[test]
-    fn the_transcription_config_keeps_the_ai_key_from_another_host() {
-        let f = fixture();
-        f.secrets.set(Account::Ai, AI_KEY).unwrap();
-        let mut s = f.store.get();
-        s.ai_base_url = "https://openrouter.ai/api/v1".into();
-        s.set_transcribe_preset(TranscribePreset::OpenRouter);
-        s.transcribe_base_url = "https://stt.example.com/v1".into();
-        f.store.save(&s).unwrap();
-
-        let config = transcribe_config(&f.store, &f.secrets);
-        assert_eq!(config.base_url, "https://stt.example.com/v1");
-        assert_eq!(
-            config.api_key, "",
-            "the key of OpenRouter stays with OpenRouter"
-        );
-    }
-
-    #[test]
-    fn no_key_means_an_empty_key_and_no_language() {
-        let f = fixture();
-        let config = transcribe_config(&f.store, &f.secrets);
-        assert_eq!(config.api_key, "");
-        assert_eq!(config.language, None);
     }
 
     // ---- error text
@@ -1172,47 +1398,6 @@ mod tests {
     fn put_model(models: &ModelDir, id: &str) {
         std::fs::create_dir_all(models.root()).unwrap();
         std::fs::write(models.path(id), b"not a real model").unwrap();
-    }
-
-    #[test]
-    fn the_chosen_model_is_used_when_it_is_downloaded() {
-        let dir = tempfile::tempdir().unwrap();
-        let models = ModelDir::new(dir.path().join("models"));
-        put_model(&models, "tiny");
-        let settings = Settings {
-            whisper_model: Some("tiny".into()),
-            ..Settings::default()
-        };
-        let (id, path) = local_model(&settings, &models, 32).unwrap();
-        assert_eq!(id, "tiny");
-        assert_eq!(path, models.path("tiny"));
-    }
-
-    #[test]
-    fn the_recommended_model_is_used_when_none_is_chosen() {
-        let dir = tempfile::tempdir().unwrap();
-        let models = ModelDir::new(dir.path().join("models"));
-        put_model(&models, "small");
-        let (id, _) = local_model(&Settings::default(), &models, 8).unwrap();
-        assert_eq!(id, "small");
-    }
-
-    #[test]
-    fn a_model_that_is_not_downloaded_is_named_in_the_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let models = ModelDir::new(dir.path().join("models"));
-        let settings = Settings {
-            whisper_model: Some("medium".into()),
-            ..Settings::default()
-        };
-        let err = local_model(&settings, &models, 32).unwrap_err();
-        assert_eq!(
-            err,
-            "The medium model isn't downloaded yet. Download it in Settings first."
-        );
-        // The recommended one for 4 GB is `base`.
-        let err = local_model(&Settings::default(), &models, 4).unwrap_err();
-        assert!(err.contains("base"), "{err}");
     }
 
     #[test]
@@ -1352,14 +1537,18 @@ mod tests {
         format!("http://127.0.0.1:{port}")
     }
 
-    fn state_in(dir: &tempfile::TempDir) -> AppState {
+    fn state_with(dir: &tempfile::TempDir, secrets: Arc<dyn SecretStore>) -> AppState {
         let (store, warning) = SettingsStore::open(dir.path().join("settings.json"));
         AppState::new(
             store,
             warning,
-            Arc::new(MemoryStore::default()),
+            secrets,
             ModelDir::new(dir.path().join("models")),
         )
+    }
+
+    fn state_in(dir: &tempfile::TempDir) -> AppState {
+        state_with(dir, Arc::new(MemoryStore::default()))
     }
 
     type Events = Arc<Mutex<Vec<DownloadEvent>>>;
@@ -1630,5 +1819,174 @@ mod tests {
         std::fs::write(&file, b"x").unwrap();
         let err = ensure_directory(&file.join("Dictate Meetings")).unwrap_err();
         assert!(err.contains("Dictate Meetings"), "{err}");
+    }
+
+    // ---- permissions
+
+    fn mac_with(microphone: Permission, accessibility: Permission) -> Arc<FakePlatform> {
+        let platform = FakePlatform::new(Os::Mac, Arc::new(CallLog::default()));
+        *lock(&platform.microphone) = microphone;
+        *lock(&platform.accessibility) = accessibility;
+        platform
+    }
+
+    #[test]
+    fn permissions_view_serialises() {
+        let view = PermissionsView {
+            microphone: Permission::NotDetermined,
+            accessibility: Permission::Granted,
+        };
+        assert_eq!(
+            serde_json::to_value(view).unwrap(),
+            serde_json::json!({ "microphone": "not_determined", "accessibility": "granted" })
+        );
+        // Each state has the word that the window has a text for.
+        for (state, word) in [
+            (Permission::Granted, "granted"),
+            (Permission::Denied, "denied"),
+            (Permission::NotDetermined, "not_determined"),
+            (Permission::NotNeeded, "not_needed"),
+        ] {
+            assert_eq!(serde_json::to_value(state).unwrap(), word);
+        }
+    }
+
+    #[test]
+    fn permissions_view_reports_what_the_system_says() {
+        let platform = mac_with(Permission::NotDetermined, Permission::Denied);
+        assert_eq!(
+            permissions_view(&*platform),
+            PermissionsView {
+                microphone: Permission::NotDetermined,
+                accessibility: Permission::Denied,
+            }
+        );
+        // The questions change nothing: no prompt is shown by asking.
+        assert_eq!(platform.mic_requests.load(Ordering::SeqCst), 0);
+        assert_eq!(platform.accessibility_requests.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn the_guide_is_for_a_microphone_not_asked_about_and_once_for_a_missing_accessibility() {
+        use Permission::{Denied, Granted, NotDetermined, NotNeeded};
+        let guide = |microphone, accessibility, auto_write, shown_before| {
+            PermissionsView {
+                microphone,
+                accessibility,
+            }
+            .needs_a_guide(auto_write, shown_before)
+        };
+        // A microphone nobody asked about yet: the guide is there until the person answers, shown before or not.
+        assert!(guide(NotDetermined, Granted, true, false));
+        assert!(guide(NotDetermined, Denied, true, true));
+        assert!(guide(NotDetermined, Denied, false, true));
+        // Accessibility is missing and the text is written into fields: the guide opens once, and not at every start after.
+        assert!(guide(Granted, Denied, true, false));
+        assert!(guide(Denied, Denied, true, false));
+        assert!(!guide(Granted, Denied, true, true));
+        assert!(!guide(Denied, Denied, true, true));
+        // Without the setting that writes into fields nothing needs Accessibility: the card is the whole of it.
+        assert!(!guide(Granted, Denied, false, false));
+        assert!(!guide(Denied, Denied, false, false));
+        // Everything is granted: the app starts in the tray, as every time after the first.
+        assert!(!guide(Granted, Granted, true, false));
+        // A microphone that was refused is the person's answer: Settings doesn't open at every start for it.
+        assert!(!guide(Denied, Granted, true, false));
+        // Windows and Linux have nothing to grant.
+        assert!(!guide(NotNeeded, NotNeeded, true, false));
+    }
+
+    #[test]
+    fn the_guide_opens_at_a_start_and_is_remembered_so_that_a_missing_accessibility_asks_once() {
+        use Permission::{Denied, Granted, NotDetermined};
+        let dir = tempfile::tempdir().unwrap();
+        let mark = GuideMark::beside(&dir.path().join("settings.json"));
+        let view = |microphone, accessibility| PermissionsView {
+            microphone,
+            accessibility,
+        };
+
+        // Accessibility is missing: the first start that finds it opens Settings, and the ones after it don't.
+        assert!(open_guide_at_start(&view(Granted, Denied), true, &mark));
+        assert!(mark.shown());
+        assert!(!open_guide_at_start(&view(Granted, Denied), true, &mark));
+        assert!(!open_guide_at_start(&view(Granted, Denied), true, &mark));
+        // A microphone that is still not answered opens it again.
+        assert!(open_guide_at_start(
+            &view(NotDetermined, Denied),
+            true,
+            &mark
+        ));
+        // The person who keeps no text in fields is never sent to Settings for Accessibility.
+        let card_only = GuideMark::beside(&dir.path().join("other").join("settings.json"));
+        assert!(!open_guide_at_start(
+            &view(Granted, Denied),
+            false,
+            &card_only
+        ));
+        assert!(!card_only.shown());
+    }
+
+    #[test]
+    fn the_guide_is_remembered_beside_the_settings_and_not_before_it_was_shown() {
+        let dir = tempfile::tempdir().unwrap();
+        // The folder of the settings is not there at the first start.
+        let settings = dir.path().join("Dictate").join("settings.json");
+        let mark = GuideMark::beside(&settings);
+        assert!(!mark.shown());
+
+        mark.set();
+
+        assert!(mark.shown());
+        // A later start reads it again from the disk.
+        assert!(GuideMark::beside(&settings).shown());
+        // Setting it twice is no trouble.
+        mark.set();
+        assert!(mark.shown());
+        // It is not the settings file, which the window writes whole.
+        assert!(!settings.exists());
+    }
+
+    #[test]
+    fn request_permission_asks_the_system_for_the_one_that_was_named() {
+        let platform = mac_with(Permission::NotDetermined, Permission::Denied);
+
+        request_permission_now(&*platform, "microphone").unwrap();
+        assert_eq!(platform.mic_requests.load(Ordering::SeqCst), 1);
+        assert_eq!(platform.accessibility_requests.load(Ordering::SeqCst), 0);
+
+        request_permission_now(&*platform, "accessibility").unwrap();
+        assert_eq!(platform.mic_requests.load(Ordering::SeqCst), 1);
+        assert_eq!(platform.accessibility_requests.load(Ordering::SeqCst), 1);
+
+        // A name the window doesn't use is refused, and the system is not asked.
+        let error = request_permission_now(&*platform, "camera").unwrap_err();
+        assert!(error.contains("camera"), "{error}");
+        assert_eq!(platform.mic_requests.load(Ordering::SeqCst), 1);
+        assert_eq!(platform.accessibility_requests.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn the_permission_links_open_the_privacy_pane_of_each() {
+        assert_eq!(
+            permission_settings_url(Os::Mac, "microphone"),
+            Ok("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
+        );
+        assert_eq!(
+            permission_settings_url(Os::Mac, "accessibility"),
+            Ok("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+        );
+        // The window can't make this command open any other link.
+        assert!(permission_settings_url(Os::Mac, "https://example.com").is_err());
+    }
+
+    #[test]
+    fn the_permission_links_are_for_macos_only_and_no_other_system_is_handed_one() {
+        // The link is an address of the Mac's System Settings: the opener would give it to the browser or to nothing.
+        for os in [Os::Windows, Os::Linux] {
+            for kind in ["microphone", "accessibility"] {
+                assert!(permission_settings_url(os, kind).is_err(), "{os:?} {kind}");
+            }
+        }
     }
 }

@@ -1,0 +1,28 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "panel",
+  "description": "What the floating dictation windows may do: hear the state they draw, and ask for their own commands.",
+  "windows": ["bubble", "card"],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "allow-dictation-languages",
+    "allow-dictation-stop",
+    "allow-dictation-cancel",
+    "allow-dictation-set-language",
+    "allow-dictation-rewrite",
+    "allow-dictation-custom",
+    "allow-dictation-open-card",
+    "allow-dictation-copy",
+    "allow-dictation-card-text",
+    "allow-dictation-undo",
+    "allow-dictation-paste-card",
+    "allow-dictation-chip-hover",
+    "allow-dictation-menu-open",
+    "allow-dictation-grant-accessibility",
+    "allow-dictation-open-settings",
+    "allow-panel-state",
+    "allow-panel-language",
+    "allow-panel-resized"
+  ]
+}

@@ -1,8 +1,9 @@
 // Shared by the tests only: settings as the Rust side sends them, and the api with every call stubbed.
 import { vi } from "vitest";
 import { api } from "./lib/api";
-import type { DownloadEvent, Settings, SettingsView } from "./lib/api";
+import type { DownloadEvent, HotkeyStatus, Settings, SettingsView } from "./lib/api";
 import { SettingsStore } from "./lib/settings-store.svelte";
+import type { PanelState } from "./panel/state";
 
 /** The defaults of `Settings::default()` on the Rust side. */
 export function fakeSettings(overrides: Partial<Settings> = {}): Settings {
@@ -46,20 +47,30 @@ export function fakeView(overrides: Partial<SettingsView> = {}): SettingsView {
   };
 }
 
+/** What the Rust side says about the shortcut when it works. */
+export function fakeHotkeyStatus(overrides: Partial<HotkeyStatus> = {}): HotkeyStatus {
+  return { label: "Ctrl+Alt+Space", backend: "global", error: null, ...overrides };
+}
+
 export const EDIT_PRESET_IDS = ["clean", "formal", "concise", "bullets", "prompt", "email", "en", "vi"];
 
 /**
  * Stubs every call of `api` with a calm answer; a test changes the ones it cares about with
- * `vi.mocked(api.checkAi).mockRejectedValue(...)`. Returns a way to send `model-download` events.
+ * `vi.mocked(api.checkAi).mockRejectedValue(...)`. Returns a way to send `model-download`, `hotkey-status` and `settings-changed` events.
  */
 export function stubApi() {
   let listener: ((event: DownloadEvent) => void) | undefined;
+  let hotkeyListener: ((status: HotkeyStatus) => void) | undefined;
+  let settingsListener: ((patch: Partial<Settings>) => void) | undefined;
 
   vi.spyOn(api, "getSettings").mockResolvedValue(fakeView());
   vi.spyOn(api, "saveSettings").mockImplementation(async (settings) => fakeView(settings));
   vi.spyOn(api, "setAiProvider").mockImplementation(async (p) => fakeView({ ai_provider: p }));
   vi.spyOn(api, "setTranscribePreset").mockImplementation(async (p) => fakeView({ transcribe_preset: p }));
   vi.spyOn(api, "setSecret").mockResolvedValue(fakeView());
+  vi.spyOn(api, "setHotkey").mockImplementation(async (accel) => fakeView({ hotkey: accel }));
+  vi.spyOn(api, "hotkeyStatus").mockResolvedValue(fakeHotkeyStatus());
+  vi.spyOn(api, "hotkeyRecording").mockResolvedValue();
   vi.spyOn(api, "checkAi").mockResolvedValue("Connected: claude-haiku-5-5 answered.");
   vi.spyOn(api, "checkTranscribe").mockResolvedValue("Connected: whisper-1 accepted the test audio.");
   vi.spyOn(api, "listModels").mockResolvedValue([]);
@@ -79,6 +90,10 @@ export function stubApi() {
     { id: "custom", models: [], key_url: null },
   ]);
   vi.spyOn(api, "openMeetingsFolder").mockResolvedValue();
+  // Not a Mac: no permissions, so no section.
+  vi.spyOn(api, "permissionsStatus").mockResolvedValue({ microphone: "not_needed", accessibility: "not_needed" });
+  vi.spyOn(api, "requestPermission").mockResolvedValue();
+  vi.spyOn(api, "openPermissionSettings").mockResolvedValue();
   vi.spyOn(api, "openUrl").mockResolvedValue();
   vi.spyOn(api, "onModelDownload").mockImplementation(async (handler) => {
     listener = handler;
@@ -87,7 +102,25 @@ export function stubApi() {
     };
   });
 
-  return { emitDownload: (event: DownloadEvent) => listener?.(event) };
+  vi.spyOn(api, "onHotkeyStatus").mockImplementation(async (handler) => {
+    hotkeyListener = handler;
+    return () => {
+      hotkeyListener = undefined;
+    };
+  });
+
+  vi.spyOn(api, "onSettingsChanged").mockImplementation(async (handler) => {
+    settingsListener = handler;
+    return () => {
+      settingsListener = undefined;
+    };
+  });
+
+  return {
+    emitDownload: (event: DownloadEvent) => listener?.(event),
+    emitHotkey: (status: HotkeyStatus) => hotkeyListener?.(status),
+    emitSettings: (patch: Partial<Settings>) => settingsListener?.(patch),
+  };
 }
 
 /** A store that has loaded a view of the settings, as the window has after it opens. */
@@ -115,4 +148,77 @@ export function passTime(ms: number) {
 /** The wall clock is set back, as a time sync or a person does; the clock that only goes forward isn't affected. */
 export function setWallClockBack(ms: number) {
   vi.setSystemTime(Date.now() - ms);
+}
+
+/** A panel state as the Rust side sends it for a toggle-mode dictation that has just begun in a text field. */
+export function fakePanelState(overrides: Partial<PanelState> = {}): PanelState {
+  return {
+    view: "bubble",
+    phase: "recording",
+    committed: "",
+    partial: "",
+    level: 0,
+    language: "en-US",
+    durationS: 0,
+    hotkey: "⌃⌥Space",
+    pushToTalk: false,
+    working: null,
+    text: "",
+    original: null,
+    style: null,
+    notice: null,
+    error: null,
+    fromChip: false,
+    openCustom: false,
+    canWrite: true,
+    accessibilityMissing: false,
+    ...overrides,
+  };
+}
+
+/** The 8 favourites and 24 others of `dictate_services::dictation::lang`. */
+export const FAVOURITE_LANGUAGES = ["en-US", "vi-VN", "en-GB", "ja-JP", "ko-KR", "zh-CN", "fr-FR", "de-DE"];
+export const OTHER_LANGUAGES = [
+  "es-ES", "it-IT", "pt-BR", "pt-PT", "nl-NL", "pl-PL", "ru-RU", "uk-UA", "tr-TR", "id-ID", "ms-MY", "th-TH",
+  "hi-IN", "ar-SA", "he-IL", "el-GR", "cs-CZ", "sv-SE", "da-DK", "fi-FI", "nb-NO", "hu-HU", "ro-RO", "zh-TW",
+];
+
+/**
+ * Stubs the calls of the two panel windows. Returns a way to send `panel-state` events, as the Rust side does, and
+ * the stopper that the listener hands back.
+ */
+export function stubPanelApi() {
+  let listener: ((state: PanelState) => void) | undefined;
+  const stopListening = vi.fn(() => {
+    listener = undefined;
+  });
+  vi.spyOn(api, "dictationLanguages").mockResolvedValue({
+    favourites: FAVOURITE_LANGUAGES,
+    others: OTHER_LANGUAGES,
+  });
+  vi.spyOn(api, "dictationStop").mockResolvedValue();
+  vi.spyOn(api, "dictationCancel").mockResolvedValue();
+  vi.spyOn(api, "dictationSetLanguage").mockResolvedValue();
+  vi.spyOn(api, "dictationRewrite").mockResolvedValue();
+  vi.spyOn(api, "dictationCustom").mockResolvedValue();
+  vi.spyOn(api, "dictationOpenCard").mockResolvedValue();
+  vi.spyOn(api, "dictationCopy").mockResolvedValue();
+  vi.spyOn(api, "dictationCardText").mockResolvedValue();
+  vi.spyOn(api, "dictationUndo").mockResolvedValue();
+  vi.spyOn(api, "dictationPasteCard").mockResolvedValue();
+  vi.spyOn(api, "dictationChipHover").mockResolvedValue();
+  vi.spyOn(api, "dictationMenuOpen").mockResolvedValue();
+  vi.spyOn(api, "dictationGrantAccessibility").mockResolvedValue();
+  vi.spyOn(api, "dictationOpenSettings").mockResolvedValue();
+  vi.spyOn(api, "panelState").mockResolvedValue(fakePanelState({ view: "hidden", phase: "hidden" }));
+  vi.spyOn(api, "panelResized").mockResolvedValue();
+  vi.spyOn(api, "panelLanguage").mockResolvedValue("en");
+  vi.spyOn(api, "onPanelState").mockImplementation(async (handler) => {
+    listener = handler;
+    return stopListening;
+  });
+  return {
+    emitState: (state: PanelState) => listener?.(state),
+    stopListening,
+  };
 }

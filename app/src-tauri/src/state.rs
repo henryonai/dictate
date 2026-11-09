@@ -1,17 +1,21 @@
-//! What the commands share: the settings file, the key store, the model folder and the jobs that can be
-//! cancelled.
+//! What the commands share: the settings file, the key store, which keys exist, the model folder and the jobs
+//! that can be cancelled.
 
 use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
-use dictate_services::secrets::SecretStore;
+use dictate_services::secrets::{Account, SecretStore};
 use dictate_services::settings::{LoadWarning, SettingsStore};
+use dictate_services::whisper::local::LocalWhisper;
 use dictate_services::whisper::models::ModelDir;
 use tokio_util::sync::CancellationToken;
+
+use crate::config::saved_key;
 
 /// A job that runs for a while and can be cancelled.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -20,6 +24,9 @@ pub enum Job {
     Download(String),
     /// A local transcription.
     Transcribe,
+    /// A dictation with this number, from the shortcut to the text in the field. Each has its own, so that a new one
+    /// can begin while the one before it is told to stop.
+    Dictation(u64),
 }
 
 /// The job is running already.
@@ -113,12 +120,91 @@ impl Drop for JobGuard {
     }
 }
 
+/// A model that is loaded once and used by every dictation after it: loading takes seconds and the model takes a
+/// good part of a gigabyte. It is loaded again when another one is asked for.
+pub struct ModelCache<T> {
+    slot: Mutex<Option<(String, Arc<T>)>>,
+}
+
+impl<T> Default for ModelCache<T> {
+    fn default() -> Self {
+        Self {
+            slot: Mutex::new(None),
+        }
+    }
+}
+
+impl<T> ModelCache<T> {
+    /// The model `id`, loaded with `load` when it isn't the one in memory. The lock is held while it loads, so that two
+    /// that ask for the same model at once load it once. A failed load is not remembered: the next one tries again.
+    pub fn get(
+        &self,
+        id: &str,
+        load: impl FnOnce() -> Result<T, String>,
+    ) -> Result<Arc<T>, String> {
+        let mut slot = lock(&self.slot);
+        if let Some((loaded, model)) = slot.as_ref() {
+            if loaded == id {
+                return Ok(Arc::clone(model));
+            }
+        }
+        // The old one goes first: two big models are not in memory at once.
+        *slot = None;
+        let model = Arc::new(load()?);
+        *slot = Some((id.to_owned(), Arc::clone(&model)));
+        Ok(model)
+    }
+
+    /// Lets the model `id` go from memory, because its file is deleted. Another one stays.
+    pub fn forget(&self, id: &str) {
+        let mut slot = lock(&self.slot);
+        if slot.as_ref().is_some_and(|(loaded, _)| loaded == id) {
+            *slot = None;
+        }
+    }
+}
+
+/// The Whisper model of the dictation, in memory.
+pub type WhisperCache = ModelCache<LocalWhisper>;
+
+/// Which keys are saved, as the settings view and the dictation need to know it. Asking the OS key store for
+/// that on every call can make the system show a prompt each time, so it is read once (see
+/// `AppState::loaded_keys`) and kept up to date when a key is saved or removed.
+#[derive(Debug, Default)]
+pub struct KeyFlags {
+    /// The key of the AI provider.
+    pub ai: AtomicBool,
+    /// The key of the transcription service itself; the AI key it may borrow doesn't count.
+    pub transcribe: AtomicBool,
+}
+
+impl KeyFlags {
+    fn flag(&self, account: Account) -> &AtomicBool {
+        match account {
+            Account::Ai => &self.ai,
+            Account::Transcribe => &self.transcribe,
+        }
+    }
+
+    /// Whether a key is saved for the account.
+    pub fn get(&self, account: Account) -> bool {
+        self.flag(account).load(Ordering::SeqCst)
+    }
+
+    pub fn set(&self, account: Account, saved: bool) {
+        self.flag(account).store(saved, Ordering::SeqCst);
+    }
+}
+
 /// Everything the commands need, cheap to clone into a background task.
 #[derive(Clone)]
 pub struct AppState {
     pub settings: Arc<SettingsStore>,
     pub secrets: Arc<dyn SecretStore>,
+    pub keys: Arc<KeyFlags>,
+    keys_read: Arc<OnceLock<()>>,
     pub models: ModelDir,
+    pub whisper: Arc<WhisperCache>,
     pub jobs: Arc<Jobs>,
     load_warning: Arc<Mutex<Option<String>>>,
 }
@@ -133,7 +219,10 @@ impl AppState {
         AppState {
             settings: Arc::new(settings),
             secrets,
+            keys: Arc::default(),
+            keys_read: Arc::default(),
             models,
+            whisper: Arc::default(),
             jobs: Arc::new(Jobs::default()),
             load_warning: Arc::new(Mutex::new(load_warning.map(|warning| warning.message))),
         }
@@ -142,6 +231,20 @@ impl AppState {
     /// Why the settings file wasn't used as it was, once: the first call gets it, later ones nothing.
     pub fn take_load_warning(&self) -> Option<String> {
         lock(&self.load_warning).take()
+    }
+
+    /// The key flags, after the key store was asked once which keys it holds. The first caller asks, which may
+    /// take a while (a locked Keychain waits for the user), so call this from a blocking thread; anyone who comes
+    /// meanwhile waits for the answer instead of asking again, and later calls return at once. A key store that
+    /// can't be read counts as holding no key.
+    pub fn loaded_keys(&self) -> &KeyFlags {
+        self.keys_read.get_or_init(|| {
+            for account in [Account::Ai, Account::Transcribe] {
+                self.keys
+                    .set(account, saved_key(&*self.secrets, account).is_some());
+            }
+        });
+        &self.keys
     }
 }
 
@@ -165,7 +268,9 @@ pub fn open_model_dir(base_dir: &Path) -> io::Result<ModelDir> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{CountingStore, NoKeyring};
     use dictate_services::secrets::MemoryStore;
+    use std::sync::atomic::AtomicUsize;
     use std::thread;
 
     fn download(id: &str) -> Job {
@@ -272,6 +377,78 @@ mod tests {
         assert_eq!(state.take_load_warning(), None);
     }
 
+    /// The state with the given key store, in a folder of its own.
+    fn state_with(dir: &tempfile::TempDir, secrets: Arc<dyn SecretStore>) -> AppState {
+        let (store, warning) = SettingsStore::open(dir.path().join("settings.json"));
+        AppState::new(
+            store,
+            warning,
+            secrets,
+            ModelDir::new(dir.path().join("models")),
+        )
+    }
+
+    #[test]
+    fn the_key_flags_tell_which_keys_are_saved() {
+        let dir = tempfile::tempdir().unwrap();
+        let secrets = MemoryStore::default();
+        secrets.set(Account::Transcribe, "sk-stt").unwrap();
+        let state = state_with(&dir, Arc::new(secrets));
+
+        let keys = state.loaded_keys();
+
+        assert!(!keys.get(Account::Ai));
+        assert!(keys.get(Account::Transcribe));
+    }
+
+    #[test]
+    fn an_empty_key_or_a_key_store_that_is_down_counts_as_no_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let secrets = MemoryStore::default();
+        secrets.set(Account::Ai, "").unwrap();
+        let state = state_with(&dir, Arc::new(secrets));
+        assert!(!state.loaded_keys().get(Account::Ai));
+
+        let state = state_with(&dir, Arc::new(NoKeyring));
+        let keys = state.loaded_keys();
+        assert!(!keys.get(Account::Ai) && !keys.get(Account::Transcribe));
+    }
+
+    #[test]
+    fn the_key_store_is_read_once_and_every_caller_waits_for_it() {
+        let dir = tempfile::tempdir().unwrap();
+        // A store that takes its time, like a Keychain waiting for the user to answer a prompt.
+        let secrets = Arc::new(CountingStore::slow(Duration::from_millis(40)));
+        secrets.set(Account::Ai, "sk-ai").unwrap();
+        let state = state_with(&dir, secrets.clone());
+
+        thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    // Whoever asks first reads; the others get the flags only when it is done.
+                    let keys = state.loaded_keys();
+                    assert!(keys.get(Account::Ai), "asked before the keys were read");
+                    assert!(!keys.get(Account::Transcribe));
+                });
+            }
+        });
+        state.loaded_keys();
+
+        assert_eq!(secrets.gets(), 2, "one read per key, in all");
+    }
+
+    #[test]
+    fn a_flag_can_be_changed_after_the_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state_with(&dir, Arc::new(MemoryStore::default()));
+        let keys = state.loaded_keys();
+
+        keys.set(Account::Ai, true);
+        assert!(keys.get(Account::Ai) && !keys.get(Account::Transcribe));
+        keys.set(Account::Ai, false);
+        assert!(!keys.get(Account::Ai));
+    }
+
     #[test]
     fn no_warning_stays_no_warning() {
         let dir = tempfile::tempdir().unwrap();
@@ -310,5 +487,93 @@ mod tests {
         assert!(models.root().is_dir());
         // A second start finds it there.
         assert!(open_model_dir(dir.path()).is_ok());
+    }
+
+    // ---- the model in memory
+
+    #[test]
+    fn a_model_is_loaded_once_for_every_dictation() {
+        let cache = ModelCache::<String>::default();
+        let loads = AtomicUsize::new(0);
+        let load = || {
+            loads.fetch_add(1, Ordering::SeqCst);
+            Ok("tiny model".to_string())
+        };
+
+        let first = cache.get("tiny", load).unwrap();
+        let second = cache.get("tiny", load).unwrap();
+
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(loads.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn another_model_replaces_the_one_in_memory() {
+        let cache = ModelCache::<String>::default();
+        let tiny = cache.get("tiny", || Ok("tiny".to_string())).unwrap();
+        let base = cache.get("base", || Ok("base".to_string())).unwrap();
+        assert_eq!((tiny.as_str(), base.as_str()), ("tiny", "base"));
+
+        // The settings went back to the first one: it is loaded again, because only one is kept.
+        let loads = AtomicUsize::new(0);
+        cache
+            .get("tiny", || {
+                loads.fetch_add(1, Ordering::SeqCst);
+                Ok("tiny".to_string())
+            })
+            .unwrap();
+        assert_eq!(loads.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_model_that_fails_to_load_is_asked_for_again_next_time() {
+        let cache = ModelCache::<String>::default();
+        assert_eq!(
+            cache.get("tiny", || Err("damaged".into())).unwrap_err(),
+            "damaged"
+        );
+        // The file was downloaded again meanwhile.
+        assert_eq!(
+            cache.get("tiny", || Ok("fine".into())).unwrap().as_str(),
+            "fine"
+        );
+    }
+
+    #[test]
+    fn a_deleted_model_is_let_go_and_another_one_stays() {
+        let cache = ModelCache::<String>::default();
+        let kept = cache.get("tiny", || Ok("tiny".to_string())).unwrap();
+
+        cache.forget("base");
+        let loads = AtomicUsize::new(0);
+        let load = || {
+            loads.fetch_add(1, Ordering::SeqCst);
+            Ok("tiny".to_string())
+        };
+        assert!(Arc::ptr_eq(&cache.get("tiny", load).unwrap(), &kept));
+        assert_eq!(
+            loads.load(Ordering::SeqCst),
+            0,
+            "another model's deletion unloaded this one"
+        );
+
+        cache.forget("tiny");
+        drop(kept);
+        cache.get("tiny", load).unwrap();
+        assert_eq!(loads.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn dictations_have_jobs_of_their_own() {
+        let jobs = Arc::new(Jobs::default());
+        let first = jobs.start(Job::Dictation(1)).unwrap();
+        // The next dictation begins while the first is being told to stop.
+        let second = jobs.start(Job::Dictation(2)).unwrap();
+        assert!(jobs.cancel(&Job::Dictation(1)));
+        assert!(first.token().is_cancelled());
+        assert!(!second.token().is_cancelled());
+        // Quitting stops them all.
+        assert!(!jobs.cancel_all_and_wait(Duration::from_millis(10)));
+        assert!(second.token().is_cancelled());
     }
 }

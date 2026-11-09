@@ -19,6 +19,14 @@
 
   onMount(() => {
     void store.load();
+    // The desktop may answer for the shortcut after the window opened.
+    const stopWatching = store.watchHotkey();
+    // The language menu of the dictation chip changes the settings without this window.
+    const stopWatchingSettings = store.watchSettings();
+    return () => {
+      void stopWatching.then((stop) => stop());
+      void stopWatchingSettings.then((stop) => stop());
+    };
   });
 </script>
 

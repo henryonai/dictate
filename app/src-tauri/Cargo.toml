@@ -15,6 +15,10 @@ path = "src/main.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+# The dictation controller's Backend (the network calls of the stop pipeline) is used as a trait object.
+async-trait = "0.1.92"
+# The file names of saved dictations are the local time. The same version and features as dictate-core.
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 dictate-core = { path = "../../crates/dictate-core" }
 dictate-services = { path = "../../crates/dictate-services" }
 dirs = "7.0.0"
@@ -23,12 +27,62 @@ log = "0.4"
 reqwest = { version = "0.12.28", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
 sys-locale = "0.3"
-tauri = { version = "2", features = ["tray-icon"] }
+# macos-private-api: a transparent window on macOS (the floating panels), which the macOSPrivateApi setting of tauri.conf.json asks for too.
+tauri = { version = "2", features = ["tray-icon", "macos-private-api"] }
 tauri-plugin-autostart = "2"
+# The global shortcut, with the press and the release of the key. Pinned: 2.4 and later need Rust 1.90.
+tauri-plugin-global-shortcut = "=2.3.2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-opener = "2"
+# The channel the shortcut and `dictate --toggle` send their events on, and the timer for the release of a key.
+tokio = { version = "1.54.1", default-features = false, features = ["sync", "time"] }
 tokio-util = { version = "0.7.20", default-features = false }
 
+# The platform layer (src/platform): the focused text field, the frontmost app, the permissions, and pasting into
+# another app with the clipboard given back, which each system does its own way (macOS with its own pasteboard and
+# CGEvent, Windows and Linux with arboard and enigo). The objc2 and windows versions are the ones that Tauri builds
+# with, so that no second copy of them is built.
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "libc", "block2", "NSEvent", "NSPasteboard", "NSPasteboardItem", "NSRunningApplication", "NSResponder", "NSScreen", "NSTrackingArea", "NSView", "NSWindow", "NSWorkspace"] }
+objc2-application-services = { version = "0.3.2", default-features = false, features = ["std", "libc", "objc2", "HIServices", "AXUIElement", "AXError", "AXValue"] }
+objc2-av-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "AVCaptureDevice", "AVMediaFormat"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "objc2", "CFArray", "CFBase", "CFCGTypes", "CFDictionary", "CFNumber", "CFString"] }
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGEvent", "CGEventSource", "CGEventTypes", "CGRemoteOperation"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSData", "NSString"] }
+# The bubble is a non-activating panel, which Tauri's own window flags can't make. Pinned: this is the release that was checked with Rust 1.85.
+tauri-nspanel = "=2.1.1"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+arboard = "3.7.0"
+enigo = "0.6.1"
+windows = { version = "0.61.3", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_System_Com",
+    "Win32_System_DataExchange",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Ole",
+    "Win32_System_Threading",
+    "Win32_System_Variant",
+    "Win32_UI_Accessibility",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# The GlobalShortcuts portal, for Wayland sessions, where an app can't grab a key itself. Pinned: 0.13 needs Rust 1.87.
+ashpd = { version = "=0.12.3", default-features = false, features = ["tokio"] }
+futures-util = { version = "0.3.34", default-features = false }
+arboard = { version = "3.7.0", features = ["wayland-data-control"] }
+enigo = { version = "0.6.1", default-features = false, features = ["x11rb"] }
+x11rb = "0.13"
+
 [dev-dependencies]
+# The mock runtime, to ask the app's own commands from the windows of the app and see what the permissions let through.
+tauri = { version = "2", features = ["test"] }
 serde_json = "1.0.154"
 tempfile = "3.27.0"

@@ -1,0 +1,39 @@
+/* The floating windows are transparent: nothing but what the components draw may have a background. */
+
+:root {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  background: transparent;
+}
+
+/* Only the root hides what is outside the window: with overflow set on the body too, the body would clip a menu
+   that opens beyond what is drawn, at its own edge, before the window has grown to hold it. */
+html {
+  overflow: hidden;
+}
+
+body {
+  color: rgb(245 245 245);
+  font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+  /* A bubble is read, not selected, and the cursor stays an arrow where it can't type. */
+  cursor: default;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+button {
+  font: inherit;
+}
+
+button:focus-visible {
+  outline: 2px solid rgb(76 154 255);
+  outline-offset: 1px;
+}
