@@ -11,7 +11,6 @@
 use std::any::Any;
 use std::ffi::{c_void, CString};
 use std::fmt;
-use std::fs;
 use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use std::path::Path;
 use std::sync::{Mutex, PoisonError};
@@ -29,11 +28,13 @@ pub const DIARIZE_MODELS: [RemoteFile; 2] = [
         url: "https://huggingface.co/csukuangfj/sherpa-onnx-pyannote-segmentation-3-0/resolve/main/model.onnx",
         file: "pyannote-segmentation-3.0.onnx",
         size: 5_992_913,
+        sha256: "220ad67ca923bef2fa91f2390c786097bf305bceb5e261d4af67b38e938e1079",
     },
     RemoteFile {
         url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/nemo_en_titanet_small.onnx",
         file: "nemo_en_titanet_small.onnx",
         size: 40_257_283,
+        sha256: "ad4a1802485d8b34c722d2a9d04249662f2ece5d28a7a039063ca22f515a789e",
     },
 ];
 
@@ -59,16 +60,17 @@ impl fmt::Display for DiarizeError {
 
 impl std::error::Error for DiarizeError {}
 
-/// The models of `DIARIZE_MODELS` that are not in `dir` as whole files, in their order. A file counts only at exactly
-/// its size: a `.part` of it does not, nor does a file of another size (an older release of the model, a broken
-/// copy), and downloading it again puts the right one in its place.
+/// The models of `DIARIZE_MODELS` that are not in `dir` as whole files, in their order. A file counts only when it is
+/// exactly the published one (`RemoteFile::is_in`: its size and its SHA-256): a `.part` of it does not, nor does a
+/// file of another size (an older release of the model, a broken copy) or a corrupt one of the right size, and
+/// downloading it again puts the right one in its place. This reads both files, 46 MB.
 pub fn missing_models(dir: &Path) -> Vec<&'static RemoteFile> {
-    DIARIZE_MODELS
-        .iter()
-        .filter(|model| {
-            !fs::metadata(dir.join(model.file)).is_ok_and(|m| m.is_file() && m.len() == model.size)
-        })
-        .collect()
+    missing_in(dir, &DIARIZE_MODELS)
+}
+
+/// `missing_models` for any list of files.
+fn missing_in<'a>(dir: &Path, models: &'a [RemoteFile]) -> Vec<&'a RemoteFile> {
+    models.iter().filter(|model| !model.is_in(dir)).collect()
 }
 
 /// The threads the models run on: the cores of the machine up to four, which is as many as they can use.
@@ -150,9 +152,9 @@ pub struct Diarizer {
 }
 
 impl Diarizer {
-    /// Loads the models from `dir`. `MissingModels` when they are not all there: the library itself answers a path
-    /// that is wrong with no reason at all, so the files are looked at first. (A file of the right size that is not
-    /// the model is not found out here: the library stops the program on it.)
+    /// Loads the models from `dir`. `MissingModels` when they are not all there and as published: the library itself
+    /// answers a path that is wrong with no reason at all, and stops the program on a file that is not a model, so
+    /// the files are checked first (`missing_models`).
     pub fn load(dir: &Path) -> Result<Diarizer, DiarizeError> {
         if !missing_models(dir).is_empty() {
             return Err(DiarizeError::MissingModels);
@@ -171,11 +173,13 @@ impl Diarizer {
     }
 
     /// Finds the speaker turns in 16 kHz mono samples (in -1..1), ordered by start. `on_progress` hears a fraction
-    /// from 0 to 1 as the library finishes its chunks, ending with 1.
+    /// from 0 to 1 as the library finishes its chunks, always on the calling thread.
     ///
     /// The library reports only the second part of its work (the speaker embeddings): for the first part, the
     /// segmentation, nothing is heard. Measured on 10 minutes of audio on Apple silicon with 4 threads, that is the
-    /// first 15 of 54 seconds, so a progress bar needs to treat "no call yet" as "preparing".
+    /// first 15 of 54 seconds, so a progress bar needs to treat "no call yet" as "preparing". There may be no call at
+    /// all (audio with no speech has nothing to embed), and the last one need not be 1: a caller that wants 100% sets
+    /// it itself when `run` returns.
     ///
     /// It cannot be stopped: the library has no way to cancel. The caller that is cancelled lets it end and throws
     /// the answer away. It takes about 0.06 to 0.14 of the audio's length on Apple silicon, and its memory grows with
@@ -198,7 +202,9 @@ impl Diarizer {
         let answer = {
             let handle = self.handle.lock().unwrap_or_else(PoisonError::into_inner);
             // SAFETY: the handle is a live diarizer and nothing else uses it while the lock is held; `samples_16k`
-            // holds `n` floats; `progress` outlives the call and is what `on_chunk` takes as its argument.
+            // holds `n` floats; `progress` outlives the call and is what `on_chunk` takes as its argument. The
+            // library calls `on_chunk` only on this thread, during this call (the test that runs the real models
+            // checks the thread), so `progress` is never reached from two places at once.
             let answer = unsafe {
                 SherpaOnnxOfflineSpeakerDiarizationProcessWithCallback(
                     handle.0,
@@ -231,16 +237,20 @@ struct Answer(*const sys::OfflineSpeakerDiarizationResult);
 impl Answer {
     /// Its segments, ordered by start time.
     fn segments(&self) -> Vec<sys::OfflineSpeakerDiarizationSegment> {
-        // SAFETY: the pointer is a live result. `SortByStartTime` gives an array of `NumSegments` segments that
-        // `DestroySegment` frees, and nothing of it is used after that.
+        // SAFETY: the pointer is a live result. `SortByStartTime` gives an array of `NumSegments` segments (or null)
+        // that `DestroySegment` frees, also when there are none, and nothing of it is used after that.
         unsafe {
-            let count = sys::SherpaOnnxOfflineSpeakerDiarizationResultGetNumSegments(self.0);
-            let count = usize::try_from(count).unwrap_or(0);
             let array = sys::SherpaOnnxOfflineSpeakerDiarizationResultSortByStartTime(self.0);
-            if array.is_null() || count == 0 {
+            if array.is_null() {
                 return Vec::new();
             }
-            let segments = std::slice::from_raw_parts(array, count).to_vec();
+            let count = sys::SherpaOnnxOfflineSpeakerDiarizationResultGetNumSegments(self.0);
+            let count = usize::try_from(count).unwrap_or(0);
+            let segments = if count == 0 {
+                Vec::new()
+            } else {
+                std::slice::from_raw_parts(array, count).to_vec()
+            };
             sys::SherpaOnnxOfflineSpeakerDiarizationDestroySegment(array);
             segments
         }
@@ -281,6 +291,7 @@ struct Progress<'a> {
 /// so there is no way to stop it from here; 0 means "go on" all the same.
 extern "C" fn on_chunk(done: i32, total: i32, arg: *mut c_void) -> i32 {
     // SAFETY: `arg` is the `Progress` that `run` passed with this function, and it lives until the call has ended.
+    // The library calls this on the thread of that call, one call at a time, so this is the only reference to it.
     let progress = unsafe { &mut *arg.cast::<Progress<'_>>() };
     if progress.panic.is_none() && total > 0 {
         let fraction = (done as f32 / total as f32).clamp(0.0, 1.0);
@@ -326,23 +337,31 @@ mod tests {
     #[test]
     fn diarize_models_are_https_with_sizes() {
         assert_eq!(
-            DIARIZE_MODELS.map(|m| (m.url, m.file, m.size)),
+            DIARIZE_MODELS.map(|m| (m.url, m.file, m.size, m.sha256)),
             [
                 (
                     "https://huggingface.co/csukuangfj/sherpa-onnx-pyannote-segmentation-3-0/resolve/main/model.onnx",
                     SEGMENTATION,
-                    5_992_913
+                    5_992_913,
+                    "220ad67ca923bef2fa91f2390c786097bf305bceb5e261d4af67b38e938e1079"
                 ),
                 (
                     "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/nemo_en_titanet_small.onnx",
                     EMBEDDING,
-                    40_257_283
+                    40_257_283,
+                    "ad4a1802485d8b34c722d2a9d04249662f2ece5d28a7a039063ca22f515a789e"
                 ),
             ]
         );
         for model in &DIARIZE_MODELS {
             assert!(model.url.starts_with("https://"), "{}", model.url);
             assert!(!model.file.contains(['/', '\\']), "{}", model.file);
+            let hex = |c: char| c.is_ascii_digit() || ('a'..='f').contains(&c);
+            assert!(
+                model.sha256.len() == 64 && model.sha256.chars().all(hex),
+                "lowercase hex: {}",
+                model.sha256
+            );
         }
     }
 
@@ -354,33 +373,64 @@ mod tests {
             .unwrap();
     }
 
+    /// Two small stand-ins for the models, with the SHA-256 of what they hold: `body(1000)` and `body(2000)`.
+    fn stand_ins() -> [RemoteFile; 2] {
+        let model = |file: &'static str, size: usize| RemoteFile {
+            url: "https://example.com/model.onnx",
+            file,
+            size: size as u64,
+            sha256: Box::leak(sha256_hex(&body(size)).into_boxed_str()),
+        };
+        [model("first.onnx", 1000), model("second.onnx", 2000)]
+    }
+
+    /// Bytes that tell their own position.
+    fn body(len: usize) -> Vec<u8> {
+        (0..len).map(|i| (i % 251) as u8).collect()
+    }
+
+    fn sha256_hex(bytes: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(bytes))
+    }
+
     #[test]
-    fn a_model_is_missing_unless_its_file_has_the_exact_size() {
+    fn a_model_is_missing_unless_it_is_whole_and_as_published() {
         let tmp = tempfile::tempdir().unwrap();
-        let files = |dir: &Path| {
-            missing_models(dir)
+        let dir = tmp.path();
+        let models = stand_ins();
+        let missing = |dir: &Path| {
+            missing_in(dir, &models)
                 .iter()
                 .map(|m| m.file)
                 .collect::<Vec<_>>()
         };
-        assert_eq!(files(tmp.path()), [SEGMENTATION, EMBEDDING]);
+        assert_eq!(missing(dir), ["first.onnx", "second.onnx"]);
 
-        file_of(tmp.path(), SEGMENTATION, 5_992_913);
-        assert_eq!(files(tmp.path()), [EMBEDDING]);
+        fs::write(dir.join("first.onnx"), body(1000)).unwrap();
+        assert_eq!(missing(dir), ["second.onnx"]);
 
-        // What an interrupted download leaves, and a file that is not the one that was downloaded.
-        file_of(tmp.path(), "nemo_en_titanet_small.onnx.part", 40_257_283);
-        assert_eq!(files(tmp.path()), [EMBEDDING], "a .part is not a model");
-        file_of(tmp.path(), EMBEDDING, 40_257_282);
-        assert_eq!(files(tmp.path()), [EMBEDDING], "one byte short");
-        file_of(tmp.path(), EMBEDDING, 40_257_284);
-        assert_eq!(files(tmp.path()), [EMBEDDING], "one byte too long");
+        // What an interrupted download leaves, and files that are not the one that was published.
+        fs::write(dir.join("second.onnx.part"), body(2000)).unwrap();
+        assert_eq!(missing(dir), ["second.onnx"], "a .part is not a model");
+        fs::write(dir.join("second.onnx"), body(1999)).unwrap();
+        assert_eq!(missing(dir), ["second.onnx"], "one byte short");
+        fs::write(dir.join("second.onnx"), body(2001)).unwrap();
+        assert_eq!(missing(dir), ["second.onnx"], "one byte too long");
+        let mut corrupt = body(2000);
+        corrupt[1999] ^= 1;
+        fs::write(dir.join("second.onnx"), corrupt).unwrap();
+        assert_eq!(
+            missing(dir),
+            ["second.onnx"],
+            "the right size, one bit wrong"
+        );
 
-        file_of(tmp.path(), EMBEDDING, 40_257_283);
-        assert!(files(tmp.path()).is_empty());
+        fs::write(dir.join("second.onnx"), body(2000)).unwrap();
+        assert!(missing(dir).is_empty());
 
         // A folder that is not there holds nothing.
-        assert_eq!(files(&tmp.path().join("nowhere")).len(), 2);
+        assert_eq!(missing(&dir.join("nowhere")).len(), 2);
     }
 
     #[test]
@@ -390,9 +440,24 @@ mod tests {
             Diarizer::load(tmp.path()).err(),
             Some(DiarizeError::MissingModels)
         );
+    }
 
-        // One of the two is not enough either.
-        file_of(tmp.path(), SEGMENTATION, 5_992_913);
+    #[test]
+    fn models_of_the_right_size_with_the_wrong_content_are_missing_and_never_reach_the_library() {
+        // The library stops the whole program on a model that is not one: a file of the right length that is
+        // anything else must be found out before it is handed over.
+        let tmp = tempfile::tempdir().unwrap();
+        for model in &DIARIZE_MODELS {
+            file_of(tmp.path(), model.file, model.size);
+        }
+
+        assert_eq!(
+            missing_models(tmp.path())
+                .iter()
+                .map(|m| m.file)
+                .collect::<Vec<_>>(),
+            [SEGMENTATION, EMBEDDING]
+        );
         assert_eq!(
             Diarizer::load(tmp.path()).err(),
             Some(DiarizeError::MissingModels)
@@ -580,7 +645,15 @@ mod tests {
         let diarizer = Diarizer::load(&models_dir()).unwrap();
         let mut progress = Vec::new();
 
-        let turns = diarizer.run(&two_voices(), |p| progress.push(p)).unwrap();
+        let caller = std::thread::current().id();
+
+        let turns = diarizer
+            .run(&two_voices(), |p| {
+                // The library calls back on the thread that called it, which `run` relies on.
+                assert_eq!(std::thread::current().id(), caller);
+                progress.push(p);
+            })
+            .unwrap();
 
         let speakers: BTreeSet<u32> = turns.iter().map(|t| t.speaker).collect();
         assert_eq!(speakers.len(), 2, "{turns:?}");
@@ -603,7 +676,7 @@ mod tests {
             "{progress:?}"
         );
         assert!(progress.windows(2).all(|w| w[0] <= w[1]), "{progress:?}");
-        assert_eq!(progress.last(), Some(&1.0));
+        assert!(progress.last().is_some_and(|p| *p > 0.9), "{progress:?}");
     }
 
     #[test]

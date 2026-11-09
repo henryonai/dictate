@@ -1268,6 +1268,7 @@ dependencies = [
  "rubato",
  "serde",
  "serde_json",
+ "sha2",
  "sherpa-onnx-sys",
  "symphonia",
  "sysinfo",

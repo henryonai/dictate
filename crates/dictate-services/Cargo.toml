@@ -30,12 +30,17 @@ reqwest = { version = "0.12.28", default-features = false, features = ["json", "
 rubato = "4.0.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+# Checking that a downloaded model is the file that was published: a corrupt model of the right size stops the whole
+# program inside sherpa-onnx. Already in Cargo.lock (tauri-codegen uses it), so no new crate; pinned to the version that is locked.
+sha2 = "=0.10.9"
 # Speaker separation. The raw bindings, not the `sherpa-onnx` wrapper: the wrapper keeps the C pointer to itself, and the
 # only call that reports progress (`SherpaOnnxOfflineSpeakerDiarizationProcessWithCallback`) is not in either crate.
-# The build script downloads the prebuilt static library (onnxruntime included, about 20 MB on macOS and Linux, 117 MB
-# on Windows) into target/sherpa-onnx-prebuilt; CI caches that folder. SHERPA_ONNX_LIB_DIR points it at a library
-# dir that is already extracted. Its build dependencies need `cargo update -p deflate64 --precise 0.1.9` to build with
-# Rust 1.85 (0.1.12 needs 1.87); `cargo update` of anything else leaves that pin alone.
+# The build script downloads the prebuilt static library (onnxruntime included, about 20 MB on macOS and Linux) into
+# target/sherpa-onnx-prebuilt; CI caches that folder. SHERPA_ONNX_LIB_DIR points it at a library dir that is already
+# extracted, which Windows needs: the archive the build script fetches there is built for the static C runtime and cannot
+# be linked with whisper.cpp, so CI and app/README.md use the 92 MB /MD archive of the same release. Its build
+# dependencies need `cargo update -p deflate64 --precise 0.1.9` to build with Rust 1.85 (0.1.12 needs 1.87); a
+# `cargo update` of anything else leaves that pin alone.
 sherpa-onnx-sys = "=1.13.8"
 # Reading the audio of imported files (wav, mp3, m4a, mp4, mkv, webm, ogg, flac, caf, aiff). Pure Rust.
 symphonia = { version = "=0.6.1", default-features = false, features = ["opt-simd", "aac", "isomp4", "mp3", "mkv", "ogg", "wav", "aiff", "flac", "pcm", "vorbis", "alac", "caf"] }

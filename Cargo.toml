@@ -14,3 +14,7 @@ license = "MIT"
 # panic. Debug and tests run the way release does.
 [profile.dev.package.opus-decoder]
 overflow-checks = false
+
+# The speaker separation models are checked by their SHA-256 (46 MB): unoptimized, that takes seconds in a debug build.
+[profile.dev.package.sha2]
+opt-level = 3

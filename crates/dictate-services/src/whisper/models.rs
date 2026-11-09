@@ -13,6 +13,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use sha2::{Digest, Sha256};
 use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio_util::sync::CancellationToken;
 
@@ -29,6 +30,26 @@ pub struct RemoteFile {
     pub file: &'static str,
     /// Its size in bytes: the file is not kept unless the download comes to exactly this.
     pub size: u64,
+    /// Its SHA-256 as 64 lowercase hex digits: the file is not kept unless it is this one. The size alone cannot
+    /// tell a corrupt copy of the right length, and the library that reads these files stops the program on one.
+    pub sha256: &'static str,
+}
+
+impl RemoteFile {
+    /// Whether the file is in `dir` as a whole: a file (not a `.part`, not a folder) of exactly `size` bytes whose
+    /// SHA-256 is `sha256`. It reads the file.
+    pub fn is_in(&self, dir: &Path) -> bool {
+        let path = dir.join(self.file);
+        fs::metadata(&path).is_ok_and(|m| m.is_file() && m.len() == self.size)
+            && sha256_of(&path).is_ok_and(|sum| sum == self.sha256)
+    }
+}
+
+/// The SHA-256 of a file as lowercase hex, read in pieces: a model is tens of MB.
+fn sha256_of(path: &Path) -> io::Result<String> {
+    let mut hasher = Sha256::new();
+    io::copy(&mut fs::File::open(path)?, &mut hasher)?;
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 /// One downloadable model.
@@ -211,6 +232,9 @@ pub enum DownloadError {
     /// The file that arrived is not the size the server announced, or the server announced none (or an empty
     /// file). What arrived is thrown away: it cannot be trusted as a model.
     SizeMismatch,
+    /// The file has the length it should, but it is not the file that was published (a CDN's error, a corrupt
+    /// copy): `RemoteFile::sha256` says so. What arrived is thrown away.
+    ChecksumMismatch,
 }
 
 impl fmt::Display for DownloadError {
@@ -222,6 +246,9 @@ impl fmt::Display for DownloadError {
             DownloadError::SizeMismatch => {
                 f.write_str("The downloaded file is not the size the server announced.")
             }
+            DownloadError::ChecksumMismatch => f.write_str(
+                "The downloaded file is not the one that was published: its checksum differs.",
+            ),
         }
     }
 }
@@ -271,6 +298,7 @@ async fn download_with(
         dir: dir.root(),
         file: model.file,
         size: None,
+        sha256: None,
     };
     fetch(target, on_progress, cancel, read_timeout, redirect_allowed).await
 }
@@ -278,7 +306,8 @@ async fn download_with(
 /// Downloads `f` into `dir` and returns where it is: `download` for a file that has its own address and size.
 ///
 /// The same `.part` file, `Range` resume, redirects and progress as `download`. In addition the size the server
-/// announces has to be `f.size`: a file of another size is not kept (and a `.part` of it is dropped).
+/// announces has to be `f.size` (a file of another size is not kept, and a `.part` of it is dropped), and the
+/// finished file has to have the SHA-256 `f.sha256`, or it is deleted and the error is `ChecksumMismatch`.
 pub async fn download_file(
     dir: &Path,
     f: &RemoteFile,
@@ -303,6 +332,7 @@ async fn download_file_with(
         dir,
         file: f.file,
         size: Some(f.size),
+        sha256: Some(f.sha256),
     };
     fetch(target, on_progress, cancel, read_timeout, redirect_ok).await
 }
@@ -315,6 +345,8 @@ struct Target<'a> {
     file: &'a str,
     /// What the file has to come to, when that is known beforehand. `None` takes the size the server announces.
     size: Option<u64>,
+    /// The SHA-256 (lowercase hex) it has to have, when that is known beforehand.
+    sha256: Option<&'a str>,
 }
 
 /// The shared download: see `download` and `download_file`.
@@ -434,6 +466,17 @@ async fn fetch(
     if on_disk != total {
         let _ = tokio::fs::remove_file(&part_path).await;
         return Err(DownloadError::SizeMismatch);
+    }
+    if let Some(want) = target.sha256 {
+        let path = part_path.clone();
+        let sum = tokio::task::spawn_blocking(move || sha256_of(&path))
+            .await
+            .map_err(|e| DownloadError::Io(e.to_string()))?
+            .map_err(io_error)?;
+        if sum != want {
+            let _ = tokio::fs::remove_file(&part_path).await;
+            return Err(DownloadError::ChecksumMismatch);
+        }
     }
     tokio::fs::rename(&part_path, &final_path)
         .await
@@ -1104,6 +1147,10 @@ mod tests {
             DownloadError::SizeMismatch.to_string(),
             "The downloaded file is not the size the server announced."
         );
+        assert_eq!(
+            DownloadError::ChecksumMismatch.to_string(),
+            "The downloaded file is not the one that was published: its checksum differs."
+        );
     }
 
     fn range_header(request: &Request) -> Option<String> {
@@ -1567,12 +1614,24 @@ mod tests {
 
     const BLOB: &str = "model.onnx";
 
-    /// A `RemoteFile` for a test server: its address is `'static` in the app, so the test's is leaked.
+    /// The SHA-256 of `bytes` as lowercase hex.
+    fn sha256_hex(bytes: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(bytes))
+    }
+
+    /// A `RemoteFile` for a test server whose file is `body(size)`: its address and checksum are `'static` in the
+    /// app, so the test's are leaked.
     fn remote(url: String, size: usize) -> RemoteFile {
+        remote_with_checksum(url, size, &sha256_hex(&body(size)))
+    }
+
+    fn remote_with_checksum(url: String, size: usize, sha256: &str) -> RemoteFile {
         RemoteFile {
             url: Box::leak(url.into_boxed_str()),
             file: BLOB,
             size: size as u64,
+            sha256: Box::leak(sha256.to_owned().into_boxed_str()),
         }
     }
 
@@ -1722,6 +1781,88 @@ mod tests {
         assert!(!blob_path(&models).exists());
     }
 
+    #[tokio::test]
+    async fn download_file_rejects_content_of_the_right_size_with_another_checksum() {
+        // A CDN that serves a wrong file of the length it should have: the size cannot tell, the checksum does.
+        let (_tmp, models) = dir();
+        let server = serve_at("/model.onnx", RangeServer(vec![7u8; MIB])).await;
+        let file = remote(format!("{}/model.onnx", server.uri()), MIB);
+
+        let (result, _) = fetch_remote(&models, &file, redirect_allowed).await;
+
+        assert_eq!(result, Err(DownloadError::ChecksumMismatch));
+        assert!(!blob_path(&models).exists(), "no file");
+        assert!(
+            !models.root().join("model.onnx.part").exists(),
+            "no part to resume from"
+        );
+    }
+
+    #[tokio::test]
+    async fn download_file_checks_a_part_file_that_is_already_whole() {
+        // Whole by its size, so nothing is fetched, but it is not the file: it is dropped, not renamed.
+        let (_tmp, models) = dir();
+        fs::write(models.root().join("model.onnx.part"), vec![0xFF; MIB]).unwrap();
+        let server = serve_at("/model.onnx", RangeServer(body(MIB))).await;
+        let file = remote(format!("{}/model.onnx", server.uri()), MIB);
+
+        let (result, _) = fetch_remote(&models, &file, redirect_allowed).await;
+
+        assert_eq!(result, Err(DownloadError::ChecksumMismatch));
+        assert!(!blob_path(&models).exists());
+        assert!(!models.root().join("model.onnx.part").exists());
+    }
+
+    #[test]
+    fn sha256_of_reads_a_file_in_pieces() {
+        let tmp = tempfile::tempdir().unwrap();
+        let small = tmp.path().join("abc");
+        fs::write(&small, b"abc").unwrap();
+        assert_eq!(
+            sha256_of(&small).unwrap(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        // Longer than any buffer it reads with.
+        let large = tmp.path().join("large");
+        fs::write(&large, body(3 * MIB + 5)).unwrap();
+        assert_eq!(sha256_of(&large).unwrap(), sha256_hex(&body(3 * MIB + 5)));
+        assert!(sha256_of(&tmp.path().join("missing")).is_err());
+    }
+
+    #[test]
+    fn a_remote_file_is_in_a_folder_only_whole_and_as_published() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = RemoteFile {
+            url: "https://example.com/model.onnx",
+            file: BLOB,
+            size: 1000,
+            sha256: Box::leak(sha256_hex(&body(1000)).into_boxed_str()),
+        };
+        assert!(!file.is_in(tmp.path()), "not there");
+
+        fs::write(tmp.path().join(BLOB), body(1000)).unwrap();
+        assert!(file.is_in(tmp.path()));
+
+        let mut other = body(1000);
+        other[500] ^= 1;
+        fs::write(tmp.path().join(BLOB), &other).unwrap();
+        assert!(
+            !file.is_in(tmp.path()),
+            "the size is right, the content is not"
+        );
+
+        fs::write(tmp.path().join(BLOB), body(999)).unwrap();
+        assert!(!file.is_in(tmp.path()), "short");
+        fs::write(tmp.path().join(BLOB), body(1001)).unwrap();
+        assert!(!file.is_in(tmp.path()), "long");
+
+        fs::remove_file(tmp.path().join(BLOB)).unwrap();
+        fs::write(tmp.path().join("model.onnx.part"), body(1000)).unwrap();
+        assert!(!file.is_in(tmp.path()), "a .part is not the file");
+        fs::create_dir(tmp.path().join(BLOB)).unwrap();
+        assert!(!file.is_in(tmp.path()), "a folder is not the file");
+    }
+
     #[test]
     fn the_model_cdns_are_reached_over_https_only() {
         let url = |u: &str| reqwest::Url::parse(u).unwrap();
@@ -1760,6 +1901,7 @@ mod tests {
             url: "http://localhost/model.onnx",
             file: BLOB,
             size: 1,
+            sha256: "00",
         };
         let future = download_file(Path::new(""), &file, |_, _| {}, CancellationToken::new());
         assert_send(&future);
