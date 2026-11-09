@@ -6,6 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Local, NaiveDateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 use crate::text::search::fold;
 
@@ -21,6 +22,8 @@ pub mod files {
     /// Indices of the ticked `SummaryDoc` action items.
     pub const TASKS: &str = "tasks.json";
     pub const LOG: &str = "log.txt";
+    /// The recording's sound, mixed into one track.
+    pub const AUDIO: &str = "audio.m4a";
 }
 
 /// `source` of a screen recording, stored as is.
@@ -31,6 +34,68 @@ const DIRECTORY_VARIABLE: &str = "DICTATE_MEETINGS_DIR";
 
 /// The library's folder inside the Documents folder.
 const LIBRARY_FOLDER: &str = "Dictate Meetings";
+
+/// `meta.json`: what the app knows about a recording apart from its text.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(default)]
+pub struct Meta {
+    pub title: String,
+    /// `SCREEN_SOURCE`, the link, or the path of the imported file.
+    pub source: String,
+    /// The recording's video or audio file: the absolute path of an imported file (never copied into the
+    /// folder), or of the recorded or downloaded one; empty while there is none.
+    pub media: String,
+    /// Seconds after the Unix epoch.
+    pub created: f64,
+    /// Seconds, once the audio is known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration: Option<f64>,
+}
+
+impl Meta {
+    /// The folder's `meta.json`, with `""` and `0` for what is missing or of the wrong type and the keys it
+    /// doesn't know ignored. `None` when there is no `meta.json` or it isn't a JSON object.
+    pub fn read(folder: &Path) -> Option<Meta> {
+        let fields = Fields::read(folder)?;
+        Some(Meta {
+            title: fields.title.unwrap_or_default(),
+            source: fields.source.unwrap_or_default(),
+            media: fields.media.unwrap_or_default(),
+            created: fields.created.unwrap_or_default(),
+            duration: fields.duration,
+        })
+    }
+}
+
+/// The fields of a `meta.json`, each `None` when missing or of the wrong type, so a reader can tell "no date"
+/// from a date of 0.
+#[derive(Default)]
+struct Fields {
+    title: Option<String>,
+    source: Option<String>,
+    media: Option<String>,
+    created: Option<f64>,
+    duration: Option<f64>,
+}
+
+impl Fields {
+    fn read(folder: &Path) -> Option<Fields> {
+        let json: serde_json::Value =
+            serde_json::from_slice(&fs::read(folder.join(files::META)).ok()?).ok()?;
+        if !json.is_object() {
+            return None;
+        }
+        let text = |key: &str| json.get(key)?.as_str().map(str::to_string);
+        let number = |key: &str| json.get(key)?.as_f64();
+        Some(Fields {
+            title: text("title"),
+            source: text("source"),
+            media: text("media"),
+            created: number("created"),
+            duration: number("duration"),
+        })
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -47,6 +112,8 @@ pub struct MeetingRecord {
     pub folder: PathBuf,
     pub title: String,
     pub source: String,
+    /// `Meta::media`.
+    pub media: String,
     pub created: DateTime<Utc>,
     pub duration: Option<f64>,
 }
@@ -60,28 +127,26 @@ impl MeetingRecord {
             return None;
         }
         let id = path.file_name()?.to_string_lossy().into_owned();
-        let meta: Option<serde_json::Value> = fs::read(path.join(files::META))
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok());
-        let field = |key: &str| meta.as_ref().and_then(|meta| meta.get(key));
-        let created = field("created")
-            .and_then(serde_json::Value::as_f64)
+        let fields = Fields::read(path).unwrap_or_default();
+        let created = fields
+            .created
             .and_then(from_epoch_seconds)
             .or_else(|| date_from_folder_name(&id))
             .unwrap_or(DateTime::<Utc>::MIN_UTC);
         Some(MeetingRecord {
-            title: field("title")
-                .and_then(serde_json::Value::as_str)
-                .map_or_else(|| id.clone(), str::to_string),
-            source: field("source")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            duration: field("duration").and_then(serde_json::Value::as_f64),
+            title: fields.title.unwrap_or_else(|| id.clone()),
+            source: fields.source.unwrap_or_default(),
+            media: fields.media.unwrap_or_default(),
+            duration: fields.duration,
             created,
             folder: path.to_path_buf(),
             id,
         })
+    }
+
+    /// The video or audio to play and to transcribe: `Meta::media`; `None` when `meta.json` has none yet.
+    pub fn media(&self) -> Option<PathBuf> {
+        (!self.media.is_empty()).then(|| PathBuf::from(&self.media))
     }
 
     pub fn kind(&self) -> Kind {
@@ -473,6 +538,34 @@ mod tests {
         );
         let m = record(&f, "2026-04-05 06-07-08");
         assert_eq!(m.transcript(), Some(("[00:00] Final".to_string(), false)));
+    }
+
+    #[test]
+    fn media_is_the_original_path_when_there_is_one() {
+        let f = Fixture::new();
+        // The fixture's screen recording has no `media` in its meta.
+        assert_eq!(record(&f, "2026-10-19 22-20-58").media(), None);
+        let meta = Meta {
+            title: "Cuộc gọi".into(),
+            source: "/Users/Lan/Phim ảnh/cuộc gọi.mp4".into(),
+            media: "/Users/Lan/Phim ảnh/cuộc gọi.mp4".into(),
+            created: 1_792_423_258.0,
+            duration: None,
+        };
+        f.write_meta("2026-11-09 10-15-31", &meta);
+        assert_eq!(
+            record(&f, "2026-11-09 10-15-31").media(),
+            Some(PathBuf::from("/Users/Lan/Phim ảnh/cuộc gọi.mp4"))
+        );
+        // An empty `media` is none, too.
+        f.write_meta(
+            "2026-11-09 10-15-32",
+            &Meta {
+                media: String::new(),
+                ..meta
+            },
+        );
+        assert_eq!(record(&f, "2026-11-09 10-15-32").media(), None);
     }
 
     #[test]
