@@ -385,36 +385,58 @@ mod tests {
             .chain(PANEL_COMMANDS)
             .map(str::to_owned)
             .collect();
-        let manifest = quoted_after(include_str!("../build.rs"), "COMMANDS: &[&str] = &[", ']');
-        assert_eq!(manifest, wanted, "build.rs");
+        for build in as_checked_out(include_str!("../build.rs")) {
+            let manifest = quoted_after(&build, "COMMANDS: &[&str] = &[", ']');
+            assert_eq!(manifest, wanted, "build.rs");
+        }
 
         // What the app registers: `commands::name,` and `panel::name,` in `generate_handler!`.
-        let source = include_str!("main.rs");
-        let from = source.find("generate_handler![").unwrap();
-        let handler = &source[from..from + source[from..].find(']').unwrap()];
-        let registered: BTreeSet<String> = handler
-            .lines()
-            .filter_map(|line| line.trim().strip_suffix(','))
-            .filter_map(|path| path.rsplit("::").next())
-            .map(str::to_owned)
-            .collect();
-        assert_eq!(registered, wanted, "generate_handler!");
+        for source in as_checked_out(include_str!("main.rs")) {
+            let from = source.find("generate_handler![").unwrap();
+            let handler = &source[from..from + source[from..].find(']').unwrap()];
+            let registered: BTreeSet<String> = handler
+                .lines()
+                .filter_map(|line| line.trim().strip_suffix(','))
+                .filter_map(|path| path.rsplit("::").next())
+                .map(str::to_owned)
+                .collect();
+            assert_eq!(registered, wanted, "generate_handler!");
+        }
+    }
+
+    /// A file as the checkout of each system gives it: Git turns the line ends into CRLF on Windows.
+    fn as_checked_out(text: &str) -> [String; 2] {
+        let lf = text.replace("\r\n", "\n");
+        [lf.replace('\n', "\r\n"), lf]
+    }
+
+    /// A plist without its line ends and indentation, so that what stands between two tags is the same on every system.
+    fn plist_in_one_line(plist: &str) -> String {
+        plist.lines().map(str::trim).collect()
     }
 
     #[test]
     fn the_macos_bundle_names_the_microphone_in_its_info_and_in_its_entitlements() {
         // Without the reason in Info.plist macOS ends an app that records; with the hardened runtime (a signed and
         // notarised build) the microphone also needs the entitlement. Tauri merges the first file by itself and
-        // signs with the second one when the configuration names it.
-        let info = include_str!("../Info.plist");
-        assert!(info.contains("<key>NSMicrophoneUsageDescription</key>"));
-        assert!(info.contains("<string>Dictate records your voice to turn it into text.</string>"));
+        // signs with the second one when the configuration names it. Both files are read as every system checks
+        // them out: Windows has CRLF.
+        for info in as_checked_out(include_str!("../Info.plist")) {
+            assert!(
+                plist_in_one_line(&info).contains(
+                    "<key>NSMicrophoneUsageDescription</key><string>Dictate records your voice to turn it into text.</string>"
+                ),
+                "{info:?}"
+            );
+        }
 
-        let entitlements = include_str!("../Entitlements.plist");
-        assert!(
-            entitlements.contains("<key>com.apple.security.device.audio-input</key>\n  <true/>"),
-            "{entitlements}"
-        );
+        for entitlements in as_checked_out(include_str!("../Entitlements.plist")) {
+            assert!(
+                plist_in_one_line(&entitlements)
+                    .contains("<key>com.apple.security.device.audio-input</key><true/>"),
+                "{entitlements:?}"
+            );
+        }
 
         let config: Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
         assert_eq!(
