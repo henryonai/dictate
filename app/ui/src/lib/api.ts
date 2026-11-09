@@ -69,6 +69,19 @@ export interface HotkeyStatus {
   error: string | null;
 }
 
+/**
+ * What the system says about a permission the app needs. Windows and Linux ask for none of them: `not_needed` there,
+ * which is how the Settings window knows to show no Permissions section.
+ */
+export type PermissionState = "granted" | "denied" | "not_determined" | "not_needed";
+/** The permissions of macOS that dictation uses. */
+export type PermissionKind = "microphone" | "accessibility";
+
+export interface PermissionsView {
+  microphone: PermissionState;
+  accessibility: PermissionState;
+}
+
 export interface ModelView {
   id: string;
   size_mb: number;
@@ -135,6 +148,12 @@ export const api = {
   editPresets: () => invoke<EditPresetView[]>("edit_presets"),
   transcribePresets: () => invoke<TranscribePresetView[]>("transcribe_presets"),
   openMeetingsFolder: () => invoke<void>("open_meetings_folder"),
+  /** The microphone and Accessibility permissions as the system has them now (macOS; elsewhere both are `not_needed`). */
+  permissionsStatus: () => invoke<PermissionsView>("permissions_status"),
+  /** Shows the system's prompt for a permission. It doesn't wait for the answer: the status shows it. */
+  requestPermission: (kind: PermissionKind) => invoke<void>("request_permission", { kind }),
+  /** Opens the pane of System Settings → Privacy & Security where the person can turn the permission on. */
+  openPermissionSettings: (kind: PermissionKind) => invoke<void>("open_permission_settings", { kind }),
   /** In the system browser. The capability only allows https. */
   openUrl: (url: string) => openUrl(url),
 

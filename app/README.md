@@ -64,13 +64,27 @@ Dictation has two small floating windows, made at startup and hidden: the bubble
 
 Settings are kept in `Dictate/settings.json` in the system's config folder, the Whisper models in `Dictate/whisper-models` in its local data folder (on macOS both are in `~/Library/Application Support`; on Windows the settings are in `%APPDATA%` and the models in `%LOCALAPPDATA%`, so that they don't roam with the profile), and API keys in the system's key store (Keychain, Credential Manager, Secret Service).
 
+## Dictation on each system
+
+What the system lets dictation do differs, and what to do about it:
+
+**macOS.** Dictation needs two permissions. The *Microphone* is asked for by the system the first time you dictate. *Accessibility* is what lets Dictate find the text field you are in and paste the text there; without it the text still comes out, in the card, where you can edit and copy it. Settings → General → Permissions shows both, with **Grant access…** (the system's own prompt) and **Open System Settings** (the Privacy & Security pane), and refreshes by itself while you turn them on. Settings also opens by itself when the app starts while the microphone has not been asked about yet or Accessibility is off, and not any more once both are on.
+
+- The app is not signed (ad-hoc at most), so macOS takes every rebuilt or updated copy for a different app: Accessibility may need granting again after an update. Open System Settings → Privacy & Security → Accessibility, remove Dictate from the list with the minus button, and add it again.
+- With `pnpm tauri dev`, or `target/debug/dictate` started from a terminal, the permissions go to the terminal app (Terminal, iTerm, the editor's terminal) and not to Dictate: that is the app to turn on in the Accessibility and Microphone lists. The bundle `Dictate.app` has the permissions of its own.
+- `src-tauri/Info.plist` holds the reason the system shows with the microphone prompt, and `src-tauri/Entitlements.plist` the right to use the microphone that a signed build (with the hardened runtime, which notarisation needs) must declare; `tauri.conf.json` points the bundler to both.
+
+**Windows.** Dictation pastes with Ctrl+V into the app that had the focus. An app that runs as administrator has more rights than Dictate, and Windows blocks input from a normal app into it: the text is copied and the card says so, then press Ctrl+V yourself. If the microphone only records silence, check Settings → Privacy & security → Microphone and let desktop apps use it.
+
+**Linux.** On X11 everything works. On Wayland no app may press keys in another one, so the paste needs a helper: install `wtype` (wlroots desktops such as Sway, and Hyprland) or `ydotool` (with its `ydotoold` daemon running); without either, the text is copied and the card says to press Ctrl+V. The shortcut comes from the desktop's GlobalShortcuts portal (KDE Plasma, GNOME 48 and later, Hyprland). When the desktop has none (Sway and other wlroots desktops), bind a key in the desktop's own settings to `dictate --toggle`, which does what the shortcut does.
+
 ## Build it
 
 ```sh
 pnpm tauri build
 ```
 
-This builds the interface and the app in release mode and bundles it for the system you are on: the folder `target/release/bundle/` at the root of the repository gets the `.app` and `.dmg` on macOS, the `.msi` and `.exe` installers on Windows and the `.deb`, `.rpm` and AppImage on Linux. The bundles are not signed. Only the macOS `.app` has been built and run so far; the installers are untested, and CI builds the app but not its bundles.
+This builds the interface and the app in release mode and bundles it for the system you are on: the folder `target/release/bundle/` at the root of the repository gets the `.app` and `.dmg` on macOS, the `.msi` and `.exe` installers on Windows and the `.deb`, `.rpm` and AppImage on Linux. The bundles are not signed. Only the macOS `.app` has been built and run so far; the installers are untested. CI builds the app, and on macOS also its debug `.app`, signed ad hoc to check that Info.plist and Entitlements.plist end up in it, but not the installers.
 
 For a quicker build of just the macOS app, without installers:
 
@@ -78,7 +92,7 @@ For a quicker build of just the macOS app, without installers:
 pnpm tauri build --debug --bundles app
 ```
 
-That makes `target/debug/bundle/macos/Dictate.app`.
+That makes `target/debug/bundle/macos/Dictate.app`. The bundler signs only when it is told with whom: `APPLE_SIGNING_IDENTITY=- pnpm tauri build --debug --bundles app` signs it ad hoc (this is what CI does), with the right to use the microphone of `src-tauri/Entitlements.plist`; check it with `codesign -d --entitlements - target/debug/bundle/macos/Dictate.app`.
 
 ## Check it
 

@@ -240,7 +240,7 @@ pub struct FakePlatform {
 }
 
 impl FakePlatform {
-    fn new(os: Os, log: Arc<CallLog>) -> Arc<FakePlatform> {
+    pub(crate) fn new(os: Os, log: Arc<CallLog>) -> Arc<FakePlatform> {
         Arc::new(FakePlatform {
             front: Mutex::new(Some(text_edit())),
             lookups: Script::new(a_field()),

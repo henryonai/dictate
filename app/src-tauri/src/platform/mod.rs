@@ -89,7 +89,8 @@ pub struct FieldSnapshot {
 
 // Each system builds the answers it can give: only Windows and Linux say `NotNeeded`, only macOS the others.
 #[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Permission {
     Granted,
     Denied,
@@ -124,6 +125,10 @@ pub trait Platform: Send + Sync {
     /// Asks for the microphone, which shows the system's prompt the first time, and calls `done` with the answer.
     fn request_microphone(&self, done: Box<dyn FnOnce(bool) + Send>);
 }
+
+/// The platform layer of the running app, made once at the start and kept in the app's state: the controller and the
+/// commands of the Settings window ask the same one.
+pub struct SystemPlatform(pub Arc<dyn Platform>);
 
 /// The platform layer of this system. `app` is the way to its main thread, where macOS answers some questions.
 pub fn current(app: &tauri::AppHandle) -> Arc<dyn Platform> {

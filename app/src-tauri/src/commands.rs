@@ -34,6 +34,7 @@ use tokio_util::sync::CancellationToken;
 use crate::config::{ai_config, local_model, transcribe_config};
 use crate::dictation::save::SavePaths;
 use crate::hotkey::{ChangeError, HotkeyStatus, Hotkeys, INVALID, TAKEN};
+use crate::platform::{Permission, Platform, SystemPlatform};
 use crate::state::{lock, AppState, Job, KeyFlags};
 use crate::tray;
 
@@ -116,6 +117,56 @@ pub struct TranscribePresetView {
 }
 
 // ---- the plain functions behind the commands
+
+/// What the system says about the two permissions dictation needs. Only macOS has them: elsewhere both are
+/// `NotNeeded`, which is how the Settings window knows to show no Permissions section.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct PermissionsView {
+    pub microphone: Permission,
+    pub accessibility: Permission,
+}
+
+impl PermissionsView {
+    /// Whether the person has something to do about the permissions, which is when Settings opens by itself at the
+    /// start: a microphone nobody asked about yet, or Accessibility missing. A microphone that was refused is the
+    /// person's answer, and Settings doesn't open at every start for it.
+    pub fn needs_a_guide(&self) -> bool {
+        self.microphone == Permission::NotDetermined || self.accessibility == Permission::Denied
+    }
+}
+
+/// Asks the system for both permissions.
+pub fn permissions_view(platform: &dyn Platform) -> PermissionsView {
+    PermissionsView {
+        microphone: platform.microphone(),
+        accessibility: platform.accessibility(),
+    }
+}
+
+/// Shows the system's prompt for the permission `kind` names ("microphone" or "accessibility"), and doesn't wait
+/// for the answer: the window asks for the status every second.
+fn request_permission_now(platform: &dyn Platform, kind: &str) -> Result<(), String> {
+    match kind {
+        "microphone" => platform.request_microphone(Box::new(|_| {})),
+        "accessibility" => platform.request_accessibility(),
+        other => return Err(format!("{other:?} is not a permission of this app")),
+    }
+    Ok(())
+}
+
+/// The link to the pane of System Settings where the permission `kind` names is turned on. A fixed list: the window
+/// can't have this command open any other link.
+fn permission_settings_url(kind: &str) -> Result<&'static str, String> {
+    match kind {
+        "microphone" => {
+            Ok("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
+        }
+        "accessibility" => {
+            Ok("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+        }
+        other => Err(format!("{other:?} is not a permission of this app")),
+    }
+}
 
 /// The settings plus which keys exist. The flags are what the key store said at the start and what saving or
 /// removing a key has done since: asking the key store itself on every view could make the OS show a prompt each
@@ -683,10 +734,41 @@ pub async fn open_meetings_folder(app: AppHandle) -> Result<(), String> {
     blocking(move || open_meetings_folder_now(&app)).await?
 }
 
+#[tauri::command]
+pub async fn permissions_status(
+    platform: State<'_, SystemPlatform>,
+) -> Result<PermissionsView, String> {
+    let platform = platform.0.clone();
+    blocking(move || permissions_view(&*platform)).await
+}
+
+/// The prompt for a permission, which the system shows once: the person's answer comes with the next status.
+#[tauri::command]
+pub async fn request_permission(
+    kind: String,
+    platform: State<'_, SystemPlatform>,
+) -> Result<(), String> {
+    let platform = platform.0.clone();
+    blocking(move || request_permission_now(&*platform, &kind)).await?
+}
+
+#[tauri::command]
+pub async fn open_permission_settings(kind: String, app: AppHandle) -> Result<(), String> {
+    let url = permission_settings_url(&kind)?;
+    blocking(move || {
+        app.opener()
+            .open_url(url, None::<String>)
+            .map_err(|e| format!("Could not open System Settings: {e}"))
+    })
+    .await?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dictation::controller::fakes::{CallLog, FakePlatform};
     use crate::hotkey::{Backend, Gate, Registry};
+    use crate::platform::rules::Os;
     use crate::state::{Job, KeyFlags};
     use crate::test_support::{CountingStore, FakeRegistry, NoKeyring};
     use dictate_services::presets::EDIT_PRESETS;
@@ -696,6 +778,7 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::path::PathBuf;
+    use std::sync::atomic::Ordering;
     use std::sync::{Arc, Mutex};
     use std::thread;
     use std::time::Duration;
@@ -1654,5 +1737,106 @@ mod tests {
         std::fs::write(&file, b"x").unwrap();
         let err = ensure_directory(&file.join("Dictate Meetings")).unwrap_err();
         assert!(err.contains("Dictate Meetings"), "{err}");
+    }
+
+    // ---- permissions
+
+    fn mac_with(microphone: Permission, accessibility: Permission) -> Arc<FakePlatform> {
+        let platform = FakePlatform::new(Os::Mac, Arc::new(CallLog::default()));
+        *lock(&platform.microphone) = microphone;
+        *lock(&platform.accessibility) = accessibility;
+        platform
+    }
+
+    #[test]
+    fn permissions_view_serialises() {
+        let view = PermissionsView {
+            microphone: Permission::NotDetermined,
+            accessibility: Permission::Granted,
+        };
+        assert_eq!(
+            serde_json::to_value(view).unwrap(),
+            serde_json::json!({ "microphone": "not_determined", "accessibility": "granted" })
+        );
+        // Each state has the word that the window has a text for.
+        for (state, word) in [
+            (Permission::Granted, "granted"),
+            (Permission::Denied, "denied"),
+            (Permission::NotDetermined, "not_determined"),
+            (Permission::NotNeeded, "not_needed"),
+        ] {
+            assert_eq!(serde_json::to_value(state).unwrap(), word);
+        }
+    }
+
+    #[test]
+    fn permissions_view_reports_what_the_system_says() {
+        let platform = mac_with(Permission::NotDetermined, Permission::Denied);
+        assert_eq!(
+            permissions_view(&*platform),
+            PermissionsView {
+                microphone: Permission::NotDetermined,
+                accessibility: Permission::Denied,
+            }
+        );
+        // The questions change nothing: no prompt is shown by asking.
+        assert_eq!(platform.mic_requests.load(Ordering::SeqCst), 0);
+        assert_eq!(platform.accessibility_requests.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn the_guide_is_for_a_microphone_not_asked_about_or_a_missing_accessibility_and_for_nothing_else(
+    ) {
+        use Permission::{Denied, Granted, NotDetermined, NotNeeded};
+        let guide = |microphone, accessibility| {
+            PermissionsView {
+                microphone,
+                accessibility,
+            }
+            .needs_a_guide()
+        };
+        assert!(guide(NotDetermined, Granted));
+        assert!(guide(NotDetermined, Denied));
+        assert!(guide(Granted, Denied));
+        assert!(guide(Denied, Denied));
+        // Everything is granted: the app starts in the tray, as every time after the first.
+        assert!(!guide(Granted, Granted));
+        // A microphone that was refused is the person's answer: Settings doesn't open at every start for it.
+        assert!(!guide(Denied, Granted));
+        // Windows and Linux have nothing to grant.
+        assert!(!guide(NotNeeded, NotNeeded));
+    }
+
+    #[test]
+    fn request_permission_asks_the_system_for_the_one_that_was_named() {
+        let platform = mac_with(Permission::NotDetermined, Permission::Denied);
+
+        request_permission_now(&*platform, "microphone").unwrap();
+        assert_eq!(platform.mic_requests.load(Ordering::SeqCst), 1);
+        assert_eq!(platform.accessibility_requests.load(Ordering::SeqCst), 0);
+
+        request_permission_now(&*platform, "accessibility").unwrap();
+        assert_eq!(platform.mic_requests.load(Ordering::SeqCst), 1);
+        assert_eq!(platform.accessibility_requests.load(Ordering::SeqCst), 1);
+
+        // A name the window doesn't use is refused, and the system is not asked.
+        let error = request_permission_now(&*platform, "camera").unwrap_err();
+        assert!(error.contains("camera"), "{error}");
+        assert_eq!(platform.mic_requests.load(Ordering::SeqCst), 1);
+        assert_eq!(platform.accessibility_requests.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn the_permission_links_open_the_privacy_pane_of_each() {
+        assert_eq!(
+            permission_settings_url("microphone"),
+            Ok("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
+        );
+        assert_eq!(
+            permission_settings_url("accessibility"),
+            Ok("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+        );
+        // The window can't make this command open any other link.
+        assert!(permission_settings_url("https://example.com").is_err());
     }
 }

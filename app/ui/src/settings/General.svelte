@@ -6,6 +6,7 @@
   import ChoiceOrText from "./ChoiceOrText.svelte";
   import Field from "./Field.svelte";
   import HotkeyRecorder from "./HotkeyRecorder.svelte";
+  import Permissions from "./Permissions.svelte";
   import Toggle from "./Toggle.svelte";
 
   // `store` has loaded its view before this page is shown.
@@ -105,6 +106,9 @@
     onchange={(checked) => store.update({ save_recordings: checked })}
   />
 </section>
+
+<!-- macOS only: it shows nothing where the system asks for no permission. -->
+<Permissions />
 
 <section class="group" aria-labelledby="general-meetings">
   <h2 id="general-meetings">{t("general.meetings")}</h2>

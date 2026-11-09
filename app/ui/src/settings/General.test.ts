@@ -226,3 +226,16 @@ test("a pause that can't be asked for doesn't break the recorder", async () => {
 
   await vi.waitFor(() => expect(api.setHotkey).toHaveBeenCalledWith("F6"));
 });
+
+test("the Permissions section sits on the General page on a Mac and is not there on other systems", async () => {
+  vi.mocked(api.permissionsStatus).mockResolvedValue({ microphone: "not_determined", accessibility: "denied" });
+  const { unmount } = render(General, { store: await loadedStore() });
+  expect(await screen.findByRole("heading", { name: "Permissions" })).toBeInTheDocument();
+  unmount();
+
+  vi.mocked(api.permissionsStatus).mockResolvedValue({ microphone: "not_needed", accessibility: "not_needed" });
+  render(General, { store: await loadedStore() });
+  await screen.findByRole("heading", { name: "Dictation" });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(screen.queryByRole("heading", { name: "Permissions" })).not.toBeInTheDocument();
+});

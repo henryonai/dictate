@@ -197,7 +197,7 @@ pub fn build(app: &AppHandle, state: &AppState) -> Result<Arc<Controller>, Strin
     let hotkeys = app.state::<Hotkeys>().inner().clone();
     let settings = state.settings.clone();
     Ok(Controller::new(Deps {
-        platform: platform::current(app),
+        platform: app.state::<platform::SystemPlatform>().0.clone(),
         clipboard: platform::current_clipboard(),
         keys: platform::current_keys(app),
         paster: Arc::new(Paster::new(Arc::new(SystemClock))),

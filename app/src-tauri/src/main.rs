@@ -106,6 +106,9 @@ fn main() {
             commands::edit_presets,
             commands::transcribe_presets,
             commands::open_meetings_folder,
+            commands::permissions_status,
+            commands::request_permission,
+            commands::open_permission_settings,
             panel::dictation_languages,
             panel::dictation_stop,
             panel::dictation_cancel,
@@ -181,6 +184,11 @@ fn setup(
     let state = AppState::new(store, warning, Arc::new(KeyringStore::new()), models);
     let startup = state.clone();
     app.manage(state);
+    // One platform layer for the whole app. What the system says about the permissions is read now, to know whether
+    // the person needs the guide in Settings (macOS only: the other systems have no permission to grant).
+    let platform = platform::SystemPlatform(platform::current(app.handle()));
+    let permissions = commands::permissions_view(&*platform.0);
+    app.manage(platform);
     // The panels may ask for the controller before it is built: it waits for the key store (a locked Keychain waits for
     // the person), and the handle is there from the start.
     let dictation = DictationHandle::default();
@@ -207,6 +215,11 @@ fn setup(
     if first_launch {
         log::info!("First launch: showing Settings");
         tray::show_settings(app.handle());
+    } else if permissions.needs_a_guide() {
+        // The General page has the Permissions section: where to turn on what dictation needs. Once the microphone has
+        // been answered and Accessibility is on, the app starts in the tray again.
+        log::info!("A permission is missing: showing Settings");
+        tray::show_settings(app.handle());
     }
     Ok(())
 }
@@ -222,7 +235,7 @@ mod tests {
     use tauri::{App, WebviewUrl, WebviewWindowBuilder};
 
     /// The commands of the Settings window.
-    const SETTINGS_COMMANDS: [&str; 20] = [
+    const SETTINGS_COMMANDS: [&str; 23] = [
         "get_settings",
         "save_settings",
         "set_ai_provider",
@@ -243,6 +256,9 @@ mod tests {
         "edit_presets",
         "transcribe_presets",
         "open_meetings_folder",
+        "permissions_status",
+        "request_permission",
+        "open_permission_settings",
     ];
 
     /// The commands of the two floating windows.
@@ -383,6 +399,28 @@ mod tests {
             .map(str::to_owned)
             .collect();
         assert_eq!(registered, wanted, "generate_handler!");
+    }
+
+    #[test]
+    fn the_macos_bundle_names_the_microphone_in_its_info_and_in_its_entitlements() {
+        // Without the reason in Info.plist macOS ends an app that records; with the hardened runtime (a signed and
+        // notarised build) the microphone also needs the entitlement. Tauri merges the first file by itself and
+        // signs with the second one when the configuration names it.
+        let info = include_str!("../Info.plist");
+        assert!(info.contains("<key>NSMicrophoneUsageDescription</key>"));
+        assert!(info.contains("<string>Dictate records your voice to turn it into text.</string>"));
+
+        let entitlements = include_str!("../Entitlements.plist");
+        assert!(
+            entitlements.contains("<key>com.apple.security.device.audio-input</key>\n  <true/>"),
+            "{entitlements}"
+        );
+
+        let config: Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        assert_eq!(
+            config["bundle"]["macOS"]["entitlements"],
+            json!("Entitlements.plist")
+        );
     }
 
     /// What the settings window may ask of the opener plugin, from the capability file.

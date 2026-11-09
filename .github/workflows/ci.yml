@@ -87,6 +87,20 @@ jobs:
       - run: pnpm --dir app/ui test
       - run: pnpm --dir app/ui build
       - run: cargo build -p dictate-app --locked
+      # The macOS bundle is where Info.plist and Entitlements.plist take effect. A debug bundle is the quick one to
+      # build, and the identity "-" signs it ad hoc, which is what applies the entitlements: check that the reason for
+      # the microphone and the right to use it ended up in it.
+      - name: Bundle the macOS app and check what it declares
+        if: runner.os == 'macOS'
+        working-directory: app
+        env:
+          APPLE_SIGNING_IDENTITY: "-"
+        run: |
+          pnpm tauri build --debug --bundles app
+          bundle=../target/debug/bundle/macos/Dictate.app
+          plutil -extract NSMicrophoneUsageDescription raw "$bundle/Contents/Info.plist"
+          codesign --verify --strict "$bundle"
+          codesign -d --entitlements - "$bundle" 2>&1 | grep com.apple.security.device.audio-input
 
   # The oldest Rust the workspace promises to build with (`rust-version` in Cargo.toml). `+1.85` is spelled out
   # because `rust-toolchain.toml` would otherwise pick the stable one.

@@ -24,6 +24,9 @@ const COMMANDS: &[&str] = &[
     "edit_presets",
     "transcribe_presets",
     "open_meetings_folder",
+    "permissions_status",
+    "request_permission",
+    "open_permission_settings",
     // The bubble, the chip and the card.
     "dictation_languages",
     "dictation_stop",

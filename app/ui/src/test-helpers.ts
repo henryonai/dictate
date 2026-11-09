@@ -89,6 +89,10 @@ export function stubApi() {
     { id: "custom", models: [], key_url: null },
   ]);
   vi.spyOn(api, "openMeetingsFolder").mockResolvedValue();
+  // Not a Mac: no permissions, so no section.
+  vi.spyOn(api, "permissionsStatus").mockResolvedValue({ microphone: "not_needed", accessibility: "not_needed" });
+  vi.spyOn(api, "requestPermission").mockResolvedValue();
+  vi.spyOn(api, "openPermissionSettings").mockResolvedValue();
   vi.spyOn(api, "openUrl").mockResolvedValue();
   vi.spyOn(api, "onModelDownload").mockImplementation(async (handler) => {
     listener = handler;
