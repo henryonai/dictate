@@ -37,7 +37,8 @@ sha2 = "=0.10.9"
 symphonia = { version = "=0.6.1", default-features = false, features = ["opt-simd", "aac", "isomp4", "mp3", "mkv", "ogg", "wav", "aiff", "flac", "pcm", "vorbis", "alac", "caf"] }
 # Only the memory figures: the default features pull in disks, networks, users and components too.
 sysinfo = { version = "0.36.1", default-features = false, features = ["system"] }
-tokio = { version = "1.54.1", features = ["fs", "io-util", "macros", "process", "rt", "time"] }
+# "sync" is for the meeting pipeline's lock on local transcription (a fair, first come first served mutex).
+tokio = { version = "1.54.1", features = ["fs", "io-util", "macros", "process", "rt", "sync", "time"] }
 tokio-util = { version = "0.7.20", default-features = false }
 # Finding ffmpeg and yt-dlp in a search path built by hand (a GUI app's own PATH is too short).
 which = "=8.0.6"

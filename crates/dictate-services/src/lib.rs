@@ -6,6 +6,7 @@ pub mod diarize;
 pub mod dictation;
 pub mod http;
 pub mod media;
+pub mod meetings;
 pub mod presets;
 pub mod secrets;
 pub mod settings;
