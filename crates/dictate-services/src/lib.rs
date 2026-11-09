@@ -4,6 +4,7 @@ pub mod ai;
 pub mod audio;
 pub mod dictation;
 pub mod http;
+pub mod media;
 pub mod presets;
 pub mod secrets;
 pub mod settings;

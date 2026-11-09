@@ -16,6 +16,9 @@ dictate-core = { path = "../dictate-core" }
 dirs = "7.0.0"
 hound = "3.5.1"
 keyring = "3.6.3"
+# Kills a whole process tree on cancel (yt-dlp starts ffmpeg): a process group on Unix, a job object on Windows.
+# 9.x and 10.x need Rust 1.87: stay on 8.2 until the minimum Rust version moves up.
+process-wrap = { version = "=8.2.2", default-features = false, features = ["tokio1", "job-object", "process-group", "creation-flags", "kill-on-drop"] }
 reqwest = { version = "0.12.28", default-features = false, features = ["json", "multipart", "rustls-tls", "stream"] }
 # Resampling the microphone to 16 kHz. 5.x needs Rust 1.87: stay on 4.0 until the minimum Rust version moves up.
 rubato = "4.0.0"
@@ -23,8 +26,10 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 # Only the memory figures: the default features pull in disks, networks, users and components too.
 sysinfo = { version = "0.36.1", default-features = false, features = ["system"] }
-tokio = { version = "1.54.1", features = ["fs", "io-util", "macros", "time"] }
+tokio = { version = "1.54.1", features = ["fs", "io-util", "macros", "process", "rt", "time"] }
 tokio-util = { version = "0.7.20", default-features = false }
+# Finding ffmpeg and yt-dlp in a search path built by hand (a GUI app's own PATH is too short).
+which = "=8.0.6"
 # whisper-rs 0.16 needs Rust 1.88: stay on 0.15 until the minimum Rust version moves up.
 # log_backend sends whisper.cpp's logging to the `log` crate instead of stderr.
 whisper-rs = { version = "0.15.1", features = ["log_backend"] }
@@ -38,6 +43,9 @@ whisper-rs = { version = "0.15.1", features = ["metal"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3.6.3", features = ["windows-native"] }
+# CREATE_NO_WINDOW for the child processes, in the form process-wrap takes it. The version is the one the app and
+# process-wrap already build, so that no second copy of it is built.
+windows = { version = "0.61.3", features = ["Win32_System_Threading"] }
 
 [target.'cfg(not(any(target_os = "macos", target_os = "windows")))'.dependencies]
 keyring = { version = "3.6.3", features = ["async-secret-service", "async-io", "crypto-rust"] }
