@@ -32,10 +32,16 @@ sys-locale = "0.3"
 # macos-private-api: a transparent window on macOS (the floating panels), which the macOSPrivateApi setting of tauri.conf.json asks for too.
 tauri = { version = "2", features = ["tray-icon", "macos-private-api"] }
 tauri-plugin-autostart = "2"
+# The dialogs of the meetings window, opened from Rust: choosing files to import and saving an export. Pinned by the plan.
+tauri-plugin-dialog = "=2.7.3"
 # The global shortcut, with the press and the release of the key. Pinned: 2.4 and later need Rust 1.90.
 tauri-plugin-global-shortcut = "=2.3.2"
+# The banner that says a recording is done. Pinned by the plan.
+tauri-plugin-notification = "=2.4.0"
 tauri-plugin-single-instance = "2"
 tauri-plugin-opener = "2"
+# Deleting a recording moves its folder to the Trash or the Recycle Bin. Pinned by the plan.
+trash = "=5.2.9"
 # The loopback server that plays a recording's media to the meetings window (src/meetings/media_server.rs).
 tiny_http = "=0.12.0"
 # The channel the shortcut and `dictate --toggle` send their events on, and the timer for the release of a key.

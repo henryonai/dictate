@@ -27,6 +27,9 @@ pub enum Job {
     /// A dictation with this number, from the shortcut to the text in the field. Each has its own, so that a new one
     /// can begin while the one before it is told to stop.
     Dictation(u64),
+    /// The processing of the recording with this id (its folder name): download, audio, transcript and summary. One at
+    /// a time for each recording, and any number of recordings at once.
+    Meeting(String),
 }
 
 /// The job is running already.

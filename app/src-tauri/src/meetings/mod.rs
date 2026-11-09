@@ -5,7 +5,12 @@
 #![allow(dead_code)]
 
 pub mod backend;
+pub mod commands;
+pub mod jobs;
+pub mod library;
 pub mod media_server;
+pub mod notify;
 #[cfg(test)]
 mod test_fixture;
 pub mod views;
+pub mod window;

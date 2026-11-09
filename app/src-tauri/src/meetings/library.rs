@@ -1,0 +1,1353 @@
+//! The recordings as the meetings window works on them: listing, importing, starting jobs again, editing, exporting and
+//! deleting. The commands are thin wrappers over this; what they can't do without a window (the dialogs, the opener) is
+//! theirs, and what a test can reach is here.
+//!
+//! Everything here may block (it reads and writes the library's folders): call it on a blocking thread.
+
+use std::collections::HashMap;
+use std::ffi::OsStr;
+use std::fs;
+use std::io;
+use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
+
+use chrono::Local;
+use dictate_core::meetings::library::{files, Kind, MeetingLibrary, MeetingRecord, Meta};
+use dictate_core::meetings::{atomic_write, export_file_name, export_markdown, SummaryDoc};
+use dictate_services::media::ytdlp::link_is_valid;
+use dictate_services::meetings::{sweep_stale_files, JobSpec, MeetingError, StartAt};
+use dictate_services::summary;
+
+use super::backend::ai_ready;
+use super::jobs::{Events, Registry};
+use super::media_server::MediaServer;
+use super::views::{self, ErrorView, MeetingDetail, MeetingRow};
+use crate::commands::api_error_text;
+use crate::config::summary_ai_config;
+use crate::state::AppState;
+
+/// How long deleting a recording waits for its job to stop.
+const STOP_LIMIT: Duration = Duration::from_secs(30);
+
+const NOT_FOUND: &str = "The recording was not found.";
+
+/// Where a deleted recording goes: the Trash (the Recycle Bin), so that it can be got back.
+pub trait Trash: Send + Sync {
+    fn delete(&self, folder: &Path) -> Result<(), String>;
+}
+
+/// The Trash of the system.
+pub struct SystemTrash;
+
+impl Trash for SystemTrash {
+    fn delete(&self, folder: &Path) -> Result<(), String> {
+        trash::delete(folder).map_err(|e| e.to_string())
+    }
+}
+
+#[derive(Clone)]
+pub struct Meetings {
+    pub library: MeetingLibrary,
+    pub registry: Registry,
+    media: Option<Arc<MediaServer>>,
+    events: Arc<dyn Events>,
+    trash: Arc<dyn Trash>,
+}
+
+impl Meetings {
+    pub fn new(
+        library: MeetingLibrary,
+        registry: Registry,
+        media: Option<Arc<MediaServer>>,
+        events: Arc<dyn Events>,
+        trash: Arc<dyn Trash>,
+    ) -> Meetings {
+        Meetings {
+            library,
+            registry,
+            media,
+            events,
+            trash,
+        }
+    }
+
+    /// The folder of the recording `id`, when `id` is the name of one folder of the library and nothing else: an id comes
+    /// from the window, and a path in it (`..`, a separator) must never reach a folder outside the library.
+    pub fn folder_of(&self, id: &str) -> Option<PathBuf> {
+        let mut parts = Path::new(id).components();
+        match (parts.next(), parts.next()) {
+            (Some(Component::Normal(name)), None) if name == OsStr::new(id) => {
+                Some(self.library.directory.join(id))
+            }
+            _ => None,
+        }
+    }
+
+    fn record(&self, id: &str) -> Result<MeetingRecord, String> {
+        self.folder_of(id)
+            .and_then(|folder| MeetingRecord::from_folder(&folder))
+            .ok_or_else(|| NOT_FOUND.to_owned())
+    }
+
+    /// What a job of the recording is given: its folder, and the link to download when it came from one.
+    fn spec_for(record: &MeetingRecord) -> JobSpec {
+        JobSpec {
+            id: record.id.clone(),
+            folder: record.folder.clone(),
+            link: (record.kind() == Kind::Link).then(|| record.source.clone()),
+        }
+    }
+
+    /// The recordings that match `query`, with the jobs that work on them.
+    pub fn list(&self, query: &str) -> Vec<MeetingRow> {
+        views::rows(self.library.meetings(), query, &|record| {
+            views::state_of(self.registry.status(&record.id), record)
+        })
+    }
+
+    pub fn detail(&self, id: &str) -> Result<MeetingDetail, String> {
+        let record = self.record(id)?;
+        let (live, error) = views::state_of(self.registry.status(id), &record);
+        let url = |path: &Path| {
+            self.media
+                .as_ref()
+                .map_or_else(String::new, |media| media.url_for(path))
+        };
+        let mut detail = views::detail(&record, live, error, &url);
+        if self.media.is_none() {
+            detail.media = None;
+        }
+        Ok(detail)
+    }
+
+    /// Adds each file as a recording, without copying or moving it, and starts its job. The ids of the recordings made.
+    /// A folder is not media and is passed over.
+    pub fn import_files(&self, paths: &[String]) -> Vec<String> {
+        paths
+            .iter()
+            .filter_map(|path| {
+                let path = Path::new(path);
+                if path.is_dir() {
+                    return None;
+                }
+                let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+                let text = absolute.to_string_lossy().into_owned();
+                let title = absolute
+                    .file_stem()
+                    .map(|stem| stem.to_string_lossy().into_owned())
+                    .filter(|stem| !stem.is_empty())
+                    .unwrap_or_else(|| text.clone());
+                match self.create(&title, &text, &text, None, StartAt::Audio) {
+                    Ok(id) => Some(id),
+                    Err(e) => {
+                        log::warn!("Could not import {}: {e}", absolute.display());
+                        None
+                    }
+                }
+            })
+            .collect()
+    }
+
+    /// Adds a link as a recording and starts its job (the download first).
+    pub fn import_link(&self, url: &str) -> Result<String, ErrorView> {
+        let url = url.trim();
+        if !link_is_valid(url) {
+            return Err(MeetingError::invalid_link().into());
+        }
+        self.create(url, url, "", Some(url.to_owned()), StartAt::Download)
+            .map_err(|e| ErrorView::other(format!("Couldn't create the recording's folder: {e}")))
+    }
+
+    /// A new recording: its folder and `meta.json`, and its job.
+    fn create(
+        &self,
+        title: &str,
+        source: &str,
+        media: &str,
+        link: Option<String>,
+        from: StartAt,
+    ) -> io::Result<String> {
+        let now = Local::now();
+        let (id, folder) = self.library.create_folder(now)?;
+        let meta = Meta {
+            title: title.to_owned(),
+            source: source.to_owned(),
+            media: media.to_owned(),
+            created: now.timestamp_millis() as f64 / 1000.0,
+            duration: None,
+        };
+        if let Err(e) = meta.write(&folder) {
+            let _ = fs::remove_dir(&folder);
+            return Err(e);
+        }
+        let spec = JobSpec {
+            id: id.clone(),
+            folder,
+            link,
+        };
+        // A folder that was just made has no job.
+        self.registry
+            .start(spec, from)
+            .map_err(|_| io::Error::other("the new recording already has a job"))?;
+        Ok(id)
+    }
+
+    /// Starts the job of the recording from where `from` says.
+    fn restart(
+        &self,
+        id: &str,
+        from: impl FnOnce(&MeetingRecord) -> StartAt,
+    ) -> Result<(), String> {
+        let record = self.record(id)?;
+        self.registry
+            .start(Self::spec_for(&record), from(&record))
+            .map_err(|_| "This recording is already being processed.".to_owned())
+    }
+
+    /// "Transcribe + summarize again from scratch".
+    pub fn rerun(&self, id: &str) -> Result<(), String> {
+        self.restart(id, |_| StartAt::Audio)
+    }
+
+    /// "Summarize again". A recording with no transcript starts from the audio: the pipeline sees to that.
+    pub fn resummarize(&self, id: &str) -> Result<(), String> {
+        self.restart(id, |_| StartAt::Summary)
+    }
+
+    /// "Try again": from the step that failed.
+    pub fn retry(&self, id: &str) -> Result<(), String> {
+        self.restart(id, retry_start)
+    }
+
+    pub fn cancel(&self, id: &str) -> bool {
+        self.registry.cancel(id)
+    }
+
+    /// Ticks or unticks an action item of the summary.
+    pub fn set_task(&self, id: &str, index: usize, done: bool) -> Result<(), String> {
+        let record = self.record(id)?;
+        let summary = record
+            .summary()
+            .ok_or("The recording has no summary.".to_owned())?;
+        if index >= SummaryDoc::parse(&summary).action_items().len() {
+            return Err("There is no such action item.".to_owned());
+        }
+        let mut ticked = record.done_tasks();
+        if done {
+            ticked.insert(index);
+        } else {
+            ticked.remove(&index);
+        }
+        record
+            .set_done_tasks(&ticked)
+            .map_err(|e| format!("Couldn't save the ticked action items: {e}"))?;
+        self.events.changed();
+        Ok(())
+    }
+
+    /// Gives speakers new names in the transcript and the summary, and the new names are written in the log. Refused while
+    /// the recording has a job: it is writing the same files. With `resummarize` the summary is written again from the
+    /// transcript with its new names.
+    pub fn rename_speakers(
+        &self,
+        id: &str,
+        names: &HashMap<String, String>,
+        resummarize: bool,
+    ) -> Result<Vec<(String, String)>, ErrorView> {
+        let record = self.record(id).map_err(ErrorView::other)?;
+        if self.registry.is_running(id) {
+            return Err(ErrorView::other(
+                "This recording is being processed. Try again when it is done.",
+            ));
+        }
+        let applied = record
+            .rename_speakers(names)
+            .map_err(|e| ErrorView::other(format!("Couldn't save the speaker names: {e}")))?;
+        if applied.is_empty() {
+            return Ok(applied);
+        }
+        self.events.changed();
+        if resummarize {
+            if let Err(e) = self.resummarize(id) {
+                log::warn!("Could not summarize {id} again after renaming speakers: {e}");
+            }
+        }
+        Ok(applied)
+    }
+
+    /// The Markdown of an export: the summary, then the transcript.
+    pub fn markdown(&self, id: &str) -> Result<String, String> {
+        let record = self.record(id)?;
+        let transcript = record.transcript().map(|(text, _)| text);
+        Ok(export_markdown(
+            &record.title,
+            record.summary().as_deref(),
+            transcript.as_deref(),
+        ))
+    }
+
+    /// The name an export is offered under.
+    pub fn export_name(&self, id: &str) -> Result<String, String> {
+        Ok(export_file_name(&self.record(id)?.title))
+    }
+
+    /// Writes the export to `destination`, whole or not at all.
+    pub fn export_to(&self, id: &str, destination: &Path) -> Result<(), ErrorView> {
+        let markdown = self.markdown(id).map_err(ErrorView::other)?;
+        atomic_write(destination, markdown.as_bytes()).map_err(|e| {
+            let name = destination.file_name().unwrap_or(destination.as_os_str());
+            ErrorView::other(format!("Couldn't save {}: {e}", name.to_string_lossy()))
+        })
+    }
+
+    /// `log.txt` as it is; nothing yet is empty.
+    pub fn log(&self, id: &str) -> Result<String, String> {
+        let record = self.record(id)?;
+        match fs::read(record.folder.join(files::LOG)) {
+            Ok(bytes) => Ok(String::from_utf8_lossy(&bytes).into_owned()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(String::new()),
+            Err(e) => Err(format!("Couldn't read the log: {e}")),
+        }
+    }
+
+    /// The media file of the recording, when it is there.
+    pub fn media_path(&self, id: &str) -> Result<PathBuf, String> {
+        self.record(id)?
+            .media()
+            .filter(|path| path.is_file())
+            .ok_or_else(|| "The media file is not there.".to_owned())
+    }
+
+    /// The folder of the recording, for the file manager.
+    pub fn folder_path(&self, id: &str) -> Result<PathBuf, String> {
+        self.record(id).map(|record| record.folder)
+    }
+
+    /// Stops the recording's job, waits for it to end, and moves the recording's folder to the Trash.
+    pub async fn delete(&self, id: &str) -> Result<(), String> {
+        let folder = self
+            .folder_of(id)
+            .filter(|folder| folder.is_dir())
+            .ok_or_else(|| NOT_FOUND.to_owned())?;
+        // The job is waited for: it writes into the folder, and a folder that is in the Trash is no place for it.
+        self.registry.cancel(id);
+        if !self.registry.wait_idle(id, STOP_LIMIT).await {
+            return Err(
+                "The recording is still being processed. Try again in a moment.".to_owned(),
+            );
+        }
+        let trash = self.trash.clone();
+        tauri::async_runtime::spawn_blocking(move || trash.delete(&folder))
+            .await
+            .map_err(|e| format!("The work stopped unexpectedly: {e}"))?
+            .map_err(|e| format!("Couldn't move the recording to the Trash: {e}"))?;
+        self.registry.forget(id);
+        self.events.changed();
+        Ok(())
+    }
+
+    /// The answer of the AI model to a question about the recording's transcript.
+    pub async fn ask(
+        &self,
+        state: &AppState,
+        id: &str,
+        question: &str,
+    ) -> Result<String, ErrorView> {
+        let question = question.trim();
+        if question.is_empty() {
+            return Err(ErrorView::other("The question is empty."));
+        }
+        let record = self.record(id).map_err(ErrorView::other)?;
+        let Some((transcript, _)) = record.transcript() else {
+            return Err(ErrorView::other("This recording has no transcript yet."));
+        };
+        // The key store is asked on a blocking thread, and only when the flags say that a key is there.
+        let state = state.clone();
+        let config = tauri::async_runtime::spawn_blocking(move || {
+            if !ai_ready(&state.settings.get(), state.loaded_keys()) {
+                return Err("API not set up in Settings.".to_owned());
+            }
+            summary_ai_config(&state.settings, &*state.secrets)
+        })
+        .await
+        .map_err(|e| ErrorView::other(format!("The work stopped unexpectedly: {e}")))?
+        .map_err(ErrorView::other)?;
+        summary::ask(&config, &record.title, &transcript, question)
+            .await
+            .map_err(|e| ErrorView::other(api_error_text(&e)))
+    }
+}
+
+/// Where "Try again" starts: a link that has no media yet (its download failed, or was cut short) downloads again; a recording
+/// that has a transcript is only summarized again; any other starts from the audio.
+pub fn retry_start(record: &MeetingRecord) -> StartAt {
+    let media_is_there = record.media().is_some_and(|path| path.is_file());
+    if record.kind() == Kind::Link && !media_is_there {
+        StartAt::Download
+    } else if record
+        .read(files::TRANSCRIPT)
+        .is_some_and(|transcript| !transcript.is_empty())
+    {
+        StartAt::Summary
+    } else {
+        StartAt::Audio
+    }
+}
+
+/// Clears out of every recording's folder what a job that was cut short left (the temporary files of writes, the unfinished
+/// downloads, the slices of audio the API was sent). For the start of the app, before any job runs. How many files went.
+pub fn sweep_library(directory: &Path) -> usize {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return 0;
+    };
+    entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .map(|entry| sweep_stale_files(&entry.path()))
+        .sum()
+}
+
+/// What the window may ask to be shown of the settings.
+pub fn is_settings_tab(tab: &str) -> bool {
+    matches!(tab, "general" | "speech" | "ai" | "accounts")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{mpsc, Mutex};
+
+    use dictate_core::meetings::library::{files, Meta};
+    use dictate_services::meetings::fakes::{gate, FakeBackend, GateControl};
+    use dictate_services::settings::SettingsStore;
+    use dictate_services::whisper::models::ModelDir;
+    use serde_json::json;
+
+    use super::*;
+    use crate::meetings::jobs::Clock;
+    use crate::meetings::notify::{Notice, Notifier};
+    use crate::meetings::test_fixture::{Fixture, FILE, LINK, SCREEN, SUMMARY, TRANSCRIPT};
+    use crate::meetings::views::{JobView, KindView};
+    use crate::state::{lock, Job, Jobs};
+    use crate::test_support::CountingStore;
+
+    const PATIENCE: Duration = Duration::from_secs(30);
+
+    /// What the window would hear, counted and handed to the test.
+    struct Heard {
+        changed: AtomicUsize,
+        ended: Mutex<mpsc::Sender<JobView>>,
+    }
+
+    impl Events for Heard {
+        fn job(&self, view: &JobView) {
+            if view.outcome.is_some() {
+                let _ = lock(&self.ended).send(view.clone());
+            }
+        }
+        fn changed(&self) {
+            self.changed.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    impl Notifier for Heard {
+        fn notify(&self, _: Notice) {}
+    }
+
+    /// A Trash that takes a folder away as the real one does, and notes whether the recording still had a job then.
+    struct FakeTrash {
+        jobs: Arc<Jobs>,
+        moved: Mutex<Vec<(PathBuf, bool)>>,
+        fail: bool,
+    }
+
+    impl Trash for FakeTrash {
+        fn delete(&self, folder: &Path) -> Result<(), String> {
+            let id = folder.file_name().unwrap().to_string_lossy().into_owned();
+            let running = self.jobs.is_active(&Job::Meeting(id));
+            lock(&self.moved).push((folder.to_path_buf(), running));
+            if self.fail {
+                return Err("The Trash is full.".into());
+            }
+            fs::remove_dir_all(folder).map_err(|e| e.to_string())
+        }
+    }
+
+    struct Rig {
+        meetings: Meetings,
+        backend: Arc<FakeBackend>,
+        trash: Arc<FakeTrash>,
+        heard: Arc<Heard>,
+        ended: mpsc::Receiver<JobView>,
+        library: Fixture,
+    }
+
+    impl Rig {
+        fn with(backend: FakeBackend, library: Fixture, media: Option<Arc<MediaServer>>) -> Rig {
+            let (tx, ended) = mpsc::channel();
+            let heard = Arc::new(Heard {
+                changed: AtomicUsize::new(0),
+                ended: Mutex::new(tx),
+            });
+            let backend = Arc::new(backend);
+            let jobs = Arc::new(Jobs::default());
+            let clock: Clock = Box::new(|| 1_000);
+            let registry = Registry::new(
+                jobs.clone(),
+                backend.clone(),
+                heard.clone(),
+                heard.clone(),
+                clock,
+            );
+            registry.open();
+            let trash = Arc::new(FakeTrash {
+                jobs,
+                moved: Mutex::new(Vec::new()),
+                fail: false,
+            });
+            let meetings = Meetings::new(
+                library.library(),
+                registry,
+                media,
+                heard.clone(),
+                trash.clone(),
+            );
+            Rig {
+                meetings,
+                backend,
+                trash,
+                heard,
+                ended,
+                library,
+            }
+        }
+
+        fn new() -> Rig {
+            Rig::with(FakeBackend::new(), Fixture::new(), None)
+        }
+
+        fn empty(backend: FakeBackend) -> Rig {
+            Rig::with(backend, Fixture::empty(), None)
+        }
+
+        /// Waits for the job of `id` to end.
+        fn ended(&self, id: &str) -> JobView {
+            loop {
+                let view = self.ended.recv_timeout(PATIENCE).expect("the job to end");
+                if view.id == id {
+                    return view;
+                }
+            }
+        }
+
+        fn changed(&self) -> usize {
+            self.heard.changed.load(Ordering::SeqCst)
+        }
+
+        fn meta(&self, id: &str) -> Meta {
+            Meta::read(&self.library.folder(id)).expect("meta.json")
+        }
+
+        /// Gives the recording a media file that is there, as an import of a file would have: without one its job ends at the audio
+        /// before the backend is asked for anything.
+        fn give_media(&self, id: &str) -> PathBuf {
+            let media = media_file(self.library.dir().parent().unwrap(), &format!("{id}.m4a"));
+            let mut meta = self.meta(id);
+            meta.media = media.to_string_lossy().into_owned();
+            meta.write(&self.library.folder(id)).unwrap();
+            media
+        }
+
+        /// The names of the files in a recording's folder, sorted.
+        fn files(&self, id: &str) -> Vec<String> {
+            let mut names: Vec<String> = fs::read_dir(self.library.folder(id))
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            names
+        }
+    }
+
+    /// A media file in a folder with a Vietnamese name, away from the library.
+    fn media_file(dir: &Path, name: &str) -> PathBuf {
+        let folder = dir.join("Phim ảnh");
+        fs::create_dir_all(&folder).unwrap();
+        let path = folder.join(name);
+        fs::write(&path, b"media").unwrap();
+        path
+    }
+
+    fn held_at_audio() -> (FakeBackend, GateControl) {
+        let (held, control) = gate();
+        let mut backend = FakeBackend::new();
+        backend.gates.prepare = Some(held);
+        (backend, control)
+    }
+
+    // ---- the names of recordings
+
+    #[test]
+    fn an_id_is_one_folder_of_the_library_and_nothing_else() {
+        let rig = Rig::new();
+        let library = rig.library.dir();
+
+        assert_eq!(rig.meetings.folder_of(SCREEN), Some(library.join(SCREEN)));
+        assert_eq!(
+            rig.meetings.folder_of("2026-10-19 22-20-58 (2)"),
+            Some(library.join("2026-10-19 22-20-58 (2)"))
+        );
+        for bad in [
+            "",
+            ".",
+            "..",
+            "../outside",
+            "a/b",
+            "/etc",
+            "SCREEN/",
+            "./a",
+            "a/..",
+        ] {
+            assert_eq!(rig.meetings.folder_of(bad), None, "{bad:?}");
+        }
+        #[cfg(windows)]
+        for bad in [r"C:\Windows", r"..\x", r"a\b", "C:x"] {
+            assert_eq!(rig.meetings.folder_of(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn nothing_outside_the_library_is_read_or_deleted_by_a_crafted_id() {
+        let rig = Rig::new();
+        let outside = rig
+            .library
+            .dir()
+            .parent()
+            .unwrap()
+            .join("dictate-test-outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("transcript.txt"), "secret").unwrap();
+        let id = format!("../{}", outside.file_name().unwrap().to_string_lossy());
+
+        assert!(rig.meetings.detail(&id).is_err());
+        assert!(rig.meetings.log(&id).is_err());
+        assert!(rig.meetings.markdown(&id).is_err());
+        assert!(rig.meetings.rerun(&id).is_err());
+        let deleted = tauri::async_runtime::block_on(rig.meetings.delete(&id));
+        assert!(deleted.is_err());
+        assert!(
+            lock(&rig.trash.moved).is_empty(),
+            "the Trash was asked for a folder outside the library"
+        );
+        assert!(outside.join("transcript.txt").exists());
+        fs::remove_dir_all(&outside).unwrap();
+    }
+
+    // ---- the list and the detail
+
+    #[test]
+    fn the_list_shows_every_recording_and_what_its_job_is_doing() {
+        let (backend, control) = held_at_audio();
+        let rig = Rig::with(backend, Fixture::new(), None);
+        rig.give_media(LINK);
+
+        let rows = rig.meetings.list("");
+        assert_eq!(
+            rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+            [SCREEN, LINK, FILE]
+        );
+        assert!(rows
+            .iter()
+            .all(|row| row.live.is_none() && row.error.is_none()));
+
+        // The link has a job that is running: the row says so, and has no error.
+        rig.meetings.rerun(LINK).unwrap();
+        control.started.blocking_recv().unwrap();
+        let rows = rig.meetings.list("");
+        let link = rows.iter().find(|row| row.id == LINK).unwrap();
+        assert_eq!(
+            link.live.as_ref().map(|job| job.outcome.is_none()),
+            Some(true)
+        );
+        assert_eq!(link.error, None);
+        assert_eq!(link.kind, KindView::Link);
+
+        // A search finds it by its summary and by its transcript, with no diacritics.
+        let found = |query: &str| -> Vec<String> {
+            rig.meetings
+                .list(query)
+                .into_iter()
+                .map(|row| row.id)
+                .collect()
+        };
+        assert_eq!(found("quyet dinh"), [SCREEN]);
+        assert_eq!(found("hop"), [SCREEN, FILE]);
+
+        control.release.send(()).unwrap();
+        rig.ended(LINK);
+    }
+
+    #[test]
+    fn a_folder_that_was_never_processed_is_an_error_after_a_restart_and_a_cancel_is_cancelled() {
+        let rig = Rig::new();
+        rig.library
+            .write("2026-11-09 10-00-00", Some(json!({"title": "New"})), &[]);
+
+        let row = |id: &str| {
+            rig.meetings
+                .list("")
+                .into_iter()
+                .find(|row| row.id == id)
+                .unwrap()
+        };
+        let error = row("2026-11-09 10-00-00")
+            .error
+            .expect("not finished processing");
+        assert_eq!(error.key, "meetings.error.unfinished");
+        assert_eq!(row(SCREEN).error, None);
+    }
+
+    #[test]
+    fn the_detail_of_a_recording_is_its_row_and_what_is_in_its_folder() {
+        let media = Arc::new(MediaServer::start().unwrap());
+        let rig = Rig::with(FakeBackend::new(), Fixture::new(), Some(media));
+        let audio = rig.library.folder(SCREEN).join(files::AUDIO);
+        fs::write(&audio, b"audio").unwrap();
+
+        let detail = rig.meetings.detail(SCREEN).unwrap();
+        assert_eq!(detail.row.id, SCREEN);
+        assert_eq!(detail.transcript.len(), 3);
+        assert_eq!(detail.summary.unwrap().markdown, SUMMARY);
+        let url = detail.media.expect("audio.m4a plays").url;
+        assert!(url.starts_with("http://127.0.0.1:"), "{url}");
+        assert!(rig.meetings.detail("no such recording").is_err());
+    }
+
+    #[test]
+    fn without_a_media_server_there_is_nothing_to_play() {
+        let rig = Rig::new();
+        fs::write(rig.library.folder(SCREEN).join(files::AUDIO), b"audio").unwrap();
+        assert_eq!(rig.meetings.detail(SCREEN).unwrap().media, None);
+    }
+
+    // ---- importing
+
+    #[test]
+    fn import_link_rejects_non_http() {
+        let rig = Rig::empty(FakeBackend::new());
+        for url in [
+            "ftp://example.com/x",
+            "-x",
+            "--exec=rm",
+            "",
+            "   ",
+            "javascript:alert(1)",
+            "youtu.be/x",
+            "https://",
+            "https://a b",
+        ] {
+            let error = rig.meetings.import_link(url).unwrap_err();
+            assert_eq!(error.key, "meetings.error.invalid_link", "{url:?}");
+        }
+        // Nothing was made, and nothing runs.
+        assert_eq!(fs::read_dir(rig.library.dir()).unwrap().count(), 0);
+        assert!(rig.backend.calls().is_empty());
+        assert_eq!(rig.changed(), 0);
+    }
+
+    #[test]
+    fn a_link_becomes_a_recording_named_by_it_and_its_job_downloads_first() {
+        let rig = Rig::empty(FakeBackend::new());
+
+        let id = rig
+            .meetings
+            .import_link("  https://www.youtube.com/watch?v=x \n")
+            .unwrap();
+        rig.ended(&id);
+
+        let meta = rig.meta(&id);
+        assert_eq!(meta.title, "https://www.youtube.com/watch?v=x");
+        assert_eq!(meta.source, meta.title);
+        assert!(meta.created > 1_700_000_000.0, "{}", meta.created);
+        assert_eq!(
+            rig.backend.calls().first().map(String::as_str),
+            Some("download")
+        );
+        // The id is the folder's name, the time it was made.
+        assert!(rig.library.folder(&id).is_dir());
+        assert_eq!(id.len(), "2026-11-09 10-00-00".len());
+    }
+
+    #[test]
+    fn import_files_creates_meta_with_original_path_and_no_copy() {
+        // No AI: the job ends with the transcript, and the recording keeps the name its file had.
+        let mut backend = FakeBackend::new();
+        backend.ai_ready = false;
+        let rig = Rig::empty(backend);
+        let original = media_file(rig.library.dir().parent().unwrap(), "cuộc họp tuần 1.MP4");
+        let again = media_file(rig.library.dir().parent().unwrap(), "âm thanh.m4a");
+
+        let ids = rig.meetings.import_files(&[
+            original.to_string_lossy().into_owned(),
+            again.to_string_lossy().into_owned(),
+        ]);
+        assert_eq!(ids.len(), 2, "one recording for each file");
+        for id in &ids {
+            rig.ended(id);
+        }
+
+        // The first: named by the file without its extension, which is where it is played from.
+        let meta = rig.meta(&ids[0]);
+        assert_eq!(meta.title, "cuộc họp tuần 1");
+        assert_eq!(PathBuf::from(&meta.media), original);
+        assert_eq!(PathBuf::from(&meta.source), original);
+        assert!(meta.created > 1_700_000_000.0);
+        // Only what the pipeline wrote is in the folder: the media is not there.
+        assert_eq!(
+            rig.files(&ids[0]),
+            ["log.txt", "meta.json", "transcript.txt"]
+        );
+        // The original is where it was, untouched.
+        assert_eq!(fs::read(&original).unwrap(), b"media");
+        assert_eq!(rig.backend.media_seen().len(), 2);
+        assert!(rig.backend.media_seen().contains(&original));
+        // And a job that starts at the audio, not at a download.
+        assert_eq!(
+            rig.backend.calls().first().map(String::as_str),
+            Some("prepare_audio")
+        );
+    }
+
+    #[test]
+    fn an_imported_file_is_named_by_its_file_until_the_summary_names_it() {
+        let rig = Rig::empty(FakeBackend::new());
+        let original = media_file(rig.library.dir().parent().unwrap(), "cuộc họp tuần 1.mp4");
+
+        let ids = rig
+            .meetings
+            .import_files(&[original.to_string_lossy().into_owned()]);
+        rig.ended(&ids[0]);
+
+        // The summarizer was told the file's name as the title, and that it is no title of the recording's own.
+        let (title, untitled, _) = rig.backend.summarize_seen().remove(0);
+        assert_eq!((title.as_str(), untitled), ("cuộc họp tuần 1", true));
+        let meta = rig.meta(&ids[0]);
+        assert_eq!(meta.title, "Weekly sync");
+        // Its source is still the file, and the media with it.
+        assert_eq!(PathBuf::from(&meta.source), original);
+        assert_eq!(PathBuf::from(&meta.media), original);
+        assert_eq!(
+            rig.files(&ids[0]),
+            ["log.txt", "meta.json", "summary.md", "transcript.txt"]
+        );
+    }
+
+    #[test]
+    fn a_file_is_imported_by_its_absolute_path_and_a_folder_is_not_imported() {
+        let rig = Rig::empty(FakeBackend::new());
+        let dir = rig.library.dir().parent().unwrap().to_path_buf();
+        let original = media_file(&dir, "call.wav");
+        let folder = original.parent().unwrap().to_path_buf();
+
+        let ids = rig.meetings.import_files(&[
+            folder.to_string_lossy().into_owned(),
+            original.to_string_lossy().into_owned(),
+        ]);
+        assert_eq!(ids.len(), 1, "a folder is not media");
+        rig.ended(&ids[0]);
+        assert!(Path::new(&rig.meta(&ids[0]).media).is_absolute());
+
+        // No files, no recordings.
+        assert!(rig.meetings.import_files(&[]).is_empty());
+    }
+
+    #[test]
+    fn two_files_imported_in_one_second_get_two_folders() {
+        let rig = Rig::empty(FakeBackend::new());
+        let dir = rig.library.dir().parent().unwrap().to_path_buf();
+        let (one, two) = (media_file(&dir, "one.wav"), media_file(&dir, "two.wav"));
+        let ids = rig.meetings.import_files(&[
+            one.to_string_lossy().into_owned(),
+            two.to_string_lossy().into_owned(),
+        ]);
+        assert_eq!(ids.len(), 2);
+        assert_ne!(ids[0], ids[1]);
+        for id in &ids {
+            rig.ended(id);
+        }
+    }
+
+    // ---- starting jobs again
+
+    #[test]
+    fn rerun_starts_at_the_audio_and_resummarize_at_the_summary() {
+        let rig = Rig::new();
+        rig.give_media(SCREEN);
+        rig.give_media(FILE);
+        // The recording has its transcript: it can be summarized again.
+        rig.meetings.resummarize(SCREEN).unwrap();
+        rig.ended(SCREEN);
+        assert_eq!(rig.backend.calls(), ["summarize"]);
+
+        // A recording with no transcript is summarized again from the audio.
+        rig.meetings.resummarize(FILE).unwrap();
+        rig.ended(FILE);
+        assert_eq!(
+            rig.backend.calls().get(1).map(String::as_str),
+            Some("prepare_audio")
+        );
+
+        rig.meetings.rerun(SCREEN).unwrap();
+        rig.ended(SCREEN);
+        assert_eq!(
+            rig.backend.calls().get(4).map(String::as_str),
+            Some("prepare_audio")
+        );
+
+        assert!(rig.meetings.rerun("no such recording").is_err());
+    }
+
+    #[test]
+    fn a_recording_that_is_being_processed_is_not_started_a_second_time() {
+        let (backend, control) = held_at_audio();
+        let rig = Rig::with(backend, Fixture::new(), None);
+        rig.give_media(SCREEN);
+        rig.meetings.rerun(SCREEN).unwrap();
+        control.started.blocking_recv().unwrap();
+
+        assert!(rig.meetings.rerun(SCREEN).is_err());
+        assert!(rig.meetings.retry(SCREEN).is_err());
+        assert!(rig.meetings.cancel(SCREEN));
+        rig.ended(SCREEN);
+        assert!(!rig.meetings.cancel(SCREEN));
+    }
+
+    #[test]
+    fn try_again_starts_where_it_failed() {
+        let rig = Rig::new();
+        let folder = |id: &str| rig.library.folder(id);
+        let record = |id: &str| MeetingRecord::from_folder(&folder(id)).unwrap();
+
+        // A link whose download did not come to its end has no media: it downloads again.
+        assert_eq!(retry_start(&record(LINK)), StartAt::Download);
+        // The same link with its media on disk goes on from the transcript it has.
+        let media = media_file(rig.library.dir(), "source.m4a");
+        let mut meta = rig.meta(LINK);
+        meta.media = media.to_string_lossy().into_owned();
+        meta.write(&folder(LINK)).unwrap();
+        assert_eq!(retry_start(&record(LINK)), StartAt::Summary);
+        // A recording with a transcript is only summarized again, whatever its media is; one without starts over.
+        assert_eq!(retry_start(&record(SCREEN)), StartAt::Summary);
+        assert_eq!(retry_start(&record(FILE)), StartAt::Audio);
+        // Live captions are not a transcript to summarize.
+        rig.library.write(
+            "2026-11-09 10-00-00",
+            Some(json!({"title": "Live", "source": "https://a.test/x", "media": media.to_string_lossy()})),
+            &[(files::LIVE_TRANSCRIPT, "[00:00] Bạn: xin chào")],
+        );
+        assert_eq!(retry_start(&record("2026-11-09 10-00-00")), StartAt::Audio);
+    }
+
+    #[test]
+    fn try_again_on_a_failed_link_downloads_again() {
+        let rig = Rig::empty(FakeBackend::new());
+        rig.library.write(
+            "2026-11-09 10-00-00",
+            Some(json!({"title": "https://a.test/x", "source": "https://a.test/x", "media": "", "created": 1_792_423_258.0})),
+            &[],
+        );
+
+        rig.meetings.retry("2026-11-09 10-00-00").unwrap();
+        rig.ended("2026-11-09 10-00-00");
+
+        assert_eq!(
+            rig.backend.calls().first().map(String::as_str),
+            Some("download")
+        );
+    }
+
+    // ---- editing
+
+    #[test]
+    fn ticking_an_action_item_writes_tasks_json_as_a_sorted_list() {
+        let rig = Rig::new();
+        let tasks = || fs::read_to_string(rig.library.folder(SCREEN).join(files::TASKS)).unwrap();
+        let before = rig.changed();
+
+        // The fixture has the first ticked.
+        rig.meetings.set_task(SCREEN, 1, true).unwrap();
+        assert_eq!(tasks(), "[0,1]");
+        rig.meetings.set_task(SCREEN, 0, false).unwrap();
+        assert_eq!(tasks(), "[1]");
+        rig.meetings.set_task(SCREEN, 1, false).unwrap();
+        assert_eq!(tasks(), "[]");
+        // The list shows the open items, and was told each time.
+        assert_eq!(rig.meetings.list("")[0].open_tasks, 2);
+        assert_eq!(rig.changed(), before + 3);
+        // No temporary file is left.
+        assert!(!rig.files(SCREEN).iter().any(|name| name.ends_with(".tmp")));
+
+        // An item that is not there, and a recording with no summary.
+        assert!(rig.meetings.set_task(SCREEN, 2, true).is_err());
+        assert!(rig.meetings.set_task(LINK, 0, true).is_err());
+        assert!(rig.meetings.set_task("no such recording", 0, true).is_err());
+    }
+
+    #[test]
+    fn renaming_speakers_changes_the_transcript_and_the_summary_and_nothing_else() {
+        let rig = Rig::new();
+        let before_meta = fs::read(rig.library.folder(SCREEN).join(files::META)).unwrap();
+        let before_tasks = fs::read(rig.library.folder(SCREEN).join(files::TASKS)).unwrap();
+        let names = HashMap::from([("Speaker 1".to_owned(), "Lan".to_owned())]);
+
+        let applied = rig.meetings.rename_speakers(SCREEN, &names, false).unwrap();
+
+        assert_eq!(applied, [("Speaker 1".to_owned(), "Lan".to_owned())]);
+        let transcript =
+            fs::read_to_string(rig.library.folder(SCREEN).join(files::TRANSCRIPT)).unwrap();
+        assert!(
+            transcript.contains("[00:00] Lan: Chào mọi người"),
+            "{transcript}"
+        );
+        assert!(transcript.contains("Speaker 2: "), "the other one is left");
+        // meta.json keeps its date as it was (a missing or zero `created` is never written over a real one), the ticks stay,
+        // and the log says what was done.
+        assert_eq!(
+            fs::read(rig.library.folder(SCREEN).join(files::META)).unwrap(),
+            before_meta
+        );
+        assert_eq!(
+            fs::read(rig.library.folder(SCREEN).join(files::TASKS)).unwrap(),
+            before_tasks
+        );
+        assert!(
+            fs::read_to_string(rig.library.folder(SCREEN).join(files::LOG))
+                .unwrap()
+                .contains("Renamed speakers: Speaker 1 → Lan")
+        );
+        // Nobody to rename is no change.
+        let none = rig
+            .meetings
+            .rename_speakers(SCREEN, &HashMap::new(), false)
+            .unwrap();
+        assert!(none.is_empty());
+        assert!(
+            rig.backend.calls().is_empty(),
+            "no AI call without being asked"
+        );
+    }
+
+    #[test]
+    fn renaming_speakers_can_summarize_again_with_the_new_names() {
+        let rig = Rig::new();
+        let names = HashMap::from([("Speaker 2".to_owned(), "Bình".to_owned())]);
+
+        rig.meetings.rename_speakers(SCREEN, &names, true).unwrap();
+        rig.ended(SCREEN);
+
+        assert_eq!(rig.backend.calls(), ["summarize"]);
+        let (_, _, transcript) = rig.backend.summarize_seen().remove(0);
+        assert!(
+            transcript.contains("Bình"),
+            "the summary is of the transcript with the new names"
+        );
+        // The summary is another one, and its ticks are gone.
+        assert!(!rig.library.folder(SCREEN).join(files::TASKS).exists());
+
+        // No renames, nothing to summarize again.
+        let rig = Rig::new();
+        rig.meetings
+            .rename_speakers(SCREEN, &HashMap::new(), true)
+            .unwrap();
+        assert!(!rig.meetings.registry.is_running(SCREEN));
+    }
+
+    #[test]
+    fn rename_refused_while_running() {
+        let (backend, control) = held_at_audio();
+        let rig = Rig::with(backend, Fixture::new(), None);
+        rig.give_media(SCREEN);
+        rig.meetings.rerun(SCREEN).unwrap();
+        control.started.blocking_recv().unwrap();
+        let before = fs::read(rig.library.folder(SCREEN).join(files::TRANSCRIPT)).unwrap();
+        let names = HashMap::from([("Speaker 1".to_owned(), "Lan".to_owned())]);
+
+        let refused = rig
+            .meetings
+            .rename_speakers(SCREEN, &names, false)
+            .unwrap_err();
+
+        assert_eq!(refused.kind, "Other");
+        assert!(refused.detail.unwrap().contains("being processed"));
+        assert_eq!(
+            fs::read(rig.library.folder(SCREEN).join(files::TRANSCRIPT)).unwrap(),
+            before
+        );
+        assert!(rig.meetings.registry.is_running(SCREEN));
+
+        // When the job is over the names can be given.
+        rig.meetings.cancel(SCREEN);
+        rig.ended(SCREEN);
+        assert!(rig.meetings.rename_speakers(SCREEN, &names, false).is_ok());
+    }
+
+    // ---- exporting and reading
+
+    #[test]
+    fn the_markdown_is_the_summary_then_the_transcript() {
+        let rig = Rig::new();
+
+        let markdown = rig.meetings.markdown(SCREEN).unwrap();
+        assert_eq!(
+            markdown,
+            format!("{SUMMARY}\n\n---\n\n## Transcript\n\n{TRANSCRIPT}")
+        );
+        // No summary: the title stands for it. No transcript: there is none.
+        assert_eq!(
+            rig.meetings.markdown(LINK).unwrap(),
+            "# Video về Swift\n\n---\n\n## Transcript\n\n[00:00] Swift concurrency rất hay."
+        );
+        assert!(rig.meetings.markdown(FILE).unwrap().ends_with("Ngắn gọn."));
+    }
+
+    #[test]
+    fn an_export_is_offered_under_the_title_made_safe_and_written_whole() {
+        let rig = Rig::new();
+        rig.library.write(
+            "2026-11-09 10-00-00",
+            Some(json!({"title": "Họp: Q4 / kế hoạch?"})),
+            &[(files::SUMMARY, "# Họp\n\n## Tóm tắt\nx")],
+        );
+        assert_eq!(
+            rig.meetings.export_name("2026-11-09 10-00-00").unwrap(),
+            "Họp- Q4 - kế hoạch-.md"
+        );
+
+        let destination = rig.library.dir().parent().unwrap().join("Xuất ra.md");
+        rig.meetings.export_to(SCREEN, &destination).unwrap();
+        assert_eq!(
+            fs::read_to_string(&destination).unwrap(),
+            rig.meetings.markdown(SCREEN).unwrap()
+        );
+        let leftovers: Vec<_> = fs::read_dir(destination.parent().unwrap())
+            .unwrap()
+            .filter_map(|entry| {
+                entry
+                    .ok()
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+            })
+            .filter(|name| name.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+        fs::remove_file(destination).unwrap();
+    }
+
+    #[test]
+    fn a_failed_export_is_an_error_the_window_can_show() {
+        let rig = Rig::new();
+        let nowhere = rig.library.dir().join("no such folder").join("a.md");
+
+        let error = rig.meetings.export_to(SCREEN, &nowhere).unwrap_err();
+
+        assert_eq!(error.key, "meetings.error.other");
+        assert!(error.detail.unwrap().starts_with("Couldn't save"));
+    }
+
+    #[test]
+    fn the_log_is_read_as_it_is_and_empty_when_there_is_none() {
+        let rig = Rig::new();
+        assert_eq!(rig.meetings.log(SCREEN).unwrap(), "");
+        fs::write(
+            rig.library.folder(SCREEN).join(files::LOG),
+            "Audio: 00:10\nDone: summary.md\n",
+        )
+        .unwrap();
+        assert_eq!(
+            rig.meetings.log(SCREEN).unwrap(),
+            "Audio: 00:10\nDone: summary.md\n"
+        );
+        assert!(rig.meetings.log("no such recording").is_err());
+    }
+
+    #[test]
+    fn the_media_to_open_is_the_media_file_when_it_is_there() {
+        let rig = Rig::new();
+        let dir = rig.library.dir().parent().unwrap().to_path_buf();
+        let media = media_file(&dir, "talk.mp4");
+        rig.library.write(
+            "2026-11-09 10-00-00",
+            Some(json!({"title": "T", "source": media.to_string_lossy(), "media": media.to_string_lossy()})),
+            &[],
+        );
+        assert_eq!(
+            rig.meetings.media_path("2026-11-09 10-00-00").unwrap(),
+            media
+        );
+        fs::remove_file(&media).unwrap();
+        assert!(rig.meetings.media_path("2026-11-09 10-00-00").is_err());
+        // A recording with no media file in `meta.json`.
+        assert!(rig.meetings.media_path(SCREEN).is_err());
+    }
+
+    // ---- deleting
+
+    #[test]
+    fn delete_moves_to_trash_and_cancels() {
+        let (backend, control) = held_at_audio();
+        let rig = Rig::with(backend, Fixture::new(), None);
+        rig.give_media(SCREEN);
+        rig.meetings.rerun(SCREEN).unwrap();
+        control.started.blocking_recv().unwrap();
+        let before = rig.changed();
+
+        tauri::async_runtime::block_on(rig.meetings.delete(SCREEN)).unwrap();
+
+        // The job was cancelled and had ended when the folder went to the Trash.
+        let moved = lock(&rig.trash.moved).clone();
+        assert_eq!(moved, [(rig.library.folder(SCREEN), false)]);
+        assert!(!rig.library.folder(SCREEN).exists());
+        assert!(
+            !control.finished.load(Ordering::SeqCst),
+            "the job was cancelled, not let through"
+        );
+        // The list is told, the recording is gone from it, and what was kept of its job with it.
+        assert!(rig.changed() > before);
+        assert_eq!(rig.meetings.registry.status(SCREEN), None);
+        let ids: Vec<_> = rig
+            .meetings
+            .list("")
+            .into_iter()
+            .map(|row| row.id)
+            .collect();
+        assert_eq!(ids, [LINK, FILE]);
+        // Nothing else was touched.
+        assert!(rig.library.folder(LINK).is_dir());
+    }
+
+    #[test]
+    fn deleting_a_recording_that_has_no_job_goes_straight_to_the_trash() {
+        let rig = Rig::new();
+        tauri::async_runtime::block_on(rig.meetings.delete(FILE)).unwrap();
+        assert_eq!(lock(&rig.trash.moved).len(), 1);
+        assert!(
+            tauri::async_runtime::block_on(rig.meetings.delete(FILE)).is_err(),
+            "it is gone"
+        );
+    }
+
+    #[test]
+    fn a_trash_that_fails_leaves_the_recording_in_the_list() {
+        let mut rig = Rig::new();
+        let jobs = rig.trash.jobs.clone();
+        rig.trash = Arc::new(FakeTrash {
+            jobs,
+            moved: Mutex::new(Vec::new()),
+            fail: true,
+        });
+        rig.meetings.trash = rig.trash.clone();
+
+        let error = tauri::async_runtime::block_on(rig.meetings.delete(FILE)).unwrap_err();
+
+        assert!(error.contains("The Trash is full."), "{error}");
+        assert!(rig.library.folder(FILE).is_dir());
+        assert_eq!(rig.meetings.list("").len(), 3);
+    }
+
+    // ---- questions
+
+    /// An app state in which the AI is not set up, and a key store that counts how often it is asked.
+    fn state(dir: &Path) -> (AppState, Arc<CountingStore>) {
+        let (store, _) = SettingsStore::open(dir.join("settings.json"));
+        let secrets = Arc::new(CountingStore::default());
+        let models = ModelDir::new(dir.join("models"));
+        (AppState::new(store, None, secrets.clone(), models), secrets)
+    }
+
+    #[test]
+    fn a_blank_question_is_refused_before_anything_is_asked() {
+        let rig = Rig::new();
+        let dir = tempfile::tempdir().unwrap();
+        let (state, secrets) = state(dir.path());
+
+        for blank in ["", "   ", "\n\t "] {
+            let error = tauri::async_runtime::block_on(rig.meetings.ask(&state, SCREEN, blank))
+                .unwrap_err();
+            assert_eq!(error.key, "meetings.error.other", "{blank:?}");
+            assert_eq!(error.detail.as_deref(), Some("The question is empty."));
+        }
+        assert_eq!(secrets.gets(), 0, "the key store was not asked");
+    }
+
+    #[test]
+    fn a_question_needs_an_ai_and_a_transcript_and_does_not_ask_the_key_store_without_a_key() {
+        let rig = Rig::new();
+        let dir = tempfile::tempdir().unwrap();
+        let (state, secrets) = state(dir.path());
+        // The start of the app reads the flags once; after that the key store is not asked for them.
+        state.loaded_keys();
+        let asked = secrets.gets();
+        state
+            .keys
+            .set(dictate_services::secrets::Account::Ai, false);
+
+        // No AI key saved (as far as the flags say): there is nothing to ask.
+        let error =
+            tauri::async_runtime::block_on(rig.meetings.ask(&state, SCREEN, "Who owns the docs?"))
+                .unwrap_err();
+        assert!(
+            error.detail.unwrap().contains("API"),
+            "the AI is not set up"
+        );
+        assert_eq!(secrets.gets(), asked);
+
+        // A recording with no transcript has nothing to ask about.
+        state.keys.set(dictate_services::secrets::Account::Ai, true);
+        let error =
+            tauri::async_runtime::block_on(rig.meetings.ask(&state, FILE, "Who owns the docs?"))
+                .unwrap_err();
+        assert!(error.detail.unwrap().contains("transcript"));
+        let error =
+            tauri::async_runtime::block_on(rig.meetings.ask(&state, "no such recording", "Who?"))
+                .unwrap_err();
+        assert_eq!(error.key, "meetings.error.other");
+    }
+
+    // ---- start-up
+
+    #[test]
+    fn startup_sweeps_every_recording_folder() {
+        let f = Fixture::new();
+        let stale = |id: &str, name: &str| fs::write(f.folder(id).join(name), b"x").unwrap();
+        stale(SCREEN, "transcript.txt.123-0.tmp");
+        stale(SCREEN, "audio.m4a.part");
+        stale(LINK, "source.m4a.part");
+        stale(LINK, "api-slice-0.wav");
+        stale(FILE, "meta.json.9-1.tmp");
+        fs::create_dir_all(f.folder(LINK).join("api-parts")).unwrap();
+        fs::write(f.folder(LINK).join("api-parts").join("0.json"), b"[]").unwrap();
+        // Files of the library folder itself are not a recording's.
+        fs::write(f.dir().join("notes.tmp"), b"x").unwrap();
+
+        assert_eq!(sweep_library(f.dir()), 5);
+
+        // What is whole stays, with the cache of the API parts a second run continues from.
+        assert!(f.folder(SCREEN).join(files::TRANSCRIPT).is_file());
+        assert!(f.folder(SCREEN).join(files::SUMMARY).is_file());
+        assert!(f.folder(LINK).join("api-parts").join("0.json").is_file());
+        assert!(f.dir().join("notes.tmp").is_file());
+        assert_eq!(sweep_library(f.dir()), 0);
+        assert_eq!(sweep_library(&f.dir().join("no such library")), 0);
+    }
+
+    #[test]
+    fn the_settings_the_window_may_ask_to_see_are_the_tabs_of_settings() {
+        for tab in ["general", "speech", "ai", "accounts"] {
+            assert!(is_settings_tab(tab), "{tab}");
+        }
+        for tab in ["", "General", "meetings", "../x", "accounts "] {
+            assert!(!is_settings_tab(tab), "{tab:?}");
+        }
+    }
+}

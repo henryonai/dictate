@@ -519,7 +519,7 @@ fn ensure_directory(path: &Path) -> Result<(), String> {
 }
 
 /// Runs `work` on a blocking thread.
-async fn blocking<T: Send + 'static>(
+pub(crate) async fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
 ) -> Result<T, String> {
     tauri::async_runtime::spawn_blocking(work)
