@@ -77,10 +77,11 @@ impl Drop for FolderClaim {
 }
 
 /// Runs the steps of the recording `job`, from `from` on, and tells `emit` what happens. Whatever `emit` is told is in
-/// `log.txt` too, when it is a `Log`. The last event is always `Finished`, with what this returns.
+/// `log.txt` too, when it is a `Log`. The last event is `Finished`, with what this returns, however the run ends.
 ///
 /// Only one run may work on a folder at a time (the app keeps one job per recording): a second one is refused at once,
-/// with an `Other` failure, without a word to `emit` or a write to the folder.
+/// with an `Other` failure, without a word to `emit` (not even `Finished`: it is not a run of that job) or a write to
+/// the folder.
 ///
 /// The future is `Send`: it may be spawned.
 pub async fn run(
@@ -219,6 +220,13 @@ impl Job<'_> {
         self.emit(JobEvent::Log(line));
     }
 
+    /// A line the backend wants in the log: as one of the pipeline's own, unless it is blank.
+    fn backend_log(&self, line: &str) {
+        if !line.trim().is_empty() {
+            self.log(line);
+        }
+    }
+
     /// Fails with `Cancelled` when the job is cancelled: before every step and every write.
     fn checkpoint(&self) -> Result<(), MeetingError> {
         if self.cancel.is_cancelled() {
@@ -291,6 +299,8 @@ impl Job<'_> {
 
     /// The steps from `from` on. Whether a summary was written.
     async fn steps(&self, from: StartAt) -> Result<bool, MeetingError> {
+        // A run that is cancelled before it starts leaves the folder as it was, the log included.
+        self.checkpoint()?;
         let mut start = from;
         // "Summarize again" with nothing to summarize is "Transcribe + summarize again"; and a recording that is not
         // a link has nothing to download.
@@ -304,7 +314,6 @@ impl Job<'_> {
         if from == StartAt::Audio {
             let _ = atomic_write(&self.folder().join(files::LOG), b"");
         }
-        self.checkpoint()?;
 
         if start == StartAt::Download {
             if let Some(link) = &self.spec.link {
@@ -332,10 +341,11 @@ impl Job<'_> {
         self.step(Step::Download, None);
         self.log(format!("Downloading audio from {url}…"));
         let progress = |fraction: f32| self.step(Step::Download, Some(share(fraction)));
+        let log = |line: &str| self.backend_log(line);
         let answer = self
             .guarded(
                 self.backend
-                    .download(url, self.folder(), self.cancel, &progress),
+                    .download(url, self.folder(), self.cancel, &progress, &log),
             )
             .await;
         let downloaded = match answer {
@@ -458,7 +468,13 @@ impl Job<'_> {
 
         let segments = match segments {
             Some(segments) => segments,
-            None => self.local_transcript(&samples).await?,
+            None => {
+                if fell_back {
+                    // The API got part of the way; this starts from nothing, and the bar is not to go back.
+                    self.step(Step::Transcript, None);
+                }
+                self.local_transcript(&samples).await?
+            }
         };
         if fell_back {
             // Whisper did it: the parts the API had done are of no use to anyone.
@@ -552,15 +568,22 @@ impl Job<'_> {
         let whisper_share = if diarize { TRANSCRIPTION_SHARE } else { 1.0 };
         let progress =
             |fraction: f32| self.step(Step::Transcript, Some(whisper_share * share(fraction)));
+        let log = |line: &str| self.backend_log(line);
         let heard = self
             .guarded(self.backend.transcribe_local(
                 samples.clone(),
                 diarize,
                 self.cancel,
                 &progress,
+                &log,
             ))
             .await?
             .map_err(MeetingError::other)?;
+        if let Some(language) = heard.language.as_deref().map(str::trim) {
+            if !language.is_empty() {
+                self.log(format!("Language: {language}"));
+            }
+        }
 
         let mut turns = None;
         if diarize {
@@ -573,10 +596,11 @@ impl Job<'_> {
                     Some(TRANSCRIPTION_SHARE + (1.0 - TRANSCRIPTION_SHARE) * share(fraction)),
                 );
             };
+            let log = |line: &str| self.backend_log(line);
             let separated = self
                 .guarded(
                     self.backend
-                        .diarize(samples.clone(), self.cancel, &progress),
+                        .diarize(samples.clone(), self.cancel, &progress, &log),
                 )
                 .await?;
             match separated {

@@ -6,6 +6,12 @@ rust-version.workspace = true
 license.workspace = true
 description = "Services for the Dictate app: settings, secrets, AI and transcription clients"
 
+[features]
+# The scripted `MeetingBackend` of the meeting pipeline's tests (`meetings::fakes`), for the tests of the app, which
+# run the pipeline too (`dictate-services = { ..., features = ["test-support"] }` under its dev-dependencies). No normal
+# build has it: Cargo does not turn on the features of dev-dependencies for those.
+test-support = []
+
 [dependencies]
 # Lets the stop pipeline's Backend be used as a trait object: native async fn in traits is not dyn-compatible.
 async-trait = "0.1.92"

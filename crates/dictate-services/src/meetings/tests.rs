@@ -1636,6 +1636,8 @@ async fn pipeline_result_that_arrives_with_the_cancel_is_discarded() {
 #[tokio::test]
 async fn pipeline_cancelled_before_it_starts_does_nothing() {
     let fx = Fixture::file("Standup.mp3");
+    // A run from scratch clears the log, but only a run that starts: the history of one that never did stays.
+    fx.write("log.txt", "ERROR: an earlier failure\n");
     let backend = FakeBackend::new();
     let cancel = CancellationToken::new();
     cancel.cancel();
@@ -1644,7 +1646,7 @@ async fn pipeline_cancelled_before_it_starts_does_nothing() {
 
     assert_eq!(ran.error().kind, ErrorKind::Cancelled);
     assert!(backend.calls().is_empty());
-    assert_eq!(fx.log(), ["ERROR: Cancelled"]);
+    assert_eq!(fx.log(), ["ERROR: an earlier failure", "ERROR: Cancelled"]);
 }
 
 #[tokio::test]
@@ -1725,12 +1727,160 @@ async fn pipeline_log_is_english() {
             "Downloading audio from https://youtu.be/abc…".to_owned(),
             "Audio: 00:10".to_owned(),
             WAITING.to_owned(),
+            "Language: en".to_owned(),
             format!(
                 "Saved the transcript ({} characters).",
                 transcript.chars().count()
             ),
             "Done: summary.md".to_owned(),
         ]
+    );
+}
+
+#[tokio::test]
+async fn pipeline_backend_log_lines_reach_log_txt() {
+    let fx = Fixture::link("https://youtu.be/abc");
+    let mut backend = FakeBackend::new();
+    backend.download = Ok(Downloaded {
+        title: Some("A video".into()),
+        file: fx.folder.join("source.m4a"),
+    });
+    backend.download_writes = vec!["source.m4a".into()];
+    // Blank lines are not lines.
+    backend.download_logs = vec![
+        "[youtube] abc: Downloading webpage".into(),
+        String::new(),
+        "   ".into(),
+        "[info] abc: Downloading 1 format(s): 140".into(),
+    ];
+    backend.local_logs = vec![
+        "Whisper on this computer · small…".into(),
+        "Loading the Whisper model…".into(),
+    ];
+    backend.diarize_enabled = true;
+    backend.diarize_logs = vec![
+        "Downloading the speaker separation model… 10%".into(),
+        "Downloading the speaker separation model… 20%".into(),
+    ];
+
+    let ran = run_job(&backend, &fx, StartAt::Download).await;
+
+    assert_eq!(ran.outcome, Outcome::Done { summary: true });
+    let transcript = fx.read("transcript.txt").unwrap();
+    assert_eq!(
+        fx.log(),
+        [
+            "Downloading audio from https://youtu.be/abc…".to_owned(),
+            "[youtube] abc: Downloading webpage".to_owned(),
+            "[info] abc: Downloading 1 format(s): 140".to_owned(),
+            "Audio: 00:10".to_owned(),
+            "Whisper on this computer · small…".to_owned(),
+            "Loading the Whisper model…".to_owned(),
+            "Language: en".to_owned(),
+            "Separating speakers…".to_owned(),
+            "Downloading the speaker separation model… 10%".to_owned(),
+            "Downloading the speaker separation model… 20%".to_owned(),
+            format!(
+                "Saved the transcript ({} characters).",
+                transcript.chars().count()
+            ),
+            "Done: summary.md".to_owned(),
+        ]
+    );
+    // The app is told the same lines.
+    assert_eq!(ran.logs(), fx.log());
+}
+
+#[tokio::test]
+async fn pipeline_caps_a_long_line_from_the_backend() {
+    let fx = Fixture::file("Standup.mp3");
+    for n in 0..700 {
+        append_log(
+            &fx.folder,
+            &format!("earlier line {n:04} {}", "x".repeat(100)),
+        )
+        .unwrap();
+    }
+    let mut backend = FakeBackend::new();
+    // Two bytes to a character, and more than `append_log` keeps in one line.
+    backend.local_logs = vec!["é".repeat(100_000)];
+
+    let ran = run_job(&backend, &fx, StartAt::Summary).await;
+
+    assert_eq!(ran.outcome, Outcome::Done { summary: true });
+    let log = fx.read("log.txt").unwrap();
+    assert!(log.contains("earlier line 0699"), "the history was wiped");
+    let long = log.lines().find(|line| line.starts_with("éé")).unwrap();
+    assert!(long.chars().count() <= 2_001, "{}", long.chars().count());
+    assert!(long.ends_with('…'));
+}
+
+#[tokio::test]
+async fn pipeline_logs_the_language_whisper_heard() {
+    for (heard, expected) in [
+        (Some("vi"), Some("Language: vi")),
+        (Some(" en "), Some("Language: en")),
+        (Some(""), None),
+        (Some("  "), None),
+        (None, None),
+    ] {
+        let fx = Fixture::file("Standup.mp3");
+        let mut backend = FakeBackend::new();
+        backend.local = Ok(TimedTranscript {
+            lines: vec![line("Hello there", 0.0, 2.0)],
+            language: heard.map(str::to_owned),
+        });
+
+        run_job(&backend, &fx, StartAt::Audio).await;
+
+        let log = fx.log();
+        let logged = log.iter().find(|l| l.starts_with("Language:")).cloned();
+        assert_eq!(logged.as_deref(), expected, "{heard:?}");
+        if expected.is_some() {
+            // After the transcription, before the transcript is saved.
+            let at = log.iter().position(|l| l.starts_with("Language:")).unwrap();
+            assert!(log[at + 1].starts_with("Saved the transcript"), "{log:?}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn pipeline_api_does_not_log_a_language() {
+    let fx = Fixture::file("Standup.mp3");
+    let backend = api_backend();
+
+    run_job(&backend, &fx, StartAt::Audio).await;
+
+    assert!(!fx.log().iter().any(|l| l.starts_with("Language:")));
+}
+
+#[tokio::test]
+async fn pipeline_api_fallback_restarts_the_transcript_progress() {
+    let fx = Fixture::file("Standup.mp3");
+    let mut backend = api_backend();
+    backend.api_progress = vec![
+        ApiProgress::Part {
+            index: 1,
+            count: 2,
+            reused: false,
+        },
+        ApiProgress::Part {
+            index: 2,
+            count: 2,
+            reused: false,
+        },
+    ];
+    backend.api = Err(api_part_failed(2, 2, 1, server_error("boom")));
+    backend.local_progress = vec![0.25];
+
+    let ran = run_job(&backend, &fx, StartAt::Audio).await;
+
+    assert_eq!(ran.outcome, Outcome::Done { summary: true });
+    // The API got to half; Whisper starts again from nothing, which says "preparing" first, so that the bar is
+    // not made to go back.
+    assert_progress(
+        ran.progress(Step::Transcript),
+        &[None, Some(0.0), Some(0.5), None, Some(0.25), Some(1.0)],
     );
 }
 

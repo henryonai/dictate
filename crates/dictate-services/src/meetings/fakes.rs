@@ -1,5 +1,8 @@
 //! A scripted [`MeetingBackend`] for the tests of the pipeline: what each call gives is a field to set, every call
 //! is noted, and a call can be held at a [`gate`] until the test lets it go, so that the tests need no sleeping.
+//!
+//! Built for this crate's own tests, and for any other crate that turns on the `test-support` feature (the app's tests,
+//! as a dev-dependency); no other build has it.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -97,12 +100,16 @@ pub struct FakeBackend {
     /// Files the download leaves in the folder before it answers.
     pub download_writes: Vec<String>,
     pub download_progress: Vec<f32>,
+    /// The lines the backend sends to `log` during the call, in order.
+    pub download_logs: Vec<String>,
     pub prepare: Result<Prepared, DecodeError>,
     pub prepare_progress: Vec<f32>,
     pub local: Result<TimedTranscript, String>,
     pub local_progress: Vec<f32>,
+    pub local_logs: Vec<String>,
     pub diarize: Result<Vec<Turn>, String>,
     pub diarize_progress: Vec<f32>,
+    pub diarize_logs: Vec<String>,
     pub api: Result<Vec<Segment>, LongApiError>,
     pub api_progress: Vec<ApiProgress>,
     /// Files the API leaves in the folder before it answers, as its cache of parts does.
@@ -139,6 +146,12 @@ pub fn line(text: &str, start: f64, end: f64) -> (Timed, Vec<Timed>) {
 /// What `FakeBackend::new` hears in its ten seconds of audio.
 pub const SAMPLES: usize = 16_000 * 10;
 
+impl Default for FakeBackend {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FakeBackend {
     /// A backend where everything works: Whisper is ready, the AI is set up, there is no API and no speaker
     /// separation. The download is for a file that is not there: set `download` for a test that needs the file.
@@ -156,6 +169,7 @@ impl FakeBackend {
             }),
             download_writes: Vec::new(),
             download_progress: Vec::new(),
+            download_logs: Vec::new(),
             prepare: Ok(Prepared {
                 samples_16k: Arc::new(vec![0.0; SAMPLES]),
                 duration: 10.0,
@@ -167,8 +181,10 @@ impl FakeBackend {
                 language: Some("en".into()),
             }),
             local_progress: Vec::new(),
+            local_logs: Vec::new(),
             diarize: Ok(Vec::new()),
             diarize_progress: Vec::new(),
+            diarize_logs: Vec::new(),
             api: Ok(vec![Segment {
                 start: 0.0,
                 speaker: None,
@@ -236,11 +252,15 @@ impl MeetingBackend for FakeBackend {
         folder: &Path,
         _cancel: &CancellationToken,
         on_progress: &(dyn Fn(f32) + Send + Sync),
+        log: &(dyn for<'a> Fn(&'a str) + Send + Sync),
     ) -> Result<Downloaded, LinkError> {
         self.call("download");
         Self::write_files(folder, &self.download_writes);
         for p in &self.download_progress {
             on_progress(*p);
+        }
+        for line in &self.download_logs {
+            log(line);
         }
         if let Some(gate) = &self.gates.download {
             gate.pass().await;
@@ -296,9 +316,13 @@ impl MeetingBackend for FakeBackend {
         words: bool,
         _cancel: &CancellationToken,
         on_progress: &(dyn Fn(f32) + Send + Sync),
+        log: &(dyn for<'a> Fn(&'a str) + Send + Sync),
     ) -> Result<TimedTranscript, String> {
         self.call(&format!("transcribe_local words={words}"));
         self.note("local_start");
+        for line in &self.local_logs {
+            log(line);
+        }
         for p in &self.local_progress {
             on_progress(*p);
         }
@@ -314,8 +338,12 @@ impl MeetingBackend for FakeBackend {
         _samples: Arc<Vec<f32>>,
         _cancel: &CancellationToken,
         on_progress: &(dyn Fn(f32) + Send + Sync),
+        log: &(dyn for<'a> Fn(&'a str) + Send + Sync),
     ) -> Result<Vec<Turn>, String> {
         self.call("diarize");
+        for line in &self.diarize_logs {
+            log(line);
+        }
         for p in &self.diarize_progress {
             on_progress(*p);
         }

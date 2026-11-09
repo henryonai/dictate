@@ -6,7 +6,10 @@
 //! fakes. The app implements the trait with the real clients.
 //!
 //! The callbacks the trait methods take are `&(dyn Fn(T) + Send + Sync)`: they are shared, not owned, so a backend
-//! that works on another thread hands them on to a scoped thread or reports through a channel. The cancel token is
+//! that works on another thread hands them on to a scoped thread or reports through a channel. A `log` callback takes a
+//! line for `log.txt`, in English: the pipeline writes it there, capped and without the empty ones, as it does its own.
+//! (It is spelled `for<'a> Fn(&'a str)`: written as `Fn(&str)`, `#[async_trait]` ties the `&str` to the lifetimes of
+//! the call, and a backend could not hand it a line of its own.) The cancel token is
 //! `&CancellationToken`; a backend clones it where it needs an owned one. The pipeline does not rely on a backend to
 //! notice the token: it races every call against it and drops the call on cancel (see `pipeline`).
 
@@ -29,8 +32,9 @@ use crate::whisper::local::TimedTranscript;
 pub mod error;
 pub mod pipeline;
 
-#[cfg(test)]
-mod fakes;
+/// A scripted [`MeetingBackend`], for the tests of the pipeline and of whatever runs it: with the `test-support` feature.
+#[cfg(any(test, feature = "test-support"))]
+pub mod fakes;
 #[cfg(test)]
 mod tests;
 
@@ -77,7 +81,8 @@ pub enum JobEvent {
     Log(String),
     /// The recording got a title from its summary.
     TitleChanged(String),
-    /// The last event of a run, always: what `run` returns.
+    /// The last event of a run: what `run` returns. Every run that works says it, however it ends; the one that is
+    /// refused because another run is working in the same folder does not, since it is not a run of that job.
     Finished(Outcome),
 }
 
@@ -111,12 +116,18 @@ pub struct Prepared {
 #[async_trait]
 pub trait MeetingBackend: Send + Sync {
     /// Downloads the audio of `url` into `folder` (as `source.<ext>`). `on_progress` hears 0 to 1.
+    ///
+    /// `log` is for the lines yt-dlp prints (`ytdlp::download`'s `on_line`), as the Swift app copied them. Not all of
+    /// them: yt-dlp prints a progress line with every update (the `DL <bytes> <total> <estimate>` lines of the progress
+    /// template, which `ytdlp::progress` reads), and hundreds of those would bury the log. The backend sends those to
+    /// `on_progress` only, and everything else to `log`.
     async fn download(
         &self,
         url: &str,
         folder: &Path,
         cancel: &CancellationToken,
         on_progress: &(dyn Fn(f32) + Send + Sync),
+        log: &(dyn for<'a> Fn(&'a str) + Send + Sync),
     ) -> Result<Downloaded, LinkError>;
 
     /// Decodes `media` for the transcript and writes `<folder>/audio.m4a`. `on_progress` hears 0 to 1.
@@ -142,22 +153,27 @@ pub trait MeetingBackend: Send + Sync {
     fn transcribe_model(&self) -> String;
 
     /// The lines Whisper hears in `samples` (16 kHz mono), with the times of their words when `words` is set.
-    /// `on_progress` hears 0 to 1.
+    /// `on_progress` hears 0 to 1. `log` is for what the backend knows and the pipeline does not: which model runs
+    /// (`Whisper on this computer · <model>…`) and that it is being loaded (`Loading the Whisper model…`). The pipeline
+    /// logs the language itself, from `TimedTranscript::language`.
     async fn transcribe_local(
         &self,
         samples: Arc<Vec<f32>>,
         words: bool,
         cancel: &CancellationToken,
         on_progress: &(dyn Fn(f32) + Send + Sync),
+        log: &(dyn for<'a> Fn(&'a str) + Send + Sync),
     ) -> Result<TimedTranscript, String>;
 
     /// Who speaks when in `samples`. Downloading the models the first time is part of it. `on_progress` hears 0
-    /// to 1, but only in the second half of the work, and not at all for audio with nothing to tell apart.
+    /// to 1, but only in the second half of the work, and not at all for audio with nothing to tell apart. `log` is
+    /// for the download of the models, which says nothing in `on_progress` (for example every 10%).
     async fn diarize(
         &self,
         samples: Arc<Vec<f32>>,
         cancel: &CancellationToken,
         on_progress: &(dyn Fn(f32) + Send + Sync),
+        log: &(dyn for<'a> Fn(&'a str) + Send + Sync),
     ) -> Result<Vec<Turn>, String>;
 
     /// The transcript of `samples` through the transcription API, in parts cached in `folder`.
