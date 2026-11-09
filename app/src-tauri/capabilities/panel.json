@@ -20,6 +20,8 @@
     "allow-dictation-chip-hover",
     "allow-dictation-menu-open",
     "allow-dictation-grant-accessibility",
+    "allow-dictation-open-settings",
+    "allow-panel-state",
     "allow-panel-language",
     "allow-panel-resized"
   ]

@@ -180,8 +180,6 @@ impl Hotkeys {
 
     /// Forgets that the key is down. For the controller to call when it finds that a release was lost: until then
     /// the key counts as held, and every later press is taken for a repeat.
-    // Nothing calls it before the dictation controller lands (Task 10); remove the attribute then.
-    #[allow(dead_code)]
     pub fn reset(&self) {
         lock(&self.gate).reset();
     }
@@ -420,6 +418,7 @@ impl Gate {
 
 /// A key went down or up. When the release can't be told from a repeat yet, a timer sends it once it can.
 fn key_event(gate: &Arc<Mutex<Gate>>, down: bool, now: Instant) {
+    log::debug!("The shortcut went {}", if down { "down" } else { "up" });
     if down {
         lock(gate).pressed(now);
         return;

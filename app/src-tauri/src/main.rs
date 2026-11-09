@@ -3,18 +3,12 @@
 
 mod commands;
 mod config;
-// Nothing calls the chip's rules yet: the dictation controller (Task 10 of the dictation plan) will.
-#[allow(dead_code)]
 mod dictation;
 mod hotkey;
-// Nothing sends a panel state yet: the dictation controller (Task 10 of the dictation plan) will.
-#[allow(dead_code)]
 mod panel;
 // Fixture states for the panels, to look at them without the controller. A debug build only.
 #[cfg(debug_assertions)]
 mod panel_demo;
-// Nothing calls the platform layer yet: the dictation controller (Task 10 of the dictation plan) will.
-#[allow(dead_code)]
 mod platform;
 mod state;
 #[cfg(test)]
@@ -30,6 +24,7 @@ use tauri::{Manager, RunEvent, WindowEvent};
 use tauri_plugin_autostart::MacosLauncher;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
+use dictation::system::DictationHandle;
 use hotkey::HotkeyEvent;
 use state::AppState;
 
@@ -125,6 +120,8 @@ fn main() {
             panel::dictation_chip_hover,
             panel::dictation_menu_open,
             panel::dictation_grant_accessibility,
+            panel::dictation_open_settings,
+            panel::panel_state,
             panel::panel_language,
             panel::panel_resized,
         ])
@@ -176,18 +173,19 @@ fn setup(
     let models_base =
         state::models_base_dir().ok_or("the system has no folder for the app's data")?;
     let models = state::open_model_dir(&models_base)?;
-    let lang = tray::language_for(&store.get());
-    let accel = store.get().hotkey;
+    let initial = store.get();
+    let lang = tray::language_for(&initial);
+    let hotkey = tray::hotkey_label(&initial);
+    let accel = initial.hotkey;
 
     let state = AppState::new(store, warning, Arc::new(KeyringStore::new()), models);
-    // Ask the key store which keys exist once, now and off this thread: a locked Keychain waits for the user. The
-    // settings view waits for the answer, so it never asks again.
     let startup = state.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        startup.loaded_keys();
-    });
     app.manage(state);
-    tray::create(app.handle(), lang)?;
+    // The panels may ask for the controller before it is built: it waits for the key store (a locked Keychain waits for
+    // the person), and the handle is there from the start.
+    let dictation = DictationHandle::default();
+    app.manage(dictation.clone());
+    tray::create(app.handle(), lang, &hotkey)?;
     panel::create(app.handle())?;
     // A debug build can cycle fixture states through the panels, to look at them without the controller.
     #[cfg(debug_assertions)]
@@ -198,8 +196,9 @@ fn setup(
         None => log::info!("The shortcut is {} ({:?})", status.label, status.backend),
         Some(error) => log::warn!("The shortcut {} does not work: {error}", status.label),
     }
-    log_hotkey_events(hotkey_rx);
-    // `dictate --toggle` that starts the app: dictation starts as soon as the controller is there to hear it.
+    // What the shortcut, the tray and `dictate --toggle` say goes to the controller as soon as there is one; until then it
+    // waits in the channel, `--toggle` of this very launch included.
+    dictation::system::start(app.handle().clone(), startup, dictation, hotkey_rx);
     if hotkey::wants_toggle(&std::env::args().collect::<Vec<_>>()) {
         log::info!("Started with --toggle: toggling dictation");
         let _ = hotkey_tx.send(HotkeyEvent::Toggle);
@@ -210,15 +209,6 @@ fn setup(
         tray::show_settings(app.handle());
     }
     Ok(())
-}
-
-/// Until the dictation controller exists (Task 10 of the dictation plan), what the shortcut hears is only logged.
-fn log_hotkey_events(mut events: UnboundedReceiver<HotkeyEvent>) {
-    tauri::async_runtime::spawn(async move {
-        while let Some(event) = events.recv().await {
-            log::info!("Hotkey event: {event:?}");
-        }
-    });
 }
 
 #[cfg(test)]
@@ -256,7 +246,7 @@ mod tests {
     ];
 
     /// The commands of the two floating windows.
-    const PANEL_COMMANDS: [&str; 16] = [
+    const PANEL_COMMANDS: [&str; 18] = [
         "dictation_languages",
         "dictation_stop",
         "dictation_cancel",
@@ -271,6 +261,8 @@ mod tests {
         "dictation_chip_hover",
         "dictation_menu_open",
         "dictation_grant_accessibility",
+        "dictation_open_settings",
+        "panel_state",
         "panel_language",
         "panel_resized",
     ];

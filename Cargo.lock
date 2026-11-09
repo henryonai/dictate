@@ -1112,7 +1112,9 @@ version = "0.1.0"
 dependencies = [
  "arboard",
  "ashpd",
+ "async-trait",
  "block2",
+ "chrono",
  "dictate-core",
  "dictate-services",
  "dirs 7.0.0",

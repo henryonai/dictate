@@ -6,9 +6,10 @@
 use std::path::PathBuf;
 
 use dictate_services::ai::AiConfig;
+use dictate_services::dictation::pipeline::ApiPlan;
 use dictate_services::presets::AiProvider;
 use dictate_services::secrets::{Account, SecretStore};
-use dictate_services::settings::{self, Settings, SettingsStore};
+use dictate_services::settings::{self, Engine, Settings, SettingsStore};
 use dictate_services::transcribe_api::TranscribeConfig;
 use dictate_services::whisper::models::{self, ModelDir};
 
@@ -69,27 +70,18 @@ pub fn transcribe_config(store: &SettingsStore, secrets: &dyn SecretStore) -> Tr
 /// The transcription service as dictation uses it: the dictation model (the one for files when none is set), the
 /// dictation language and the start of the vocabulary as the prompt. `None` when there is no URL, no model or no
 /// key to send: then dictation stays on the local model.
-// Nothing calls it before the dictation controller lands; remove the attribute then.
-#[allow(dead_code)]
 pub fn dictation_transcribe_config(
     s: &Settings,
     secrets: &dyn SecretStore,
 ) -> Option<TranscribeConfig> {
-    let model = if s.dictation_model.trim().is_empty() {
-        &s.transcribe_model
-    } else {
-        &s.dictation_model
-    };
-    if model.trim().is_empty() || s.transcribe_base_url.trim().is_empty() {
-        return None;
-    }
+    let model = dictation_model(s)?;
     let ai_key = saved_key(secrets, Account::Ai);
     let own_key = saved_key(secrets, Account::Transcribe);
     let api_key = settings::effective_transcribe_key(s, ai_key.as_deref(), own_key.as_deref())?;
     let language = whisper_language(&s.dictation_language);
     Some(TranscribeConfig {
         base_url: s.transcribe_base_url.clone(),
-        model: model.clone(),
+        model: model.to_owned(),
         api_key,
         language: (!language.is_empty()).then_some(language),
         prompt: s.vocabulary.chars().take(PROMPT_LIMIT).collect(),
@@ -97,12 +89,46 @@ pub fn dictation_transcribe_config(
     })
 }
 
+/// Which speech API a dictation sends its recording to, when it does: the engine is the API, the service has a model and
+/// an address, and a key is saved for it (`has_ai_key` and `has_transcribe_key` are the flags of `state::KeyFlags`, so
+/// that the key store isn't asked). Without all of it the dictation stays on the local model. The audio goes nowhere else:
+/// with the local engine this is `None`, whatever else is set up.
+pub fn dictation_api_plan(
+    s: &Settings,
+    has_ai_key: bool,
+    has_transcribe_key: bool,
+) -> Option<ApiPlan> {
+    if s.dictation_engine != Engine::Api {
+        return None;
+    }
+    let model = dictation_model(s)?;
+    let key_is_saved =
+        has_transcribe_key || settings::shares_ai_key(s, has_ai_key, has_transcribe_key);
+    key_is_saved.then(|| ApiPlan {
+        model: model.to_owned(),
+        chat: s.transcribe_preset.uses_chat(),
+    })
+}
+
+/// The model the dictation sends audio to: the dictation model, else the one for files. `None` without a model or without
+/// an address to send to.
+fn dictation_model(s: &Settings) -> Option<&str> {
+    let model = if s.dictation_model.trim().is_empty() {
+        &s.transcribe_model
+    } else {
+        &s.dictation_model
+    };
+    (!model.trim().is_empty() && !s.transcribe_base_url.trim().is_empty()).then_some(model.as_str())
+}
+
 /// The language code Whisper and the transcription APIs take, from a BCP-47 locale: `vi-VN` is `vi`.
-// Nothing calls it before the dictation controller lands; remove the attribute then.
-#[allow(dead_code)]
 pub fn whisper_language(bcp47: &str) -> String {
-    let language = bcp47.split('-').next().unwrap_or_default();
-    language.to_lowercase()
+    let language = bcp47.split('-').next().unwrap_or_default().to_lowercase();
+    match language.as_str() {
+        // Whisper's name for Norwegian: it has no "nb".
+        "nb" => "no".to_owned(),
+        _ => language,
+    }
 }
 
 /// The model local transcription uses: the chosen one, else the one recommended for this much RAM. It must be
@@ -371,6 +397,80 @@ mod tests {
         assert_eq!(whisper_language("en-US"), "en");
         assert_eq!(whisper_language("zh-CN"), "zh");
         assert_eq!(whisper_language(""), "");
+    }
+
+    #[test]
+    fn norwegian_bokmal_is_norwegian_to_whisper_and_the_apis() {
+        // Whisper has "no" for it and doesn't know "nb", which the language menu offers (nb-NO).
+        assert_eq!(whisper_language("nb-NO"), "no");
+        assert_eq!(whisper_language("no"), "no");
+        assert_eq!(whisper_language("nn-NO"), "nn");
+    }
+
+    // ---- which speech API the dictation would use
+
+    fn api_settings() -> Settings {
+        Settings {
+            dictation_engine: Engine::Api,
+            ..Settings::default()
+        }
+    }
+
+    #[test]
+    fn the_api_plan_names_the_dictation_model_and_whether_it_takes_chat() {
+        let mut s = api_settings();
+        s.set_transcribe_preset(TranscribePreset::Groq);
+        s.dictation_model = "whisper-large-v3-turbo".into();
+        assert_eq!(
+            dictation_api_plan(&s, false, true),
+            Some(ApiPlan {
+                model: "whisper-large-v3-turbo".into(),
+                chat: false
+            })
+        );
+
+        let mut s = api_settings();
+        s.ai_base_url = "https://openrouter.ai/api/v1".into();
+        s.set_transcribe_preset(TranscribePreset::OpenRouter);
+        let plan = dictation_api_plan(&s, true, false).unwrap();
+        assert!(plan.chat, "OpenRouter takes the audio in a chat message");
+    }
+
+    #[test]
+    fn audio_never_goes_to_the_api_when_the_engine_is_local() {
+        let s = Settings {
+            dictation_engine: Engine::Whisper,
+            ..api_settings()
+        };
+        assert_eq!(dictation_api_plan(&s, true, true), None);
+    }
+
+    #[test]
+    fn the_api_plan_needs_a_key_a_model_and_an_address() {
+        // No key of its own, and none to borrow.
+        assert_eq!(dictation_api_plan(&api_settings(), false, false), None);
+        // The AI key is borrowed by OpenRouter only.
+        assert_eq!(dictation_api_plan(&api_settings(), true, false), None);
+
+        let mut s = api_settings();
+        s.dictation_model.clear();
+        s.transcribe_model.clear();
+        assert_eq!(dictation_api_plan(&s, false, true), None);
+
+        let mut s = api_settings();
+        s.transcribe_base_url = " ".into();
+        assert_eq!(dictation_api_plan(&s, false, true), None);
+    }
+
+    #[test]
+    fn the_api_plan_falls_back_to_the_model_for_files() {
+        let mut s = api_settings();
+        s.dictation_model = " ".into();
+        s.transcribe_model = "whisper-1".into();
+        assert_eq!(
+            dictation_api_plan(&s, false, true).unwrap().model,
+            "whisper-1"
+        );
     }
 
     // ---- the local model

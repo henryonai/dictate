@@ -39,6 +39,8 @@ const COMMANDS: &[&str] = &[
     "dictation_chip_hover",
     "dictation_menu_open",
     "dictation_grant_accessibility",
+    "dictation_open_settings",
+    "panel_state",
     "panel_language",
     "panel_resized",
 ];

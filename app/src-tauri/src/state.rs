@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use dictate_services::secrets::{Account, SecretStore};
 use dictate_services::settings::{LoadWarning, SettingsStore};
+use dictate_services::whisper::local::LocalWhisper;
 use dictate_services::whisper::models::ModelDir;
 use tokio_util::sync::CancellationToken;
 
@@ -23,6 +24,9 @@ pub enum Job {
     Download(String),
     /// A local transcription.
     Transcribe,
+    /// A dictation with this number, from the shortcut to the text in the field. Each has its own, so that a new one
+    /// can begin while the one before it is told to stop.
+    Dictation(u64),
 }
 
 /// The job is running already.
@@ -116,6 +120,53 @@ impl Drop for JobGuard {
     }
 }
 
+/// A model that is loaded once and used by every dictation after it: loading takes seconds and the model takes a
+/// good part of a gigabyte. It is loaded again when another one is asked for.
+pub struct ModelCache<T> {
+    slot: Mutex<Option<(String, Arc<T>)>>,
+}
+
+impl<T> Default for ModelCache<T> {
+    fn default() -> Self {
+        Self {
+            slot: Mutex::new(None),
+        }
+    }
+}
+
+impl<T> ModelCache<T> {
+    /// The model `id`, loaded with `load` when it isn't the one in memory. The lock is held while it loads, so that two
+    /// that ask for the same model at once load it once. A failed load is not remembered: the next one tries again.
+    pub fn get(
+        &self,
+        id: &str,
+        load: impl FnOnce() -> Result<T, String>,
+    ) -> Result<Arc<T>, String> {
+        let mut slot = lock(&self.slot);
+        if let Some((loaded, model)) = slot.as_ref() {
+            if loaded == id {
+                return Ok(Arc::clone(model));
+            }
+        }
+        // The old one goes first: two big models are not in memory at once.
+        *slot = None;
+        let model = Arc::new(load()?);
+        *slot = Some((id.to_owned(), Arc::clone(&model)));
+        Ok(model)
+    }
+
+    /// Lets the model `id` go from memory, because its file is deleted. Another one stays.
+    pub fn forget(&self, id: &str) {
+        let mut slot = lock(&self.slot);
+        if slot.as_ref().is_some_and(|(loaded, _)| loaded == id) {
+            *slot = None;
+        }
+    }
+}
+
+/// The Whisper model of the dictation, in memory.
+pub type WhisperCache = ModelCache<LocalWhisper>;
+
 /// Which keys are saved, as the settings view and the dictation need to know it. Asking the OS key store for
 /// that on every call can make the system show a prompt each time, so it is read once (see
 /// `AppState::loaded_keys`) and kept up to date when a key is saved or removed.
@@ -153,6 +204,7 @@ pub struct AppState {
     pub keys: Arc<KeyFlags>,
     keys_read: Arc<OnceLock<()>>,
     pub models: ModelDir,
+    pub whisper: Arc<WhisperCache>,
     pub jobs: Arc<Jobs>,
     load_warning: Arc<Mutex<Option<String>>>,
 }
@@ -170,6 +222,7 @@ impl AppState {
             keys: Arc::default(),
             keys_read: Arc::default(),
             models,
+            whisper: Arc::default(),
             jobs: Arc::new(Jobs::default()),
             load_warning: Arc::new(Mutex::new(load_warning.map(|warning| warning.message))),
         }
@@ -217,6 +270,7 @@ mod tests {
     use super::*;
     use crate::test_support::{CountingStore, NoKeyring};
     use dictate_services::secrets::MemoryStore;
+    use std::sync::atomic::AtomicUsize;
     use std::thread;
 
     fn download(id: &str) -> Job {
@@ -433,5 +487,93 @@ mod tests {
         assert!(models.root().is_dir());
         // A second start finds it there.
         assert!(open_model_dir(dir.path()).is_ok());
+    }
+
+    // ---- the model in memory
+
+    #[test]
+    fn a_model_is_loaded_once_for_every_dictation() {
+        let cache = ModelCache::<String>::default();
+        let loads = AtomicUsize::new(0);
+        let load = || {
+            loads.fetch_add(1, Ordering::SeqCst);
+            Ok("tiny model".to_string())
+        };
+
+        let first = cache.get("tiny", load).unwrap();
+        let second = cache.get("tiny", load).unwrap();
+
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(loads.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn another_model_replaces_the_one_in_memory() {
+        let cache = ModelCache::<String>::default();
+        let tiny = cache.get("tiny", || Ok("tiny".to_string())).unwrap();
+        let base = cache.get("base", || Ok("base".to_string())).unwrap();
+        assert_eq!((tiny.as_str(), base.as_str()), ("tiny", "base"));
+
+        // The settings went back to the first one: it is loaded again, because only one is kept.
+        let loads = AtomicUsize::new(0);
+        cache
+            .get("tiny", || {
+                loads.fetch_add(1, Ordering::SeqCst);
+                Ok("tiny".to_string())
+            })
+            .unwrap();
+        assert_eq!(loads.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_model_that_fails_to_load_is_asked_for_again_next_time() {
+        let cache = ModelCache::<String>::default();
+        assert_eq!(
+            cache.get("tiny", || Err("damaged".into())).unwrap_err(),
+            "damaged"
+        );
+        // The file was downloaded again meanwhile.
+        assert_eq!(
+            cache.get("tiny", || Ok("fine".into())).unwrap().as_str(),
+            "fine"
+        );
+    }
+
+    #[test]
+    fn a_deleted_model_is_let_go_and_another_one_stays() {
+        let cache = ModelCache::<String>::default();
+        let kept = cache.get("tiny", || Ok("tiny".to_string())).unwrap();
+
+        cache.forget("base");
+        let loads = AtomicUsize::new(0);
+        let load = || {
+            loads.fetch_add(1, Ordering::SeqCst);
+            Ok("tiny".to_string())
+        };
+        assert!(Arc::ptr_eq(&cache.get("tiny", load).unwrap(), &kept));
+        assert_eq!(
+            loads.load(Ordering::SeqCst),
+            0,
+            "another model's deletion unloaded this one"
+        );
+
+        cache.forget("tiny");
+        drop(kept);
+        cache.get("tiny", load).unwrap();
+        assert_eq!(loads.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn dictations_have_jobs_of_their_own() {
+        let jobs = Arc::new(Jobs::default());
+        let first = jobs.start(Job::Dictation(1)).unwrap();
+        // The next dictation begins while the first is being told to stop.
+        let second = jobs.start(Job::Dictation(2)).unwrap();
+        assert!(jobs.cancel(&Job::Dictation(1)));
+        assert!(first.token().is_cancelled());
+        assert!(!second.token().is_cancelled());
+        // Quitting stops them all.
+        assert!(!jobs.cancel_all_and_wait(Duration::from_millis(10)));
+        assert!(second.token().is_cancelled());
     }
 }

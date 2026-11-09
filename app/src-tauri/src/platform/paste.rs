@@ -180,6 +180,7 @@ impl Paster {
     }
 
     /// Whether the user's clipboard is waiting to be given back.
+    #[cfg(test)]
     pub fn restore_pending(&self) -> bool {
         locked(&self.state).held.is_some()
     }

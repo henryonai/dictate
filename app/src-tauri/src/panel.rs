@@ -21,9 +21,11 @@ use dictate_services::dictation::pipeline::Notice;
 use serde::Serialize;
 use tauri::{
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, PhysicalPosition, PhysicalSize,
-    WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+    State, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
 
+use crate::dictation::controller::Controller;
+use crate::dictation::system::DictationHandle;
 use crate::platform::{self, Platform, Rect};
 use crate::state::{lock, AppState};
 use crate::tray;
@@ -195,6 +197,40 @@ pub struct Working {
     pub editing: bool,
 }
 
+/// What a button of an error does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorAction {
+    /// Opens Settings: where a Whisper model is downloaded.
+    OpenSettings,
+}
+
+/// Something that went wrong, as the page tells it: the key of its text in the locale files (`audio.no_device`,
+/// `dictation.not_landed`), the detail the text has a place for, and the button that goes with it, if there is one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PanelError {
+    pub key: String,
+    pub detail: Option<String>,
+    pub action: Option<ErrorAction>,
+}
+
+impl PanelError {
+    pub fn new(key: &str) -> Self {
+        Self {
+            key: key.to_owned(),
+            detail: None,
+            action: None,
+        }
+    }
+
+    pub fn with_detail(key: &str, detail: String) -> Self {
+        Self {
+            detail: Some(detail),
+            ..Self::new(key)
+        }
+    }
+}
+
 /// Everything the two windows draw from, sent as the `panel-state` event. Rust sends keys and values, never words:
 /// the page has the words, in both languages.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -219,6 +255,9 @@ pub struct PanelState {
     pub original: Option<String>,
     pub style: Option<String>,
     pub notice: Option<Notice>,
+    /// What went wrong, apart from what the pipeline reports in `notice`: the microphone, a paste that didn't land, a model
+    /// that is missing.
+    pub error: Option<PanelError>,
     pub from_chip: bool,
     /// The card opens with its custom request box open: the chip's "Custom request…".
     pub open_custom: bool,
@@ -244,6 +283,7 @@ impl PanelState {
             original: None,
             style: None,
             notice: None,
+            error: None,
             from_chip: false,
             open_custom: false,
             can_write: false,
@@ -589,6 +629,16 @@ fn create_card(app: &AppHandle) -> tauri::Result<()> {
 /// Sends the state to both windows, and shows the window of its view and hides the other. A window that is shown
 /// already is left alone: it doesn't take the focus again with every level of the meter.
 pub fn emit_state(app: &AppHandle, state: &PanelState) {
+    // What is on screen, and how much text, never the text itself: what was dictated is the person's own.
+    log::debug!(
+        "Panel state: {:?} in phase {:?}, {} + {} characters live, {} written, error {:?}",
+        state.view,
+        state.phase,
+        state.committed.chars().count(),
+        state.partial.chars().count(),
+        state.text.chars().count(),
+        state.error.as_ref().map(|error| error.key.as_str())
+    );
     for label in WINDOWS {
         if let Err(e) = app.emit_to(label, STATE_EVENT, state) {
             log::warn!("Could not send the panel state to {label}: {e}");
@@ -840,118 +890,184 @@ pub async fn panel_resized(
         .map_err(|e| format!("The work stopped unexpectedly: {e}"))
 }
 
-// The next three are for the dictation controller (Task 10 of the dictation plan) to answer; until it exists they
-// only say that they were asked.
+/// Runs `work` on the controller, on a thread that may block (showing a window asks the system, and saving the settings
+/// writes a file). `None` when the controller isn't there yet: the app has just started, and the key store may be waiting for
+/// the person.
+async fn ask_controller<T: Send + 'static>(
+    dictation: &DictationHandle,
+    work: impl FnOnce(&Controller) -> T + Send + 'static,
+) -> Result<Option<T>, String> {
+    let Some(controller) = dictation.get() else {
+        return Ok(None);
+    };
+    tauri::async_runtime::spawn_blocking(move || work(&controller))
+        .await
+        .map(Some)
+        .map_err(|e| format!("The work stopped unexpectedly: {e}"))
+}
+
+const STARTING: &str = "Dictate is still starting. Try again in a moment.";
+
+/// The panel as it is now: a page that loads after a state was sent asks for it, so that it is not blank until the next one.
+#[tauri::command]
+pub async fn panel_state(dictation: State<'_, DictationHandle>) -> Result<PanelState, String> {
+    Ok(ask_controller(&dictation, Controller::state)
+        .await?
+        .unwrap_or_else(PanelState::hidden))
+}
 
 /// Stop and write: the Stop button of the pill and Return.
 #[tauri::command]
-pub async fn dictation_stop() -> Result<(), String> {
-    log::info!("The panel asked to stop the dictation");
-    Ok(())
+pub async fn dictation_stop(dictation: State<'_, DictationHandle>) -> Result<(), String> {
+    ask_controller(&dictation, Controller::stop).await.map(drop)
 }
 
 /// Drop the dictation: the cross of the bubble and Esc in the pill.
 #[tauri::command]
-pub async fn dictation_cancel() -> Result<(), String> {
-    log::info!("The panel asked to cancel the dictation");
-    Ok(())
+pub async fn dictation_cancel(dictation: State<'_, DictationHandle>) -> Result<(), String> {
+    ask_controller(&dictation, Controller::cancel)
+        .await
+        .map(drop)
 }
 
 /// The language menu: save the language and apply it to what is said from now on.
 #[tauri::command]
-pub async fn dictation_set_language(lang: String) -> Result<(), String> {
-    log::info!("The panel asked to change the dictation language to {lang}");
-    Ok(())
+pub async fn dictation_set_language(
+    dictation: State<'_, DictationHandle>,
+    lang: String,
+) -> Result<(), String> {
+    ask_controller(&dictation, move |c| c.set_language(&lang))
+        .await?
+        .unwrap_or_else(|| Err(STARTING.to_owned()))
 }
 
-// The commands of the result chip and the review card. Like the three above they only say that they were asked until the
-// controller answers them. None of them logs a text: what was dictated is the person's own.
+// The commands of the result chip and the review card. None of them logs a text: what was dictated is the person's own.
 
-/// The chip's menu and the card's style buttons: write the text again in this style (a preset id), as fresh text at
-/// the caret from the chip, in the box of the card from the card.
+/// The chip's menu and the card's style buttons: write the text again in this style (a preset id), as fresh text at the
+/// caret from the chip, in the box of the card from the card.
 #[tauri::command]
-pub async fn dictation_rewrite(style: String) -> Result<(), String> {
-    log::info!("The panel asked to rewrite the text as {style}");
-    Ok(())
+pub async fn dictation_rewrite(
+    dictation: State<'_, DictationHandle>,
+    style: String,
+) -> Result<(), String> {
+    ask_controller(&dictation, move |c| c.rewrite(&style))
+        .await?
+        .unwrap_or(Ok(()))
 }
 
 /// The custom request of the card: write the text again as these words say.
 #[tauri::command]
-pub async fn dictation_custom(instruction: String) -> Result<(), String> {
-    log::info!(
-        "The panel asked for a custom edit ({} characters)",
-        instruction.chars().count()
-    );
-    Ok(())
+pub async fn dictation_custom(
+    dictation: State<'_, DictationHandle>,
+    instruction: String,
+) -> Result<(), String> {
+    ask_controller(&dictation, move |c| c.custom(&instruction))
+        .await
+        .map(drop)
 }
 
 /// The chip's "Edit…" (`custom` false) and "Custom request…" (`custom` true): open the review card on what was written.
 #[tauri::command]
-pub async fn dictation_open_card(custom: bool) -> Result<(), String> {
-    log::info!("The panel asked to open the card (custom request: {custom})");
-    Ok(())
+pub async fn dictation_open_card(
+    dictation: State<'_, DictationHandle>,
+    custom: bool,
+) -> Result<(), String> {
+    ask_controller(&dictation, move |c| c.open_card(custom))
+        .await
+        .map(drop)
 }
 
 /// Put the text on the clipboard: "Copy" of the chip and of the card, "Copy & close" of the card.
 #[tauri::command]
-pub async fn dictation_copy(text: String) -> Result<(), String> {
-    log::info!(
-        "The panel asked to copy {} characters",
-        text.chars().count()
-    );
-    Ok(())
+pub async fn dictation_copy(
+    dictation: State<'_, DictationHandle>,
+    text: String,
+) -> Result<(), String> {
+    ask_controller(&dictation, move |c| c.copy(&text))
+        .await
+        .map(drop)
 }
 
 /// The card's box has this text now: what a style button, "Copy" or "Paste into field" acts on.
 #[tauri::command]
-pub async fn dictation_card_text(text: String) -> Result<(), String> {
-    log::debug!("The card's text is {} characters", text.chars().count());
-    Ok(())
+pub async fn dictation_card_text(
+    dictation: State<'_, DictationHandle>,
+    text: String,
+) -> Result<(), String> {
+    ask_controller(&dictation, move |c| c.card_text(&text))
+        .await
+        .map(drop)
 }
 
 /// The card's "Undo": the text before the AI edit is in the box again.
 #[tauri::command]
-pub async fn dictation_undo() -> Result<(), String> {
-    log::info!("The panel asked to undo the edit");
-    Ok(())
+pub async fn dictation_undo(dictation: State<'_, DictationHandle>) -> Result<(), String> {
+    ask_controller(&dictation, Controller::undo).await.map(drop)
 }
 
 /// The card opened from the chip: hide it and paste this text as fresh text.
 #[tauri::command]
-pub async fn dictation_paste_card(text: String) -> Result<(), String> {
-    log::info!(
-        "The panel asked to paste {} characters from the card",
-        text.chars().count()
-    );
-    Ok(())
+pub async fn dictation_paste_card(
+    dictation: State<'_, DictationHandle>,
+    text: String,
+) -> Result<(), String> {
+    ask_controller(&dictation, move |c| c.paste_card(&text))
+        .await
+        .map(drop)
 }
 
 /// The mouse is over the chip or has left it: the chip stays while it is over. On Windows and Linux the page says it,
 /// on macOS the window does (see `create_bubble`).
 #[tauri::command]
-pub async fn dictation_chip_hover(app: AppHandle, hovering: bool) -> Result<(), String> {
-    chip_hover(&app, hovering);
+pub async fn dictation_chip_hover(
+    dictation: State<'_, DictationHandle>,
+    hovering: bool,
+) -> Result<(), String> {
+    if let Some(controller) = dictation.get() {
+        controller.chip_hover(hovering);
+    }
     Ok(())
 }
 
-/// Where the mouse coming over the chip and leaving it arrives, from the page or from the window. For the controller
-/// to answer.
-pub fn chip_hover(_app: &AppHandle, hovering: bool) {
-    log::debug!("The mouse is over the chip: {hovering}");
+/// Where the mouse coming over the chip and leaving it arrives from the window, on macOS.
+#[cfg(target_os = "macos")]
+fn chip_hover(app: &AppHandle, hovering: bool) {
+    if let Some(controller) = app
+        .try_state::<DictationHandle>()
+        .and_then(|dictation| dictation.get())
+    {
+        controller.chip_hover(hovering);
+    }
 }
 
 /// The chip's menu opened or closed: the chip stays while it is open.
 #[tauri::command]
-pub async fn dictation_menu_open(open: bool) -> Result<(), String> {
-    log::debug!("The chip's menu is open: {open}");
+pub async fn dictation_menu_open(
+    dictation: State<'_, DictationHandle>,
+    open: bool,
+) -> Result<(), String> {
+    if let Some(controller) = dictation.get() {
+        controller.menu_open(open);
+    }
     Ok(())
 }
 
 /// The card's "Grant access…": show the system's prompt for the Accessibility permission.
 #[tauri::command]
-pub async fn dictation_grant_accessibility() -> Result<(), String> {
-    log::info!("The panel asked for the Accessibility permission");
-    Ok(())
+pub async fn dictation_grant_accessibility(
+    dictation: State<'_, DictationHandle>,
+) -> Result<(), String> {
+    ask_controller(&dictation, Controller::grant_accessibility)
+        .await
+        .map(drop)
+}
+
+/// The error's "Open Settings": where a Whisper model is downloaded.
+#[tauri::command]
+pub async fn dictation_open_settings(dictation: State<'_, DictationHandle>) -> Result<(), String> {
+    ask_controller(&dictation, Controller::open_settings)
+        .await
+        .map(drop)
 }
 
 #[cfg(test)]
@@ -1085,6 +1201,11 @@ mod tests {
                 key: NoticeKey::ApiFailed,
                 detail: Some("401".into()),
             }),
+            error: Some(PanelError {
+                key: "dictation.no_model".into(),
+                detail: Some("tiny".into()),
+                action: Some(ErrorAction::OpenSettings),
+            }),
             from_chip: true,
             open_custom: true,
             can_write: true,
@@ -1116,6 +1237,7 @@ mod tests {
                 "original": "hello there",
                 "style": "concise",
                 "notice": { "key": "api_failed", "detail": "401" },
+                "error": { "key": "dictation.no_model", "detail": "tiny", "action": "open_settings" },
                 "fromChip": true,
                 "openCustom": true,
                 "canWrite": true,
@@ -1131,10 +1253,11 @@ mod tests {
             original: None,
             style: None,
             notice: None,
+            error: None,
             ..state()
         };
         let sent = serde_json::to_value(state).unwrap();
-        for key in ["working", "original", "style", "notice"] {
+        for key in ["working", "original", "style", "notice", "error"] {
             assert_eq!(sent[key], Value::Null, "{key}");
         }
     }
@@ -1218,6 +1341,8 @@ mod tests {
             "allow-dictation-chip-hover",
             "allow-dictation-menu-open",
             "allow-dictation-grant-accessibility",
+            "allow-dictation-open-settings",
+            "allow-panel-state",
             "allow-panel-language",
             "allow-panel-resized",
         ];
@@ -1510,5 +1635,129 @@ mod tests {
         let (x, y, _) = place(Some(caret(300.0, 300.0)), (2000.0, 1200.0), SCREEN, None);
         // The right and bottom edges win, as they did in the Swift app.
         assert_eq!((x, y), (1440.0 - 2000.0 + 14.0, 900.0 - 1200.0 + 14.0));
+    }
+
+    // ---- The commands reach the controller -------------------------------------------------------------------------
+
+    /// What the page of `bubble` gets when it asks for `command` of an app that has the controller of `fixture`.
+    fn ask(
+        window: &tauri::WebviewWindow<tauri::test::MockRuntime>,
+        command: &str,
+        args: Value,
+    ) -> Result<Value, String> {
+        use tauri::ipc::{CallbackFn, InvokeBody};
+        use tauri::test::{get_ipc_response, INVOKE_KEY};
+        use tauri::webview::InvokeRequest;
+        let request = InvokeRequest {
+            cmd: command.into(),
+            callback: CallbackFn(0),
+            error: CallbackFn(1),
+            url: if cfg!(windows) {
+                "http://tauri.localhost"
+            } else {
+                "tauri://localhost"
+            }
+            .parse()
+            .unwrap(),
+            body: InvokeBody::Json(args),
+            headers: Default::default(),
+            invoke_key: INVOKE_KEY.to_string(),
+        };
+        get_ipc_response(window, request)
+            .map(|answer| answer.deserialize::<Value>().unwrap())
+            .map_err(|refusal| refusal.to_string())
+    }
+
+    #[test]
+    fn the_panel_commands_drive_the_controller() {
+        use crate::dictation::controller::fakes::Fixture;
+        use crate::dictation::system::DictationHandle;
+        use tauri::test::mock_builder;
+        use tauri::{WebviewUrl, WebviewWindowBuilder};
+
+        let fx = Fixture::new();
+        let handle = DictationHandle::default();
+        handle.set(fx.ctl.clone());
+        let app = mock_builder()
+            .manage(handle)
+            .invoke_handler(tauri::generate_handler![
+                dictation_stop,
+                dictation_cancel,
+                dictation_set_language,
+                dictation_open_settings,
+                dictation_grant_accessibility,
+                panel_state,
+            ])
+            .build(crate::context())
+            .unwrap();
+        let window = WebviewWindowBuilder::new(&app, BUBBLE, WebviewUrl::default())
+            .build()
+            .unwrap();
+
+        // The language is saved, and the state that a page that loads late asks for has it.
+        ask(
+            &window,
+            "dictation_set_language",
+            json!({ "lang": "vi-VN" }),
+        )
+        .unwrap();
+        assert_eq!(fx.settings.get().dictation_language, "vi-VN");
+        assert_eq!(
+            ask(&window, "panel_state", json!({})).unwrap()["language"],
+            "vi-VN"
+        );
+        let refused = ask(&window, "dictation_set_language", json!({ "lang": "../x" }));
+        assert!(refused.is_err());
+
+        // Stop and cancel are the controller's.
+        fx.start_listening();
+        ask(&window, "dictation_stop", json!({})).unwrap();
+        fx.wait_for("the end of the recording", || {
+            fx.ui.last().phase != Phase::Recording
+        });
+        ask(&window, "dictation_cancel", json!({})).unwrap();
+        fx.wait_for("the panels to go", || fx.ui.last().view == View::Hidden);
+
+        ask(&window, "dictation_grant_accessibility", json!({})).unwrap();
+        ask(&window, "dictation_open_settings", json!({})).unwrap();
+        assert_eq!(
+            fx.ui
+                .settings_opened
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+    }
+
+    #[test]
+    fn a_command_asked_before_the_controller_is_built_is_answered_and_does_nothing() {
+        use crate::dictation::system::DictationHandle;
+        use tauri::test::mock_builder;
+        use tauri::{WebviewUrl, WebviewWindowBuilder};
+
+        // The app has just started and the key store is slow: the panels may ask already.
+        let app = mock_builder()
+            .manage(DictationHandle::default())
+            .invoke_handler(tauri::generate_handler![
+                dictation_stop,
+                dictation_set_language,
+                panel_state
+            ])
+            .build(crate::context())
+            .unwrap();
+        let window = WebviewWindowBuilder::new(&app, BUBBLE, WebviewUrl::default())
+            .build()
+            .unwrap();
+        ask(&window, "dictation_stop", json!({})).unwrap();
+        assert_eq!(
+            ask(&window, "panel_state", json!({})).unwrap()["view"],
+            "hidden"
+        );
+        // A language can't be saved with no one to save it.
+        assert!(ask(
+            &window,
+            "dictation_set_language",
+            json!({ "lang": "vi-VN" })
+        )
+        .is_err());
     }
 }

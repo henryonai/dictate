@@ -32,6 +32,7 @@ use tauri_plugin_opener::OpenerExt as _;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::{ai_config, local_model, transcribe_config};
+use crate::dictation::save::SavePaths;
 use crate::hotkey::{ChangeError, HotkeyStatus, Hotkeys, INVALID, TAKEN};
 use crate::state::{lock, AppState, Job, KeyFlags};
 use crate::tray;
@@ -240,7 +241,7 @@ fn save_settings_inner(
 
 /// An API error as shown to the user. An error status with no message gets the HTTP reason phrase, so that a
 /// reply with an empty body doesn't end in "API error 301: ".
-fn api_error_text(error: &ApiError) -> String {
+pub(crate) fn api_error_text(error: &ApiError) -> String {
     match error {
         ApiError::Status { status, message } if message.trim().is_empty() => {
             match reqwest::StatusCode::from_u16(*status)
@@ -255,7 +256,7 @@ fn api_error_text(error: &ApiError) -> String {
     }
 }
 
-fn transcribe_error_text(error: &TranscribeError) -> String {
+pub(crate) fn transcribe_error_text(error: &TranscribeError) -> String {
     match error {
         TranscribeError::Api(e) => api_error_text(e),
         other => other.to_string(),
@@ -380,7 +381,10 @@ fn delete_model_inner(state: &AppState, id: &str) -> Result<(), String> {
     state
         .models
         .delete(id)
-        .map_err(|e| format!("Could not delete the model: {e}"))
+        .map_err(|e| format!("Could not delete the model: {e}"))?;
+    // Its place in memory goes with its file, when it was the model in use.
+    state.whisper.forget(id);
+    Ok(())
 }
 
 fn edit_presets_list() -> Vec<EditPresetView> {
@@ -441,13 +445,23 @@ fn set_launch_at_login(app: &AppHandle, enabled: bool) -> Result<(), String> {
     changed.map_err(|e| format!("Could not change launch at login: {e}"))
 }
 
-/// Opens the meetings folder in the file manager, creating it first if needed.
-pub fn open_meetings_folder_now(app: &AppHandle) -> Result<(), String> {
-    let folder = MeetingLibrary::default_directory();
-    ensure_directory(&folder)?;
+/// Opens a folder in the file manager, creating it first if needed.
+fn open_folder(app: &AppHandle, folder: &Path) -> Result<(), String> {
+    ensure_directory(folder)?;
     app.opener()
         .open_path(folder.to_string_lossy().into_owned(), None::<String>)
         .map_err(|e| format!("Could not open {}: {e}", folder.display()))
+}
+
+/// Opens the meetings folder in the file manager, creating it first if needed.
+pub fn open_meetings_folder_now(app: &AppHandle) -> Result<(), String> {
+    open_folder(app, &MeetingLibrary::default_directory())
+}
+
+/// Opens the folder of the saved dictations (`Dictate/Dictations`), creating it first if needed.
+pub fn open_dictations_folder_now(app: &AppHandle) -> Result<(), String> {
+    let paths = SavePaths::system().ok_or("The system has no folder for the app's data.")?;
+    open_folder(app, &paths.dir)
 }
 
 // ---- the commands
@@ -503,6 +517,7 @@ pub async fn set_transcribe_preset(
 /// `hotkey.taken` (another app has the shortcut) or a sentence about the file.
 #[tauri::command]
 pub async fn set_hotkey(
+    app: AppHandle,
     state: State<'_, AppState>,
     hotkeys: State<'_, Hotkeys>,
     accel: String,
@@ -515,6 +530,8 @@ pub async fn set_hotkey(
     })
     .await??;
     log::info!("The shortcut is now {}", hotkeys.status().label);
+    // The item of the tray menu that starts dictation names the shortcut.
+    tray::refresh(&app, &view.settings);
     Ok(view)
 }
 
