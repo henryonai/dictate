@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use super::{AppId, FieldSnapshot};
 
 /// How often the app that should take the paste is asked whether it is in front, and for how long.
-const FORWARD_POLLS: u32 = 20;
+pub(crate) const FORWARD_POLLS: u32 = 20;
 const FORWARD_POLL: Duration = Duration::from_millis(25);
 /// What an app that was brought forward is given to hand the focus back to its window.
 const FORWARD_SETTLE: Duration = Duration::from_millis(150);
@@ -197,37 +197,9 @@ impl Paster {
         clip: &Arc<dyn Clipboard>,
         keys: &dyn KeySender,
     ) -> PasteResult {
-        // 1 and 2: keep the user's clipboard, and put the text in its place. A restore that is waiting holds the
-        // user's clipboard from before the paste before this one: what is on the clipboard now is that paste's
-        // text, and that clipboard is the one to keep. Unless somebody has copied since: what is on it then is
-        // theirs, and the old one is out of date.
-        let (turn, mark) = {
-            let mut state = locked(&self.state);
-            if let Some(last) = state.mark {
-                if state.held.is_some() && clip.changed_since(&last) {
-                    state.held = None;
-                }
-            }
-            let fresh = state.held.is_none().then(|| clip.snapshot());
-            let mark = match clip.write_transient(text) {
-                Ok(mark) => mark,
-                Err(error) => {
-                    // The write may have cleared the clipboard on its way to failing: what was on it before this
-                    // paste is put back, the snapshot just taken or the user's own that a restore was waiting
-                    // to give back (which has nothing left to wait for).
-                    if let Some(snapshot) = fresh.or_else(|| state.held.take().map(|h| h.snapshot))
-                    {
-                        clip.restore(snapshot);
-                    }
-                    return PasteResult::CopiedOnly(CopyReason::NotCopied(error));
-                }
-            };
-            if let Some(snapshot) = fresh {
-                state.held = Some(Held { snapshot });
-            }
-            state.turn += 1;
-            state.mark = Some(mark);
-            (state.turn, mark)
+        let (turn, mark) = match self.put_on_clipboard(text, clip) {
+            Ok(put) => put,
+            Err(reason) => return PasteResult::CopiedOnly(reason),
         };
 
         // 3: the app that is to take the paste.
@@ -262,6 +234,57 @@ impl Paster {
             self.leave_on_clipboard(turn);
         }
         PasteResult::Pasted
+    }
+
+    /// Steps 1 and 2 of a paste: keeps the user's clipboard, and puts the text in its place. The number of the turn and
+    /// what the clipboard is like now; or, when the text could not be written, why (it is not on the clipboard, and the
+    /// user's own is as it was).
+    fn put_on_clipboard(
+        &self,
+        text: &str,
+        clip: &Arc<dyn Clipboard>,
+    ) -> Result<(u64, ChangeMark), CopyReason> {
+        // A restore that is waiting holds the user's clipboard from before the paste before this one: what is on the
+        // clipboard now is that paste's text, and that clipboard is the one to keep. Unless somebody has copied since:
+        // what is on it then is theirs, and the old one is out of date.
+        let mut state = locked(&self.state);
+        if let Some(last) = state.mark {
+            if state.held.is_some() && clip.changed_since(&last) {
+                state.held = None;
+            }
+        }
+        let fresh = state.held.is_none().then(|| clip.snapshot());
+        let mark = match clip.write_transient(text) {
+            Ok(mark) => mark,
+            Err(error) => {
+                // The write may have cleared the clipboard on its way to failing: what was on it before this
+                // paste is put back, the snapshot just taken or the user's own that a restore was waiting
+                // to give back (which has nothing left to wait for).
+                if let Some(snapshot) = fresh.or_else(|| state.held.take().map(|h| h.snapshot)) {
+                    clip.restore(snapshot);
+                }
+                return Err(CopyReason::NotCopied(error));
+            }
+        };
+        if let Some(snapshot) = fresh {
+            state.held = Some(Held { snapshot });
+        }
+        state.turn += 1;
+        state.mark = Some(mark);
+        Ok((state.turn, mark))
+    }
+
+    /// For a caller that found that the app would not come forward: the text goes on the clipboard for the user to
+    /// paste and nothing is pasted, with no second try at bringing the app forward (the caller has not looked at what
+    /// is in its field since).
+    pub fn copy_instead(&self, text: &str, clip: &Arc<dyn Clipboard>) -> CopyReason {
+        match self.put_on_clipboard(text, clip) {
+            Ok((turn, _)) => {
+                self.leave_on_clipboard(turn);
+                CopyReason::AppNotForward
+            }
+            Err(reason) => reason,
+        }
     }
 
     /// Asks `target` to come forward and waits until it is: the app that is in front already takes the paste at
@@ -851,6 +874,33 @@ mod tests {
         assert!(!f.paster.restore_pending());
         f.clock.release();
         assert_eq!(f.clip.text(), "hello");
+    }
+
+    #[test]
+    fn paster_copy_instead_leaves_the_text_on_the_clipboard_and_asks_nothing_of_any_app() {
+        let f = Fixture::new(true);
+        let clip: Arc<dyn Clipboard> = f.clip.clone();
+
+        let reason = f.paster.copy_instead("hello", &clip);
+
+        assert_eq!(reason, CopyReason::AppNotForward);
+        // The text is there for the user, nothing is waiting to take it away, and no app was asked to come forward or sent a key.
+        assert_eq!(names(&f.events()), ["snapshot", "write hello"]);
+        assert!(!f.paster.restore_pending());
+        f.clock.release();
+        assert_eq!(f.clip.text(), "hello");
+    }
+
+    #[test]
+    fn paster_copy_instead_that_cannot_write_says_the_text_is_not_on_the_clipboard() {
+        let f = Fixture::new(true);
+        f.clip.fail_writes("clipboard busy");
+        let clip: Arc<dyn Clipboard> = f.clip.clone();
+
+        let reason = f.paster.copy_instead("hello", &clip);
+
+        assert_eq!(reason, CopyReason::NotCopied("clipboard busy".into()));
+        assert_eq!(f.clip.text(), "original");
     }
 
     #[test]

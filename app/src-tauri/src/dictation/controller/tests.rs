@@ -346,6 +346,64 @@ fn controller_a_field_that_became_a_password_field_is_not_pasted_into() {
 }
 
 #[test]
+fn controller_an_app_that_does_not_come_forward_in_time_gets_no_paste_that_was_not_checked() {
+    use crate::platform::paste::FORWARD_POLLS;
+    // The app comes forward only at the second round of asking: after the wait that decided it would not. The field was never
+    // looked at in front (it may be a password field by now), so that nothing is pasted, and the text waits on the clipboard.
+    let fx = Fixture::new();
+    fx.keys
+        .forward_after
+        .store(1 + FORWARD_POLLS as usize, Ordering::SeqCst);
+    fx.start_listening();
+    fx.talk(1);
+    fx.press();
+    fx.wait_for_view(View::Card);
+    fx.wait_for("the card", || fx.ui.last().phase == Phase::Review);
+
+    assert_eq!(error_key(&fx.ui.last()), Some("dictation.copied_only"));
+    assert_eq!(fx.ui.last().text, "Hello, world.");
+    assert!(fx.keys.pastes.lock().unwrap().is_empty());
+    assert_eq!(*fx.clipboard.writes.lock().unwrap(), ["Hello, world."]);
+    assert_eq!(
+        fx.keys.forwarded.lock().unwrap().len(),
+        1 + FORWARD_POLLS as usize,
+        "the app was asked again for the paste"
+    );
+}
+
+#[test]
+fn controller_a_field_that_cannot_be_read_when_the_text_is_ready_is_a_card_except_on_linux() {
+    // The app is in front and the system can't say what its focus is: not knowing that it is no password field, nothing is
+    // pasted on macOS and Windows. Linux can't tell a field from another at all, and pastes.
+    for os in [Os::Mac, Os::Windows] {
+        let fx = Fixture::on(os);
+        fx.platform.lookups.set([a_field(), FieldLookup::Unknown]);
+        fx.start_listening();
+        fx.talk(1);
+        fx.press();
+        fx.wait_for_view(View::Card);
+        fx.wait_for("the card", || fx.ui.last().phase == Phase::Review);
+        assert_eq!(
+            error_key(&fx.ui.last()),
+            Some("dictation.not_written"),
+            "{os:?}"
+        );
+        assert!(fx.keys.pastes.lock().unwrap().is_empty(), "{os:?}");
+    }
+
+    let linux = Fixture::on(Os::Linux);
+    linux
+        .platform
+        .lookups
+        .set([FieldLookup::Unknown, FieldLookup::Unknown]);
+    linux.start_listening();
+    linux.talk(1);
+    linux.press();
+    linux.run_until("the chip", || linux.chip_is_up());
+    assert_eq!(linux.keys.pastes.lock().unwrap().len(), 1);
+}
+
+#[test]
 fn controller_quick_hold_waits_for_lookup() {
     let fx = Fixture::new();
     fx.change_settings(|s| s.push_to_talk = true);

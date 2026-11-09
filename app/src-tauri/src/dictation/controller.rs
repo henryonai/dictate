@@ -1309,7 +1309,7 @@ impl Controller {
     /// Pastes the text into the field, and checks that the field took it. The panels are out of the way first. Then the app comes
     /// forward and its field is looked at: it may have become a password field since the dictation began, and the person may
     /// have gone to another app, so what is looked at must be the app that takes the paste, once it is in front. An app that
-    /// will not come forward is left to [`Controller::paste`], which says so.
+    /// will not come forward gets no paste: the text is copied, and the card says so.
     fn write_into_field(
         &self,
         id: u64,
@@ -1333,13 +1333,19 @@ impl Controller {
             });
         }
         self.publish();
-        let in_front = self.deps.paster.bring_forward(app, &*self.deps.keys);
-        let result = match in_front.then(|| self.field_turned_away()).flatten() {
-            Some(reason) => {
-                log::info!("Not pasting: the field is {reason:?} now");
-                Err(PanelError::new("dictation.not_written"))
+        let result = if self.deps.paster.bring_forward(app, &*self.deps.keys) {
+            match self.field_turned_away() {
+                Some(reason) => {
+                    log::info!("Not pasting: the field is {reason:?} now");
+                    Err(PanelError::new("dictation.not_written"))
+                }
+                None => self.paste(text, app, terminal),
             }
-            None => self.paste(text, app, terminal),
+        } else {
+            // It would not come forward: a paste that asked it again could land in an app whose field was not looked at,
+            // so that the text only waits on the clipboard.
+            let reason = self.deps.paster.copy_instead(text, &self.deps.clipboard);
+            Err(paste_error(&reason))
         };
         self.inner().writing = false;
         result

@@ -394,14 +394,21 @@ pub struct FakeKeys {
     pub pastes: Mutex<Vec<(bool, bool)>>,
     pub last_post: Mutex<Option<Instant>>,
     pub forward_ok: AtomicBool,
+    /// The first questions to `bring_forward` that get "no" before it says yes (when `forward_ok`): an app that comes late.
+    pub forward_after: AtomicUsize,
     pub paste_error: Mutex<Option<PasteError>>,
 }
 
 impl KeySender for FakeKeys {
     fn bring_forward(&self, app: &AppId) -> bool {
         self.log.add("forward");
-        lock(&self.forwarded).push(app.clone());
-        let comes = self.forward_ok.load(Ordering::SeqCst);
+        let asked = {
+            let mut forwarded = lock(&self.forwarded);
+            forwarded.push(app.clone());
+            forwarded.len()
+        };
+        let comes = self.forward_ok.load(Ordering::SeqCst)
+            && asked > self.forward_after.load(Ordering::SeqCst);
         if comes {
             self.platform.set_front(Some(app.clone()));
         }
@@ -793,6 +800,7 @@ impl Fixture {
             pastes: Mutex::default(),
             last_post: Mutex::new(None),
             forward_ok: AtomicBool::new(true),
+            forward_after: AtomicUsize::new(0),
             paste_error: Mutex::new(None),
         });
         let mic = Arc::new(FakeMic {
