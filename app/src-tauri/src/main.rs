@@ -5,6 +5,7 @@ mod commands;
 mod config;
 mod dictation;
 mod hotkey;
+mod meetings;
 mod panel;
 // Fixture states for the panels, to look at them without the controller. A debug build only.
 #[cfg(debug_assertions)]
