@@ -1,8 +1,9 @@
 <script lang="ts">
   import { api, errorText } from "../lib/api";
-  import { trapTab } from "../lib/focus";
+  import { Flash } from "../lib/flash.svelte";
   import { t } from "../lib/i18n";
   import type { MeetingsStore } from "../lib/meetings-store.svelte";
+  import Modal from "./Modal.svelte";
 
   // The log of a recording, in a sheet over the window. It is open while the store has a recording whose log to show.
   let { store }: { store: MeetingsStore } = $props();
@@ -17,7 +18,12 @@
   let text = $state<string | null>(null);
   let failure = $state("");
   let closeButton: HTMLButtonElement | undefined = $state();
-  let sheet: HTMLElement | undefined = $state();
+  const copied = new Flash();
+  $effect(() => () => copied.clear());
+
+  async function copy() {
+    if (text && (await store.copy(text))) copied.show();
+  }
 
   $effect(() => {
     const open = id;
@@ -47,29 +53,11 @@
       if (before instanceof HTMLElement) before.focus();
     };
   });
-
-  function onkeydown(event: KeyboardEvent) {
-    if (id === null) return;
-    if (event.key === "Escape") {
-      event.preventDefault();
-      store.closeLog();
-    } else {
-      trapTab(event, sheet);
-    }
-  }
 </script>
 
-<svelte:window {onkeydown} />
-
 {#if id !== null}
-  <div
-    class="backdrop"
-    role="presentation"
-    onclick={(event) => {
-      if (event.target === event.currentTarget) store.closeLog();
-    }}
-  >
-    <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="log-title" bind:this={sheet}>
+  <Modal labelledby="log-title" onclose={() => store.closeLog()}>
+    <div class="sheet">
       <h2 id="log-title">{t("meetings.log.title", { title })}</h2>
       <div class="body">
         {#if failure}
@@ -83,34 +71,20 @@
         {/if}
       </div>
       <div class="actions">
-        <button type="button" disabled={!text || text.trim() === ""} onclick={() => text && store.copy(text)}>{t("meetings.log.copy")}</button>
+        <button type="button" disabled={!text || text.trim() === ""} onclick={copy}>{copied.on ? t("meetings.copied") : t("meetings.log.copy")}</button>
         <button type="button" class="primary" bind:this={closeButton} onclick={() => store.closeLog()}>{t("meetings.log.close")}</button>
       </div>
     </div>
-  </div>
+  </Modal>
 {/if}
 
 <style>
-  .backdrop {
-    position: fixed;
-    inset: 0;
-    z-index: 20;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: rgb(0 0 0 / 0.4);
-  }
   .sheet {
     display: flex;
     flex-direction: column;
     gap: 10px;
-    width: min(720px, calc(100vw - 32px));
-    height: min(480px, calc(100vh - 32px));
-    padding: 14px 16px;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    box-shadow: 0 10px 30px rgb(0 0 0 / 0.35);
+    width: min(720px, calc(100vw - 64px));
+    height: min(480px, calc(100vh - 64px));
   }
   h2 {
     margin: 0;

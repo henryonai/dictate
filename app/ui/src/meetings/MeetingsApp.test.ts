@@ -2,9 +2,10 @@ import { fireEvent, render, screen, within } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api } from "../lib/api";
-import type { MeetingRow } from "../lib/api";
+import type { MeetingRow, Readiness } from "../lib/api";
 import { setLanguage } from "../lib/i18n";
 import { fakeDetail, fakeError, fakeJob, fakeRow, stubMeetingsApi } from "../test-helpers";
+import { MeetingsStore } from "../lib/meetings-store.svelte";
 import MeetingsApp from "./MeetingsApp.svelte";
 
 const ID = "2026-03-02 10-00-00";
@@ -21,8 +22,9 @@ const rows: MeetingRow[] = [
 let events: ReturnType<typeof stubMeetingsApi>;
 
 /** Renders the window with these rows in the library, and waits until it has read the list. */
-async function open(library: MeetingRow[] = rows) {
+async function open(library: MeetingRow[] = rows, readiness?: Readiness) {
   events = stubMeetingsApi(library);
+  if (readiness) events.setReadiness(readiness);
   const view = render(MeetingsApp);
   await vi.waitFor(() => expect(api.meetingsList).toHaveBeenCalled());
   await view.findByRole("toolbar");
@@ -237,10 +239,10 @@ test("a pasted link that is refused says why in a notice that can be dismissed",
 
   await paste("http://");
 
-  const notice = await screen.findByRole("status");
+  const notice = await screen.findByRole("alert");
   expect(notice).toHaveTextContent("Invalid link.");
   await user.click(within(notice).getByRole("button", { name: "Dismiss" }));
-  expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 });
 
 test("drop_files_imports_paths: files that are dropped are imported by their paths, and their recording is selected", async () => {
@@ -273,7 +275,7 @@ test("a drop ends the message, and a drop of a folder says that there was nothin
 
   events.emitDrop({ type: "drop", paths: ["/home/lan/folder"] });
 
-  expect(await screen.findByRole("status")).toHaveTextContent("Nothing to import: drop files, not folders.");
+  expect(await screen.findByRole("alert")).toHaveTextContent("Nothing to import: drop files, not folders.");
   expect(screen.queryByText("Drop video or audio files here to summarize them")).not.toBeInTheDocument();
 });
 
@@ -286,7 +288,7 @@ test("the drop is heard until the window goes away", async () => {
   await vi.waitFor(() => expect(events.listening()).toEqual({ jobs: 0, changed: 0, drops: 0 }));
 });
 
-test("the Add menu offers a file and a link, and a file is chosen with the dialog of the system", async () => {
+test("the Add button opens a panel that offers a file and a link, and a file is chosen with the dialog of the system", async () => {
   const user = userEvent.setup();
   await open();
   const add = screen.getByRole("button", { name: "Add file or link" });
@@ -294,33 +296,33 @@ test("the Add menu offers a file and a link, and a file is chosen with the dialo
 
   await user.click(add);
   expect(add).toHaveAttribute("aria-expanded", "true");
-  const menu = screen.getByRole("menu");
-  expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
+  const menu = screen.getByRole("group", { name: "Add file or link" });
+  expect(within(menu).getAllByRole("button").map((item) => item.textContent)).toEqual([
     "Choose video/audio file…",
     "Paste a link (YouTube, Vimeo…)…",
   ]);
 
   vi.mocked(api.meetingsPickFiles).mockResolvedValue([ID]);
-  await user.click(within(menu).getByRole("menuitem", { name: "Choose video/audio file…" }));
+  await user.click(within(menu).getByRole("button", { name: "Choose video/audio file…" }));
 
   expect(api.meetingsPickFiles).toHaveBeenCalled();
-  expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  expect(screen.queryByRole("group", { name: "Add file or link" })).not.toBeInTheDocument();
   expect(await screen.findByRole("heading", { level: 1, name: "Weekly planning" })).toBeInTheDocument();
 });
 
-test("the menu closes with Esc, and with a click anywhere else", async () => {
+test("the panel closes with Esc, and with a click anywhere else", async () => {
   const user = userEvent.setup();
   await open();
   const add = screen.getByRole("button", { name: "Add file or link" });
 
   await user.click(add);
   await user.keyboard("{Escape}");
-  expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  expect(screen.queryByRole("group", { name: "Add file or link" })).not.toBeInTheDocument();
   expect(add).toHaveFocus();
 
   await user.click(add);
   await user.click(document.body);
-  expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  expect(screen.queryByRole("group", { name: "Add file or link" })).not.toBeInTheDocument();
 });
 
 test("the link dialog is filled with the link that is on the clipboard", async () => {
@@ -329,7 +331,7 @@ test("the link dialog is filled with the link that is on the clipboard", async (
   await navigator.clipboard.writeText("https://vimeo.com/123");
 
   await user.click(screen.getByRole("button", { name: "Add file or link" }));
-  await user.click(screen.getByRole("menuitem", { name: "Paste a link (YouTube, Vimeo…)…" }));
+  await user.click(screen.getByRole("button", { name: "Paste a link (YouTube, Vimeo…)…" }));
 
   const dialog = await screen.findByRole("dialog", { name: "Summarize a video from a link" });
   expect(within(dialog).getByText("YouTube or any site yt-dlp supports.")).toBeInTheDocument();
@@ -348,7 +350,7 @@ test("the link dialog starts empty when what is on the clipboard is not a link",
   await navigator.clipboard.writeText("buy milk");
 
   await user.click(screen.getByRole("button", { name: "Add file or link" }));
-  await user.click(screen.getByRole("menuitem", { name: "Paste a link (YouTube, Vimeo…)…" }));
+  await user.click(screen.getByRole("button", { name: "Paste a link (YouTube, Vimeo…)…" }));
 
   const field = await screen.findByRole("textbox", { name: "Link" });
   await Promise.resolve();
@@ -361,7 +363,7 @@ test("the link dialog starts empty when the clipboard can't be read", async () =
   vi.spyOn(navigator.clipboard, "readText").mockRejectedValue(new Error("denied"));
 
   await user.click(screen.getByRole("button", { name: "Add file or link" }));
-  await user.click(screen.getByRole("menuitem", { name: "Paste a link (YouTube, Vimeo…)…" }));
+  await user.click(screen.getByRole("button", { name: "Paste a link (YouTube, Vimeo…)…" }));
 
   expect(await screen.findByRole("textbox", { name: "Link" })).toHaveValue("");
 });
@@ -371,12 +373,12 @@ test("Cancel and Esc close the link dialog without importing", async () => {
   await open();
 
   await user.click(screen.getByRole("button", { name: "Add file or link" }));
-  await user.click(screen.getByRole("menuitem", { name: "Paste a link (YouTube, Vimeo…)…" }));
+  await user.click(screen.getByRole("button", { name: "Paste a link (YouTube, Vimeo…)…" }));
   await user.click(await screen.findByRole("button", { name: "Cancel" }));
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 
   await user.click(screen.getByRole("button", { name: "Add file or link" }));
-  await user.click(screen.getByRole("menuitem", { name: "Paste a link (YouTube, Vimeo…)…" }));
+  await user.click(screen.getByRole("button", { name: "Paste a link (YouTube, Vimeo…)…" }));
   await screen.findByRole("dialog");
   await user.keyboard("{Escape}");
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
@@ -389,7 +391,7 @@ test("a link that is refused leaves the dialog open, with the reason", async () 
   vi.mocked(api.meetingsImportLink).mockRejectedValue(fakeError({ key: "meetings.error.invalid_link", detail: null }));
 
   await user.click(screen.getByRole("button", { name: "Add file or link" }));
-  await user.click(screen.getByRole("menuitem", { name: "Paste a link (YouTube, Vimeo…)…" }));
+  await user.click(screen.getByRole("button", { name: "Paste a link (YouTube, Vimeo…)…" }));
   await user.type(await screen.findByRole("textbox", { name: "Link" }), "nope{Enter}");
 
   expect(await screen.findByRole("alert")).toHaveTextContent("Invalid link.");
@@ -429,14 +431,109 @@ test("a job event moves the row of the list without asking for the list", async 
   expect(api.meetingsList).not.toHaveBeenCalled();
 });
 
-test("the window speaks the language of the system, and tells the page which it is", async () => {
-  vi.spyOn(navigator, "language", "get").mockReturnValue("vi-VN");
-
-  await open();
+test("readiness_language_vi_makes_the_window_vietnamese: it speaks the language that the settings choose, and tells the page", async () => {
+  await open(rows, { ai: true, whisper: true, language: "vi" });
 
   expect(await screen.findByText("Chọn một bản ghi")).toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "Hôm nay" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Thêm file hoặc link" })).toBeInTheDocument();
   expect(screen.getByRole("searchbox", { name: "Tìm trong tóm tắt và transcript" })).toBeInTheDocument();
   expect(document.documentElement.lang).toBe("vi");
+});
+
+test("it speaks English when the settings say so, whatever the language of the system is", async () => {
+  vi.spyOn(navigator, "language", "get").mockReturnValue("vi-VN");
+
+  await open(rows, { ai: true, whisper: true, language: "en" });
+
+  expect(await screen.findByText("Select a recording")).toBeInTheDocument();
+  expect(document.documentElement.lang).toBe("en");
+});
+
+test("a change of the language in Settings shows when the window gets the focus back", async () => {
+  await open();
+  expect(await screen.findByText("Select a recording")).toBeInTheDocument();
+
+  events.setReadiness({ ai: true, whisper: true, language: "vi" });
+  window.dispatchEvent(new Event("focus"));
+
+  expect(await screen.findByText("Chọn một bản ghi")).toBeInTheDocument();
+});
+
+// ---- Things that go wrong, and dialogs
+
+test("a window that can't hear the drop says so in a notice, and the list is there all the same", async () => {
+  events = stubMeetingsApi(rows);
+  vi.mocked(api.onFileDrop).mockRejectedValue("Dropping files is not available.");
+
+  render(MeetingsApp);
+
+  expect(await screen.findByRole("alert")).toHaveTextContent("Dropping files is not available.");
+  expect(await screen.findByRole("button", { name: /Weekly planning/ })).toBeInTheDocument();
+});
+
+test("a start that fails says so in a notice, and not with a blank window", async () => {
+  events = stubMeetingsApi(rows);
+  vi.spyOn(MeetingsStore.prototype, "start").mockRejectedValue("The window could not start.");
+
+  render(MeetingsApp);
+
+  expect(await screen.findByRole("alert")).toHaveTextContent("The window could not start.");
+});
+
+test("a link pasted while the log is open is not imported", async () => {
+  const user = userEvent.setup();
+  const failed = fakeRow({ id: ID, title: "Weekly planning", created: at(0, 8), error: fakeError() });
+  await open([failed]);
+  await user.click(await screen.findByRole("button", { name: /Weekly planning/ }));
+  await user.click(await screen.findByRole("button", { name: "View log" }));
+  await screen.findByRole("dialog", { name: "Log — Weekly planning" });
+
+  await paste("https://youtu.be/abc");
+
+  expect(api.meetingsImportLink).not.toHaveBeenCalled();
+});
+
+test("a link pasted while the link dialog is open is not imported behind its back", async () => {
+  const user = userEvent.setup();
+  await open();
+  await user.click(screen.getByRole("button", { name: "Add file or link" }));
+  await user.click(screen.getByRole("button", { name: "Paste a link (YouTube, Vimeo…)…" }));
+  await screen.findByRole("dialog");
+
+  // Pasted on the dialog itself, not in its field.
+  await paste("https://youtu.be/abc", screen.getByRole("dialog"));
+
+  expect(api.meetingsImportLink).not.toHaveBeenCalled();
+});
+
+test("a link is imported again by a paste once the dialog is closed", async () => {
+  const user = userEvent.setup();
+  await open();
+  await user.click(screen.getByRole("button", { name: "Add file or link" }));
+  await user.click(screen.getByRole("button", { name: "Paste a link (YouTube, Vimeo…)…" }));
+  await screen.findByRole("dialog");
+  await user.keyboard("{Escape}");
+
+  await paste("https://youtu.be/abc");
+
+  await vi.waitFor(() => expect(api.meetingsImportLink).toHaveBeenCalledWith("https://youtu.be/abc"));
+});
+
+test("a press that starts in the link dialog and ends on the backdrop (a selection that was dragged) does not close it", async () => {
+  const user = userEvent.setup();
+  await open();
+  await user.click(screen.getByRole("button", { name: "Add file or link" }));
+  await user.click(screen.getByRole("button", { name: "Paste a link (YouTube, Vimeo…)…" }));
+  const dialog = await screen.findByRole("dialog");
+  const backdrop = dialog.parentElement as HTMLElement;
+
+  await fireEvent.pointerDown(within(dialog).getByRole("textbox", { name: "Link" }));
+  await fireEvent.click(backdrop);
+  expect(screen.getByRole("dialog")).toBeInTheDocument();
+
+  // A press that is on the backdrop from start to end closes it.
+  await fireEvent.pointerDown(backdrop);
+  await fireEvent.click(backdrop);
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 });

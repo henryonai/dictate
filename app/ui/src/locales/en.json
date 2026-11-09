@@ -301,7 +301,7 @@
   "meetings.errorcard.open_api": "Open API settings",
   "meetings.errorcard.retry_summary": "Retry summary",
   "meetings.errorcard.copy_command": "Copy install command",
-  "meetings.errorcard.copied": "Copied",
+  "meetings.copied": "Copied",
   "meetings.errorcard.retry": "Try again",
   "meetings.errorcard.view_log": "View log",
   "meetings.log.title": "Log — {title}",

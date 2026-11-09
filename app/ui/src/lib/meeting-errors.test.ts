@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { fakeError } from "../test-helpers";
-import { asErrorView, errorMessage } from "./meeting-errors";
+import { errorMessage } from "./meeting-errors";
 import { setLanguage } from "./i18n";
 
 afterEach(() => setLanguage("en"));
@@ -41,27 +41,5 @@ describe("errorMessage", () => {
   test("an error that says nothing says that something went wrong", () => {
     expect(errorMessage(fakeError({ key: "meetings.error.other", detail: "" }))).toBe("Something went wrong.");
     expect(errorMessage(fakeError({ key: "meetings.error.other", detail: null }))).toBe("Something went wrong.");
-  });
-});
-
-describe("asErrorView", () => {
-  test("keeps what the Rust side sent as an error", () => {
-    const view = fakeError({ kind: "Api", key: "meetings.error.no_ai", detail: null });
-    expect(asErrorView(view)).toBe(view);
-  });
-
-  test("makes an error of the sentence a command failed with, or of an Error", () => {
-    expect(asErrorView("The recording was not found.")).toEqual({
-      kind: "Other",
-      key: "meetings.error.other",
-      detail: "The recording was not found.",
-      command: null,
-    });
-    expect(asErrorView(new Error("IPC is down")).detail).toBe("IPC is down");
-  });
-
-  test("an object that is not an error of the Rust side is no error view", () => {
-    expect(asErrorView({ message: "x" }).key).toBe("meetings.error.other");
-    expect(asErrorView(null).key).toBe("meetings.error.other");
   });
 });

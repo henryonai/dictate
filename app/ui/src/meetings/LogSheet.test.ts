@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/svelte";
+import { fireEvent, render, screen, within } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api } from "../lib/api";
@@ -53,6 +53,55 @@ test("Copy puts the whole log on the clipboard", async () => {
   await user.click(screen.getByRole("button", { name: "Copy" }));
 
   expect(api.copyText).toHaveBeenCalledWith("line one\nline two");
+});
+
+test("Copy says that it has copied, for a moment", async () => {
+  vi.mocked(api.meetingLog).mockResolvedValue("line one");
+  render(LogSheet, { store });
+  store.showLog(ID);
+  await screen.findByText(/line one/);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+
+  await fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+  await vi.advanceTimersByTimeAsync(0);
+  expect(screen.getByRole("button", { name: "Copied" })).toBeInTheDocument();
+
+  await vi.advanceTimersByTimeAsync(2000);
+  expect(screen.getByRole("button", { name: "Copy" })).toBeInTheDocument();
+  vi.useRealTimers();
+});
+
+test("a copy that failed does not say that it copied", async () => {
+  vi.mocked(api.meetingLog).mockResolvedValue("line one");
+  vi.mocked(api.copyText).mockRejectedValue("The clipboard is busy.");
+  render(LogSheet, { store });
+  store.showLog(ID);
+  await screen.findByText(/line one/);
+
+  await fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+
+  await vi.waitFor(() => expect(store.notice).toBe("The clipboard is busy."));
+  expect(screen.getByRole("button", { name: "Copy" })).toBeInTheDocument();
+});
+
+test("a press that starts in the sheet and ends on the backdrop (a selection that was dragged) does not close it", async () => {
+  vi.mocked(api.meetingLog).mockResolvedValue("some log");
+  render(LogSheet, { store });
+  store.showLog(ID);
+  const sheet = await screen.findByRole("dialog");
+  await screen.findByText("some log");
+  const backdrop = sheet.parentElement as HTMLElement;
+
+  await fireEvent.pointerDown(screen.getByText("some log"));
+  await fireEvent.click(backdrop);
+  expect(screen.getByRole("dialog")).toBeInTheDocument();
+  expect(store.logFor).toBe(ID);
+
+  // A press that is on the backdrop from start to end closes it.
+  await fireEvent.pointerDown(backdrop);
+  await fireEvent.click(backdrop);
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(store.logFor).toBeNull();
 });
 
 test("an empty log says so, and has nothing to copy", async () => {

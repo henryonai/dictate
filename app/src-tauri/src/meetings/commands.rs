@@ -32,7 +32,8 @@ pub const SETTINGS_TAB_EVENT: &str = "settings-tab";
 /// How long `ffmpeg -version` and `yt-dlp --version` may take.
 const VERSION_LIMIT: Duration = Duration::from_secs(10);
 
-/// What the empty state of the window and its "no summary" texts need to know of the settings.
+/// What the window needs to know of the settings, which are Settings' own: the empty state and the "no summary" texts need to
+/// know what is set up, and the window speaks the language of the UI that the settings choose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Readiness {
@@ -40,6 +41,9 @@ pub struct Readiness {
     pub ai: bool,
     /// The Whisper model of this computer is downloaded.
     pub whisper: bool,
+    /// The language of the UI, as the settings choose it (`"en"` or `"vi"`; "same as the system" is already resolved). The
+    /// window reads it when it opens and when it gets the focus back, so a change in Settings reaches it.
+    pub language: tray::Lang,
 }
 
 /// Which of the tools of the system are installed, with their versions.
@@ -50,13 +54,14 @@ pub struct ToolsView {
     pub yt_dlp: Option<String>,
 }
 
-/// What the settings and the saved keys say. The key flags are read once if that has not been done (call it on a blocking
-/// thread: that may wait for the person to answer the key store).
+/// What the settings and the saved keys say, and the language of the UI. The key flags are read once if that has not been done
+/// (call it on a blocking thread: that may wait for the person to answer the key store).
 pub fn readiness(state: &AppState, ram_gb: u64) -> Readiness {
     let settings = state.settings.get();
     Readiness {
         ai: ai_ready(&settings, state.loaded_keys()),
         whisper: whisper_ready(&settings, &state.models, ram_gb),
+        language: tray::language_for(&settings),
     }
 }
 
@@ -379,7 +384,7 @@ pub async fn media_tools() -> Result<ToolsView, String> {
 #[cfg(test)]
 mod tests {
     use dictate_services::secrets::{Account, MemoryStore};
-    use dictate_services::settings::SettingsStore;
+    use dictate_services::settings::{SettingsStore, UiLanguage};
     use dictate_services::whisper::models::{self, ModelDir};
 
     use super::*;
@@ -392,16 +397,27 @@ mod tests {
         AppState::new(store, None, Arc::new(MemoryStore::default()), models)
     }
 
+    /// The settings with the UI language chosen, so that what is told does not depend on the language of this machine.
+    fn state_in(dir: &Path, language: UiLanguage) -> AppState {
+        let state = state(dir);
+        state
+            .settings
+            .update(|settings| settings.ui_language = language)
+            .unwrap();
+        state
+    }
+
     #[test]
     fn readiness_says_whether_the_ai_and_the_whisper_model_are_there() {
         let dir = tempfile::tempdir().unwrap();
-        let state = state(dir.path());
+        let state = state_in(dir.path(), UiLanguage::En);
         // The flags are read once, from the key store: no key is saved.
         assert_eq!(
             readiness(&state, 16),
             Readiness {
                 ai: false,
-                whisper: false
+                whisper: false,
+                language: tray::Lang::En,
             }
         );
 
@@ -411,9 +427,24 @@ mod tests {
             readiness(&state, 16),
             Readiness {
                 ai: true,
-                whisper: true
+                whisper: true,
+                language: tray::Lang::En,
             }
         );
+    }
+
+    #[test]
+    fn readiness_tells_the_language_of_the_ui_as_the_settings_choose_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state_in(dir.path(), UiLanguage::Vi);
+        assert_eq!(readiness(&state, 16).language, tray::Lang::Vi);
+
+        // A change in Settings shows the next time the window asks.
+        state
+            .settings
+            .update(|settings| settings.ui_language = UiLanguage::En)
+            .unwrap();
+        assert_eq!(readiness(&state, 16).language, tray::Lang::En);
     }
 
     #[test]
@@ -421,9 +452,13 @@ mod tests {
         let json = serde_json::to_value(Readiness {
             ai: true,
             whisper: false,
+            language: tray::Lang::Vi,
         })
         .unwrap();
-        assert_eq!(json, serde_json::json!({ "ai": true, "whisper": false }));
+        assert_eq!(
+            json,
+            serde_json::json!({ "ai": true, "whisper": false, "language": "vi" })
+        );
         let json = serde_json::to_value(ToolsView {
             ffmpeg: Some("7.1".into()),
             yt_dlp: None,

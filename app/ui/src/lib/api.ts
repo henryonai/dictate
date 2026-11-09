@@ -152,6 +152,41 @@ export interface ErrorView {
   command: string | null;
 }
 
+function isErrorView(value: unknown): value is ErrorView {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as ErrorView).kind === "string" &&
+    typeof (value as ErrorView).key === "string"
+  );
+}
+
+function sentenceOf(failure: unknown): string {
+  if (typeof failure === "string") return failure;
+  if (failure instanceof Error) return failure.message;
+  if (typeof failure === "object" && failure !== null && typeof (failure as { message?: unknown }).message === "string") {
+    return (failure as { message: string }).message;
+  }
+  return "";
+}
+
+/**
+ * What a command failed with, as an error to show. The commands that reject with an `ErrorView` do (and the wrappers below
+ * make one of any other failure, such as the IPC itself failing with an `Error`); a sentence in English is the detail of an
+ * error of no kind in particular.
+ */
+export function asErrorView(failure: unknown): ErrorView {
+  if (isErrorView(failure)) return failure;
+  return { kind: "Other", key: "meetings.error.other", detail: sentenceOf(failure), command: null };
+}
+
+/** A command that rejects with an `ErrorView`: whatever it fails with reaches the caller as one. */
+function invokeView<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  return invoke<T>(cmd, args).catch((failure: unknown) => {
+    throw asErrorView(failure);
+  });
+}
+
 export type OutcomeView = { kind: "done"; summary: boolean } | { kind: "failed"; error: ErrorView };
 
 /** A job as the `meeting-job` event and a row carry it. An ended job has no step and has its outcome. */
@@ -265,6 +300,11 @@ export interface Readiness {
   ai: boolean;
   /** The Whisper model of this computer is downloaded. */
   whisper: boolean;
+  /**
+   * The language of the UI as the settings choose it ("same as the system" already resolved). The meetings window can't read the
+   * settings, so this is how it learns its language: it asks again when it gets the focus back.
+   */
+  language: "en" | "vi";
 }
 
 /** What the window hears of a file dragged over it: the paths come with a drop. */
@@ -312,9 +352,9 @@ export const api = {
   /** In the system browser. The capability only allows https. */
   openUrl: (url: string) => openUrl(url),
 
-  // The meetings window. Four of the commands that start a job (`meetingRerun`, `meetingResummarize`, `meetingRetry`,
-  // `meetingsImportLink`) and two that open or ask (`meetingOpenMedia`, `meetingAsk`) reject with an `ErrorView`, the rest
-  // with a plain sentence.
+  // The meetings window. Eight commands reject with an `ErrorView` (and their wrappers see to it that they always do): the four
+  // that start a job (`meetingRerun`, `meetingResummarize`, `meetingRetry`, `meetingsImportLink`) and `meetingRenameSpeakers`,
+  // `meetingAsk`, `meetingExport` and `meetingOpenMedia`. The rest reject with a plain sentence.
   /** The recordings that have every word of `query` in the title, the summary or the transcript; all of them when it is empty. */
   meetingsList: (query: string) => invoke<MeetingRow[]>("meetings_list", { query }),
   meetingDetail: (id: string) => invoke<MeetingDetail>("meeting_detail", { id }),
@@ -323,28 +363,28 @@ export const api = {
   /** The ids of the recordings made of the files that were dropped. */
   meetingsImportFiles: (paths: string[]) => invoke<string[]>("meetings_import_files", { paths }),
   /** The id of the recording made. Rejects with an `ErrorView`. */
-  meetingsImportLink: (url: string) => invoke<string>("meetings_import_link", { url }),
+  meetingsImportLink: (url: string) => invokeView<string>("meetings_import_link", { url }),
   meetingCancel: (id: string) => invoke<void>("meeting_cancel", { id }),
   /** "Transcribe + summarize again from scratch". Rejects with an `ErrorView`. */
-  meetingRerun: (id: string) => invoke<void>("meeting_rerun", { id }),
+  meetingRerun: (id: string) => invokeView<void>("meeting_rerun", { id }),
   /** "Summarize again" ("Retry summary"). Rejects with an `ErrorView`. */
-  meetingResummarize: (id: string) => invoke<void>("meeting_resummarize", { id }),
+  meetingResummarize: (id: string) => invokeView<void>("meeting_resummarize", { id }),
   /** "Try again", from the step that failed. Rejects with an `ErrorView`. */
-  meetingRetry: (id: string) => invoke<void>("meeting_retry", { id }),
+  meetingRetry: (id: string) => invokeView<void>("meeting_retry", { id }),
   /** `index` is the `index` of an `ActionView`. */
   meetingSetTask: (id: string, index: number, done: boolean) => invoke<void>("meeting_set_task", { id, index, done }),
   /** Old name to new. The renames that were done, sorted. Rejects with an `ErrorView`. */
   meetingRenameSpeakers: (id: string, names: Record<string, string>, resummarize: boolean) =>
-    invoke<[string, string][]>("meeting_rename_speakers", { id, names, resummarize }),
+    invokeView<[string, string][]>("meeting_rename_speakers", { id, names, resummarize }),
   /** Rejects with an `ErrorView`. */
-  meetingAsk: (id: string, question: string) => invoke<string>("meeting_ask", { id, question }),
+  meetingAsk: (id: string, question: string) => invokeView<string>("meeting_ask", { id, question }),
   meetingMarkdown: (id: string) => invoke<string>("meeting_markdown", { id }),
   /** Asks where to save the Markdown and writes it there. `false` when the dialog was closed. Rejects with an `ErrorView`. */
-  meetingExport: (id: string) => invoke<boolean>("meeting_export", { id }),
+  meetingExport: (id: string) => invokeView<boolean>("meeting_export", { id }),
   meetingLog: (id: string) => invoke<string>("meeting_log", { id }),
   meetingOpenFolder: (id: string) => invoke<void>("meeting_open_folder", { id }),
   /** In the program of the system for it. Rejects with an `ErrorView`. */
-  meetingOpenMedia: (id: string) => invoke<void>("meeting_open_media", { id }),
+  meetingOpenMedia: (id: string) => invokeView<void>("meeting_open_media", { id }),
   /** Stops the job and moves the recording to the Trash. */
   meetingDelete: (id: string) => invoke<void>("meeting_delete", { id }),
   /** The clipboard of the system: the meetings window has no other way to it. */

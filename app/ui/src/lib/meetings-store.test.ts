@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { fakeDetail, fakeError, fakeJob, fakeRow, stubMeetingsApi } from "../test-helpers";
 import { api } from "./api";
-import { setLanguage } from "./i18n";
+import { currentLanguage, setLanguage } from "./i18n";
 import { MeetingsStore } from "./meetings-store.svelte";
 
 let events: ReturnType<typeof stubMeetingsApi>;
@@ -38,7 +38,7 @@ describe("loading", () => {
 
     expect(api.meetingsList).toHaveBeenCalledWith("");
     expect(store.rows.map((r) => r.id)).toEqual([ID, OTHER]);
-    expect(store.readiness).toEqual({ ai: true, whisper: true });
+    expect(store.readiness).toEqual({ ai: true, whisper: true, language: "en" });
     expect(store.loaded).toBe(true);
     // Nothing is selected for the person: "Select a recording" is the first thing the detail says.
     expect(store.selectedId).toBeNull();
@@ -74,11 +74,63 @@ describe("loading", () => {
 
   test("the readiness is asked again when the window gets the focus back, as the keys are set in another window", async () => {
     await started();
-    vi.mocked(api.meetingsReadiness).mockResolvedValue({ ai: false, whisper: true });
+    vi.mocked(api.meetingsReadiness).mockResolvedValue({ ai: false, whisper: true, language: "en" });
 
     window.dispatchEvent(new Event("focus"));
 
-    await vi.waitFor(() => expect(store.readiness).toEqual({ ai: false, whisper: true }));
+    await vi.waitFor(() => expect(store.readiness).toEqual({ ai: false, whisper: true, language: "en" }));
+  });
+
+  test("the window speaks the language that readiness tells, from the start", async () => {
+    events = stubMeetingsApi([row]);
+    vi.mocked(api.meetingsReadiness).mockResolvedValue({ ai: true, whisper: true, language: "vi" });
+    store = new MeetingsStore();
+
+    await store.start();
+
+    expect(currentLanguage()).toBe("vi");
+    expect(document.documentElement.lang).toBe("vi");
+  });
+
+  test("a change of the language in Settings reaches the window when it gets the focus back", async () => {
+    events = stubMeetingsApi([row]);
+    vi.mocked(api.meetingsReadiness).mockResolvedValue({ ai: true, whisper: true, language: "en" });
+    store = new MeetingsStore();
+    await store.start();
+    expect(currentLanguage()).toBe("en");
+
+    vi.mocked(api.meetingsReadiness).mockResolvedValue({ ai: true, whisper: true, language: "vi" });
+    window.dispatchEvent(new Event("focus"));
+    await vi.waitFor(() => expect(currentLanguage()).toBe("vi"));
+
+    vi.mocked(api.meetingsReadiness).mockResolvedValue({ ai: true, whisper: true, language: "en" });
+    window.dispatchEvent(new Event("focus"));
+    await vi.waitFor(() => expect(currentLanguage()).toBe("en"));
+  });
+
+  test("a readiness that can't be read leaves the language as it was and says why", async () => {
+    events = stubMeetingsApi([row]);
+    vi.mocked(api.meetingsReadiness).mockRejectedValue("The settings could not be read.");
+    store = new MeetingsStore();
+
+    await store.start();
+
+    expect(currentLanguage()).toBe("en");
+    expect(store.notice).toBe("The settings could not be read.");
+  });
+
+  test("a listener that can't be set up is said, the list is read all the same, and the other listener is still stopped with the store", async () => {
+    events = stubMeetingsApi([row]);
+    vi.mocked(api.onMeetingJob).mockRejectedValue("The events are not available.");
+    store = new MeetingsStore();
+
+    await store.start();
+
+    expect(store.notice).toBe("The events are not available.");
+    expect(store.rows).toHaveLength(1);
+    expect(events.listening().changed).toBe(1);
+    store.stop();
+    expect(events.listening().changed).toBe(0);
   });
 
   test("when it stops, it hears nothing more", async () => {
@@ -349,6 +401,35 @@ describe("the selected recording", () => {
     expect(store.selectedId).toBe(ID);
   });
 
+  test("a recording that was deleted while a search leaves it selected is let go of without a word when the library changes", async () => {
+    await started();
+    await store.select(ID);
+    vi.mocked(api.meetingsList).mockResolvedValue([other]);
+    vi.useFakeTimers();
+    store.search("retro");
+    await vi.advanceTimersByTimeAsync(200);
+    vi.useRealTimers();
+    expect(store.selectedId).toBe(ID);
+    vi.mocked(api.meetingDetail).mockRejectedValue("The recording was not found.");
+
+    events.emitChanged();
+
+    await vi.waitFor(() => expect(store.selectedId).toBeNull());
+    expect(store.detail).toBeNull();
+    expect(store.notice).toBe("");
+  });
+
+  test("a detail that can't be read again when a job moves on is let go of without a word too", async () => {
+    await started([fakeRow({ id: ID, live: fakeJob({ id: ID, step: "audio" }) })]);
+    await store.select(ID);
+    vi.mocked(api.meetingDetail).mockRejectedValue("The recording was not found.");
+
+    events.emitJob(fakeJob({ id: ID, step: "transcript" }));
+
+    await vi.waitFor(() => expect(store.selectedId).toBeNull());
+    expect(store.notice).toBe("");
+  });
+
   test("the row of the selected recording is the one with the jobs laid on it, and before the list has it, the detail's", async () => {
     await started([other]);
     await store.select(ID);
@@ -503,6 +584,23 @@ describe("what a person asks the window to do", () => {
 
     store.closeLog();
     expect(store.logFor).toBeNull();
+  });
+
+  test("a dialog is open while the log is, or the link dialog is", async () => {
+    await started();
+    expect(store.modalOpen).toBe(false);
+
+    store.showLog(ID);
+    expect(store.modalOpen).toBe(true);
+    store.closeLog();
+    expect(store.modalOpen).toBe(false);
+
+    store.openLinkDialog();
+    expect(store.linkDialogOpen).toBe(true);
+    expect(store.modalOpen).toBe(true);
+    store.closeLinkDialog();
+    expect(store.linkDialogOpen).toBe(false);
+    expect(store.modalOpen).toBe(false);
   });
 
   test("the list can be hidden and shown", async () => {

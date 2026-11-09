@@ -12,7 +12,7 @@ let store: MeetingsStore;
 beforeEach(() => {
   stubMeetingsApi();
   store = new MeetingsStore();
-  store.readiness = { ai: true, whisper: true };
+  store.readiness = { ai: true, whisper: true, language: "en" };
 });
 
 afterEach(() => {
@@ -58,7 +58,7 @@ test("on a Mac the shortcut to paste is written with the command key", () => {
 
 test("a summary API that is not set up has a button to Settings on the accounts page", async () => {
   const user = userEvent.setup();
-  store.readiness = { ai: false, whisper: true };
+  store.readiness = { ai: false, whisper: true, language: "en" };
   render(Empty, { store });
 
   expect(readyRows()).toEqual(["Summary API Open Settings", "Whisper (more accurate transcripts) Working"]);
@@ -69,7 +69,7 @@ test("a summary API that is not set up has a button to Settings on the accounts 
 
 test("a Whisper model that is not there has a button to Settings on the speech page", async () => {
   const user = userEvent.setup();
-  store.readiness = { ai: true, whisper: false };
+  store.readiness = { ai: true, whisper: false, language: "en" };
   render(Empty, { store });
 
   expect(readyRows()).toEqual(["Summary API Working", "Whisper (more accurate transcripts) Download model"]);

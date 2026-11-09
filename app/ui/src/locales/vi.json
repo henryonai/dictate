@@ -301,7 +301,7 @@
   "meetings.errorcard.open_api": "Mở Cài đặt API",
   "meetings.errorcard.retry_summary": "Thử lại tóm tắt",
   "meetings.errorcard.copy_command": "Copy lệnh cài",
-  "meetings.errorcard.copied": "Đã copy",
+  "meetings.copied": "Đã copy",
   "meetings.errorcard.retry": "Thử lại",
   "meetings.errorcard.view_log": "Xem log",
   "meetings.log.title": "Log — {title}",

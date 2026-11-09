@@ -328,7 +328,7 @@ export function stubMeetingsApi(rows: MeetingRow[] = []) {
   vi.spyOn(api, "meetingDelete").mockResolvedValue();
   vi.spyOn(api, "copyText").mockResolvedValue();
   vi.spyOn(api, "meetingsOpenSettings").mockResolvedValue();
-  vi.spyOn(api, "meetingsReadiness").mockResolvedValue({ ai: true, whisper: true });
+  vi.spyOn(api, "meetingsReadiness").mockResolvedValue({ ai: true, whisper: true, language: "en" });
   vi.spyOn(api, "onMeetingJob").mockImplementation(listener(jobListeners));
   vi.spyOn(api, "onMeetingsChanged").mockImplementation(listener(changedListeners));
   vi.spyOn(api, "onFileDrop").mockImplementation(listener(dropListeners));

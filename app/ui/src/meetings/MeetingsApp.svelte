@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { api } from "../lib/api";
-  import { setLanguage, t } from "../lib/i18n";
+  import { api, errorText } from "../lib/api";
+  import { t } from "../lib/i18n";
   import { MeetingsStore } from "../lib/meetings-store.svelte";
   import Detail from "./Detail.svelte";
   import Empty from "./Empty.svelte";
@@ -17,22 +17,28 @@
   let dragging = $state(false);
 
   onMount(() => {
-    // This window can't read the settings (they are Settings' own), so it speaks the language of the system, which is what the
-    // setting "same as the system" means; and it tells the page which that is.
-    setLanguage("system");
-    void store.start();
+    // The language is the settings': `start` reads it (with what is ready) and the store makes the window speak it.
+    // A failure is said in the notice: a window that can't start must not be a blank one.
+    store.start().catch((e: unknown) => store.notify(errorText(e)));
     const stopDrops = api.onFileDrop((event) => {
       dragging = event.type === "enter";
       if (event.type === "drop") void store.importFiles(event.paths);
+    }).catch((e: unknown) => {
+      store.notify(errorText(e));
+      return () => {};
     });
     return () => {
       store.stop();
-      void stopDrops.then((stop) => stop()).catch(() => {});
+      void stopDrops.then((stop) => stop());
     };
   });
 
-  /** A paste into a text field is text; anywhere else, a link that is pasted is imported. */
+  /**
+   * A paste into a text field is text; anywhere else, a link that is pasted is imported, unless a dialog is open: what is pasted is
+   * for the dialog (or for nothing), not for the library behind it.
+   */
   function onpaste(event: ClipboardEvent) {
+    if (store.modalOpen) return;
     const target = event.target;
     if (target instanceof HTMLElement && (target.isContentEditable || /^(input|textarea|select)$/i.test(target.tagName))) return;
     const pasted = event.clipboardData?.getData("text")?.trim() ?? "";
@@ -53,7 +59,7 @@
   <ImportBar {store} />
 
   {#if store.notice}
-    <div class="notice" role="status">
+    <div class="notice" role="alert">
       <span>{store.notice}</span>
       <button type="button" onclick={() => store.dismissNotice()}>{t("meetings.notice.dismiss")}</button>
     </div>

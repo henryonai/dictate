@@ -1,7 +1,7 @@
 import { clearMocks, mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import { emit } from "@tauri-apps/api/event";
 import { afterEach, describe, expect, test } from "vitest";
-import { api } from "./api";
+import { api, asErrorView } from "./api";
 import { fakePanelState, fakeSettings } from "../test-helpers";
 
 type Call = { cmd: string; args: unknown };
@@ -100,6 +100,69 @@ describe("each wrapper calls its command with the argument names the Rust side e
     } else {
       expect(calls[0].args).toMatchObject(args as object);
     }
+  });
+});
+
+describe("the eight commands that reject with an ErrorView always do, whatever the failure was", () => {
+  const cases: [string, () => Promise<unknown>][] = [
+    ["meetingsImportLink", () => api.meetingsImportLink("https://youtu.be/x")],
+    ["meetingRerun", () => api.meetingRerun("m1")],
+    ["meetingResummarize", () => api.meetingResummarize("m1")],
+    ["meetingRetry", () => api.meetingRetry("m1")],
+    ["meetingRenameSpeakers", () => api.meetingRenameSpeakers("m1", { "Speaker 1": "Lan" }, false)],
+    ["meetingAsk", () => api.meetingAsk("m1", "Who?")],
+    ["meetingExport", () => api.meetingExport("m1")],
+    ["meetingOpenMedia", () => api.meetingOpenMedia("m1")],
+  ];
+
+  test.each(cases)("%s rejects with the view the Rust side sent, as it is", async (_name, run) => {
+    const view = { kind: "Other", key: "meetings.error.busy", detail: null, command: null };
+    mockIPC(() => {
+      throw view;
+    });
+    await expect(run()).rejects.toEqual(view);
+  });
+
+  test.each(cases)("%s makes a view of a sentence, as when the IPC itself fails", async (_name, run) => {
+    mockIPC(() => {
+      throw "The recording was not found.";
+    });
+    await expect(run()).rejects.toEqual({
+      kind: "Other",
+      key: "meetings.error.other",
+      detail: "The recording was not found.",
+      command: null,
+    });
+  });
+
+  test("the other commands of the meetings window reject with the sentence, as it is", async () => {
+    mockIPC(() => {
+      throw "The recording was not found.";
+    });
+    await expect(api.meetingDetail("m1")).rejects.toBe("The recording was not found.");
+    await expect(api.meetingSetTask("m1", 0, true)).rejects.toBe("The recording was not found.");
+  });
+});
+
+describe("asErrorView", () => {
+  test("keeps what the Rust side sent as an error", () => {
+    const view = { kind: "Api", key: "meetings.error.no_ai", detail: null, command: null } as const;
+    expect(asErrorView(view)).toBe(view);
+  });
+
+  test("makes an error of the sentence a command failed with, or of an Error", () => {
+    expect(asErrorView("The recording was not found.")).toEqual({
+      kind: "Other",
+      key: "meetings.error.other",
+      detail: "The recording was not found.",
+      command: null,
+    });
+    expect(asErrorView(new Error("IPC is down")).detail).toBe("IPC is down");
+  });
+
+  test("an object that is not an error of the Rust side, or nothing, is an error of no kind in particular", () => {
+    expect(asErrorView({ message: "x" })).toMatchObject({ key: "meetings.error.other", detail: "x" });
+    expect(asErrorView(null)).toMatchObject({ key: "meetings.error.other", detail: "" });
   });
 });
 

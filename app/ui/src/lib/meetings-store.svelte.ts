@@ -6,10 +6,10 @@
 // progress. A change of the library (`meetings-changed`: a start, an end, a new title, a delete) brings the list again and
 // forgets what was heard, which the new list says better.
 import { SvelteMap } from "svelte/reactivity";
-import { api, errorText } from "./api";
+import { api, asErrorView, errorText } from "./api";
 import type { ErrorView, JobView, MeetingDetail, MeetingRow, Readiness, SettingsTab } from "./api";
-import { t } from "./i18n";
-import { asErrorView, errorMessage } from "./meeting-errors";
+import { setLanguage, t } from "./i18n";
+import { errorMessage } from "./meeting-errors";
 
 /** How long the search waits for another key before it asks for the list. */
 export const SEARCH_DELAY_MS = 200;
@@ -43,6 +43,8 @@ export class MeetingsStore {
   notice = $state("");
   /** The recording whose log is open. */
   logFor = $state<string | null>(null);
+  /** The dialog of "Paste a link" is open. */
+  linkDialogOpen = $state(false);
   sidebarOpen = $state(true);
   /** The questions asked of each recording, with the answers: in memory only, lost when the window closes. */
   asks = new SvelteMap<string, QA[]>();
@@ -56,6 +58,9 @@ export class MeetingsStore {
   private stopped = false;
   private readonly onFocus = () => void this.refreshReadiness();
 
+  /** A dialog is open over the window: what is pasted or dropped on the window is not for the library then. */
+  modalOpen = $derived(this.logFor !== null || this.linkDialogOpen);
+
   /** The rows with the jobs that were heard laid on them. */
   items = $derived.by(() => this.rows.map((row) => withJob(row, this.jobs[row.id])));
 
@@ -68,18 +73,24 @@ export class MeetingsStore {
     return this.detail?.row.id === id ? withJob(this.detail.row, this.jobs[id]) : null;
   });
 
-  /** Starts listening to the jobs and to the library, and reads the list and what is ready. */
+  /**
+   * Starts listening to the jobs and to the library, and reads the list and what is ready. A listener that can't be set up is
+   * said in the notice, and the list is read all the same: the window works, only without that news.
+   */
   async start(): Promise<void> {
     this.stopped = false;
-    const stops = await Promise.all([
+    const settled = await Promise.allSettled([
       api.onMeetingJob((job) => this.hearJob(job)),
       api.onMeetingsChanged(() => void this.refreshAll()),
     ]);
+    const stops = settled.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
     if (this.stopped) {
       stops.forEach((stop) => stop());
       return;
     }
     this.unlisten = stops;
+    const failed = settled.find((result) => result.status === "rejected");
+    if (failed) this.notify(errorText(failed.reason));
     // The keys are set in the Settings window: what is ready may be different when this one gets the focus back.
     window.addEventListener("focus", this.onFocus);
     await Promise.all([this.load(), this.refreshReadiness()]);
@@ -115,9 +126,15 @@ export class MeetingsStore {
     }
   }
 
+  /**
+   * Reads what is ready and the language of the UI, which the settings choose and this window can't read: it speaks it from now
+   * on. It runs when the window opens and each time it gets the focus back, which is when a change in Settings can be seen.
+   */
   async refreshReadiness(): Promise<void> {
     try {
-      this.readiness = await api.meetingsReadiness();
+      const readiness = await api.meetingsReadiness();
+      this.readiness = readiness;
+      setLanguage(readiness.language);
     } catch (e) {
       this.notify(errorText(e));
     }
@@ -144,7 +161,11 @@ export class MeetingsStore {
     await this.reloadDetail();
   }
 
-  async reloadDetail(): Promise<void> {
+  /**
+   * Reads the detail of the selected recording again. When it can't be read the recording is let go of; `silent` says nothing of
+   * it, for a reload that nobody asked for (the library changed, a job moved on), where the recording being gone is no news.
+   */
+  async reloadDetail(silent = false): Promise<void> {
     const id = this.selectedId;
     if (id === null) return;
     const mine = ++this.detailLoads;
@@ -155,7 +176,7 @@ export class MeetingsStore {
       if (mine === this.detailLoads && this.selectedId === id) {
         this.selectedId = null;
         this.detail = null;
-        this.notify(errorText(e));
+        if (!silent) this.notify(errorText(e));
       }
     }
   }
@@ -252,6 +273,14 @@ export class MeetingsStore {
     this.logFor = null;
   }
 
+  openLinkDialog(): void {
+    this.linkDialogOpen = true;
+  }
+
+  closeLinkDialog(): void {
+    this.linkDialogOpen = false;
+  }
+
   toggleSidebar(): void {
     this.sidebarOpen = !this.sidebarOpen;
   }
@@ -275,7 +304,7 @@ export class MeetingsStore {
     if (view.id !== this.selectedId) return;
     // The transcript is written between two steps and no change of the library says so: a new step (or the end) is the
     // moment to read the detail again.
-    if (view.outcome !== null || before?.step !== view.step) void this.reloadDetail();
+    if (view.outcome !== null || before?.step !== view.step) void this.reloadDetail(true);
   }
 
   private async refreshAll(): Promise<void> {
@@ -283,6 +312,6 @@ export class MeetingsStore {
     const before = this.selectedId;
     await this.load();
     // `load` has read the detail of the recording that took the place of one that is gone.
-    if (before !== null && this.selectedId === before) await this.reloadDetail();
+    if (before !== null && this.selectedId === before) await this.reloadDetail(true);
   }
 }

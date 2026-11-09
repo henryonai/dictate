@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { ErrorView } from "../lib/api";
+  import { Flash } from "../lib/flash.svelte";
   import { errorMessage } from "../lib/meeting-errors";
   import { t } from "../lib/i18n";
   import type { MeetingsStore } from "../lib/meetings-store.svelte";
@@ -21,17 +22,12 @@
   });
   const message = $derived(errorMessage(error));
 
-  let copied = $state(false);
-  let copiedTimer: ReturnType<typeof setTimeout> | undefined;
+  const copied = new Flash();
+  $effect(() => () => copied.clear());
 
   async function copyCommand() {
-    if (!error.command || !(await store.copy(error.command))) return;
-    copied = true;
-    clearTimeout(copiedTimer);
-    copiedTimer = setTimeout(() => (copied = false), 2000);
+    if (error.command && (await store.copy(error.command))) copied.show();
   }
-
-  $effect(() => () => clearTimeout(copiedTimer));
 </script>
 
 <section class="card" aria-labelledby="error-card-title">
@@ -45,7 +41,7 @@
       <button type="button" class="primary" onclick={() => store.resummarize(id)}>{t("meetings.errorcard.retry_summary")}</button>
     {:else}
       {#if needsTool && error.command}
-        <button type="button" onclick={copyCommand}>{copied ? t("meetings.errorcard.copied") : t("meetings.errorcard.copy_command")}</button>
+        <button type="button" onclick={copyCommand}>{copied.on ? t("meetings.copied") : t("meetings.errorcard.copy_command")}</button>
       {:else if error.kind === "NoModel"}
         <button type="button" onclick={() => store.openSettings("speech")}>{t("meetings.open_settings")}</button>
       {/if}
