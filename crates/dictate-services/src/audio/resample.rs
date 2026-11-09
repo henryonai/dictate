@@ -7,6 +7,10 @@ use rubato::{Fft, FixedSync, Resampler};
 const TARGET_RATE: u32 = 16_000;
 /// Frames the resampler takes in one go. A longer recording is fed through it chunk by chunk.
 const CHUNK_FRAMES: usize = 1024;
+/// How many seconds of silence may follow the clip to bring the last of it out. The resampler works on blocks of
+/// `rate / gcd(rate, 16000)` frames, which is a whole second at the oddest rates, and puts nothing out until it has one:
+/// the first calls (and the last, at the end of the clip) may come back empty.
+const FLUSH_SECONDS: usize = 2;
 
 /// `samples` (mono, at `rate` Hz) resampled to 16 kHz, with a low-pass filter so that nothing above 8 kHz folds
 /// back into the speech. A recording that is already at 16 kHz is returned as it is.
@@ -43,7 +47,13 @@ fn resample(samples: &[f32], rate: u32) -> Option<Vec<f32>> {
     let mut out: Vec<f32> = Vec::with_capacity(wanted + delay + resampler.output_frames_max());
     let mut chunk = vec![0.0_f32; resampler.input_frames_max()];
     let mut consumed = 0;
-    while out.len() < wanted + delay {
+    // The most rounds that are worth it: the clip, and then the silence that flushes the filter. Past that the resampler
+    // is not going to put out more, and a loop that never ends is worse than the audio that did come out.
+    let budget = (samples.len() + FLUSH_SECONDS * rate as usize).div_ceil(CHUNK_FRAMES) + 1;
+    for _ in 0..budget {
+        if out.len() >= wanted + delay {
+            break;
+        }
         let frames = resampler.input_frames_next();
         let from = consumed.min(samples.len());
         let to = (consumed + frames).min(samples.len());
@@ -52,12 +62,12 @@ fn resample(samples: &[f32], rate: u32) -> Option<Vec<f32>> {
         consumed += frames;
 
         let input = InterleavedSlice::new(&chunk[..frames], 1, frames).ok()?;
+        // An empty block is not the end: the resampler is collecting the input of its first block.
         let block = resampler.process(&input, None).ok()?.take_data();
-        if block.is_empty() {
-            // No progress is possible: better no audio than a loop that never ends.
-            return None;
-        }
         out.extend_from_slice(&block);
+    }
+    if out.len() <= delay {
+        return None;
     }
     out.drain(..delay);
     out.truncate(wanted);
@@ -197,6 +207,37 @@ mod tests {
         assert!(
             loudest.abs_diff(160) <= 2,
             "the impulse landed at {loudest}"
+        );
+    }
+
+    #[test]
+    fn resample_unusual_rates_still_gives_audio_of_the_right_length_and_pitch() {
+        // Rates that are a little off the usual ones (a device that runs at 47.952 kHz, or a sample clock at 44.101 kHz) have no
+        // small ratio to 16 kHz: the first blocks that the resampler puts out may be empty, which is not the end of the audio.
+        for rate in [
+            47_952, 44_101, 22_051, 11_025, 12_345, 32_001, 96_001, 192_000,
+        ] {
+            let input = exact_sine(440.0, rate, 1.0);
+            let out = to_16k(&input, rate);
+            assert!(!out.is_empty(), "{rate} Hz: no audio came out");
+            assert_eq!(out.len(), 16_000, "{rate} Hz: length");
+            let crossings = zero_crossings(&out);
+            assert!(
+                crossings.abs_diff(880) <= 10,
+                "{rate} Hz: {crossings} zero crossings"
+            );
+        }
+    }
+
+    #[test]
+    fn resample_a_short_clip_at_an_unusual_rate_still_comes_out_whole() {
+        // The shortest take that is kept is a fifth of a second: far less than the block of input that the resampler waits for.
+        let input = exact_sine(440.0, 47_952, 0.2);
+        let out = to_16k(&input, 47_952);
+        assert_eq!(out.len(), 3_200);
+        assert!(
+            out.iter().any(|s| s.abs() > 0.3),
+            "the clip came out silent"
         );
     }
 }
