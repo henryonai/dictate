@@ -39,13 +39,39 @@ jobs:
           shared-key: ${{ runner.os }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # The prebuilt sherpa-onnx library (onnxruntime inside) that the build script of sherpa-onnx-sys downloads and
-      # unpacks into target/sherpa-onnx-prebuilt: 20 MB on macOS and Linux, 117 MB on Windows. It is cached as unpacked,
-      # so that a run with a hit neither downloads nor unpacks it. The build script looks for the folder of the version
-      # it is built for, so after a version change it fetches the new one whatever this key hits; change the key with it.
+      # unpacks into target/sherpa-onnx-prebuilt: 20 MB on macOS and Linux. It is cached as unpacked, so that a run
+      # with a hit neither downloads nor unpacks it. The build script looks for the folder of the version it is built
+      # for, so after a version change it fetches the new one whatever this key hits; change the key with it.
+      # Windows does not use this download: see the next step.
       - uses: actions/cache@v4
+        if: runner.os != 'Windows'
         with:
           path: target/sherpa-onnx-prebuilt
           key: sherpa-onnx-1.13.8-${{ runner.os }}-${{ runner.arch }}
+      # The library the build script downloads for Windows is built with the static C runtime (/MT, "RuntimeLibrary=
+      # MT_StaticRelease" in its objects), and whisper.cpp and Rust use the DLL one (/MD): the linker refuses to put
+      # them in one program (LNK2038, LNK2005). The same release has an /MD build, 92 MB. It is fetched here, cached
+      # as unpacked, and SHERPA_ONNX_LIB_DIR makes the build script use it instead of downloading its own.
+      - uses: actions/cache@v4
+        if: runner.os == 'Windows'
+        with:
+          path: target/sherpa-onnx-md
+          key: sherpa-onnx-md-1.13.8-${{ runner.arch }}
+      - name: Use the /MD build of sherpa-onnx (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:GITHUB_WORKSPACE 'target/sherpa-onnx-md'
+          if (-not (Test-Path (Join-Path $dir 'lib'))) {
+            New-Item -ItemType Directory -Force $dir | Out-Null
+            $archive = Join-Path $env:RUNNER_TEMP 'sherpa-onnx-md.tar.bz2'
+            curl.exe -fsSL --retry 3 -o $archive 'https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-v1.13.8-win-x64-static-MD-Release-lib.tar.bz2'
+            if ($LASTEXITCODE -ne 0) { throw 'the download failed' }
+            # The Windows tar (bsdtar), not the GNU one of Git for Windows, which reads `D:` as a host name.
+            & "$env:SystemRoot\System32\tar.exe" -xjf $archive -C $dir --strip-components=1
+            if ($LASTEXITCODE -ne 0) { throw 'the unpacking failed' }
+          }
+          "SHERPA_ONNX_LIB_DIR=$(Join-Path $dir 'lib')" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       # whisper.cpp is built from source: it needs cmake and a C++ compiler, and its bindings need libclang. The
       # macOS and Windows runners have them; this makes sure the Linux one does. libasound2-dev is the ALSA header
       # that microphone capture builds against. The rest is what the Tauri app links against: the web view, the
@@ -91,9 +117,30 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # The sherpa-onnx library, as in the test job.
       - uses: actions/cache@v4
+        if: runner.os != 'Windows'
         with:
           path: target/sherpa-onnx-prebuilt
           key: sherpa-onnx-1.13.8-${{ runner.os }}-${{ runner.arch }}
+      - uses: actions/cache@v4
+        if: runner.os == 'Windows'
+        with:
+          path: target/sherpa-onnx-md
+          key: sherpa-onnx-md-1.13.8-${{ runner.arch }}
+      - name: Use the /MD build of sherpa-onnx (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:GITHUB_WORKSPACE 'target/sherpa-onnx-md'
+          if (-not (Test-Path (Join-Path $dir 'lib'))) {
+            New-Item -ItemType Directory -Force $dir | Out-Null
+            $archive = Join-Path $env:RUNNER_TEMP 'sherpa-onnx-md.tar.bz2'
+            curl.exe -fsSL --retry 3 -o $archive 'https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-v1.13.8-win-x64-static-MD-Release-lib.tar.bz2'
+            if ($LASTEXITCODE -ne 0) { throw 'the download failed' }
+            # The Windows tar (bsdtar), not the GNU one of Git for Windows, which reads `D:` as a host name.
+            & "$env:SystemRoot\System32\tar.exe" -xjf $archive -C $dir --strip-components=1
+            if ($LASTEXITCODE -ne 0) { throw 'the unpacking failed' }
+          }
+          "SHERPA_ONNX_LIB_DIR=$(Join-Path $dir 'lib')" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Install the Linux build dependencies
         if: runner.os == 'Linux'
         run: >

@@ -21,7 +21,7 @@ Every system needs:
 - **Node.js 22**.
 - **pnpm 12 or Corepack.** `app/package.json` names the exact pnpm version. Either install pnpm 12, or use [Corepack](https://nodejs.org/api/corepack.html) (`corepack enable`), which fetches that version by itself. Corepack should be 0.34.5 or newer: if `pnpm` fails to run, update it with `npm install -g corepack@latest`.
 - **CMake and libclang.** Whisper (whisper.cpp) is built from source with the app.
-- **A network connection for the first build.** The speaker separation library (sherpa-onnx, with onnxruntime inside) is not built from source: its build script downloads a prebuilt one (about 20 MB on macOS and Linux, 117 MB on Windows) into `target/sherpa-onnx-prebuilt` the first time. To build offline, put that archive in a folder and set `SHERPA_ONNX_ARCHIVE_DIR` to it, or set `SHERPA_ONNX_LIB_DIR` to the `lib` folder of an unpacked one.
+- **A network connection for the first build.** The speaker separation library (sherpa-onnx, with onnxruntime inside) is not built from source: its build script downloads a prebuilt one (about 20 MB on macOS and Linux) into `target/sherpa-onnx-prebuilt` the first time. To build offline, put that archive in a folder and set `SHERPA_ONNX_ARCHIVE_DIR` to it, or set `SHERPA_ONNX_LIB_DIR` to the `lib` folder of an unpacked one. On Windows it comes from somewhere else, see [Build it](#build-it).
 
 On top of that:
 
@@ -94,6 +94,19 @@ pnpm tauri build --debug --bundles app
 ```
 
 That makes `target/debug/bundle/macos/Dictate.app`. The bundler signs only when it is told with whom: `APPLE_SIGNING_IDENTITY=- pnpm tauri build --debug --bundles app` signs it ad hoc (this is what CI does), with the right to use the microphone of `src-tauri/Entitlements.plist`; check it with `codesign -d --entitlements - target/debug/bundle/macos/Dictate.app`.
+
+### On Windows: the sherpa-onnx library
+
+The speaker separation library that the build script downloads for Windows is built with the static C runtime (`/MT`), and whisper.cpp and Rust use the DLL one (`/MD`): the linker stops with `LNK2038` ("mismatch detected for 'RuntimeLibrary'") or `LNK2005` when it has both. The same release has a build for `/MD`. Download `sherpa-onnx-v1.13.8-win-x64-static-MD-Release-lib.tar.bz2` (92 MB) from the [v1.13.8 release](https://github.com/k2-fsa/sherpa-onnx/releases/tag/v1.13.8) (it is not the `no-tts` one) and unpack it, in PowerShell at the root of the repository:
+
+```powershell
+mkdir target\sherpa-onnx-md
+curl.exe -fL -o sherpa-onnx-md.tar.bz2 https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-v1.13.8-win-x64-static-MD-Release-lib.tar.bz2
+& "$env:SystemRoot\System32\tar.exe" -xjf sherpa-onnx-md.tar.bz2 -C target\sherpa-onnx-md --strip-components=1
+$env:SHERPA_ONNX_LIB_DIR = "$PWD\target\sherpa-onnx-md\lib"
+```
+
+Then run, build or test as described here, from the same terminal (the variable is only set there; set it for your user in the system settings to keep it). With it set, the build script uses that folder and downloads nothing. CI does the same on Windows.
 
 ## Check it
 
