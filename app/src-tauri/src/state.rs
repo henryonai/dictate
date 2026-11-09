@@ -309,6 +309,18 @@ pub fn open_model_dir(base_dir: &Path) -> io::Result<ModelDir> {
     Ok(ModelDir::new(root))
 }
 
+/// The folder of the speaker separation models (`dictate_services::diarize::DIARIZE_MODELS`) below `base_dir`, created
+/// when it is missing. It is a folder of its own, not the Whisper models': neither list of files may take the other's
+/// for its own.
+///
+/// Nothing opens it yet: the speaker separation step of the meetings pipeline will, and the `allow` goes with that.
+#[allow(dead_code)]
+pub fn open_diarize_dir(base_dir: &Path) -> io::Result<PathBuf> {
+    let root = base_dir.join("Dictate").join("diarization-models");
+    fs::create_dir_all(&root)?;
+    Ok(root)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -531,6 +543,24 @@ mod tests {
         assert!(models.root().is_dir());
         // A second start finds it there.
         assert!(open_model_dir(dir.path()).is_ok());
+    }
+
+    #[test]
+    fn the_diarization_model_folder_is_dictate_diarization_models_below_the_base_dir_and_is_created(
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let models = open_diarize_dir(dir.path()).unwrap();
+        assert_eq!(
+            models,
+            dir.path().join("Dictate").join("diarization-models")
+        );
+        assert!(models.is_dir());
+        // A second start finds it there, and it is not the Whisper models' folder.
+        assert_eq!(open_diarize_dir(dir.path()).unwrap(), models);
+        assert_ne!(
+            models,
+            open_model_dir(dir.path()).unwrap().root().to_path_buf()
+        );
     }
 
     // ---- the model in memory

@@ -21,6 +21,7 @@ Every system needs:
 - **Node.js 22**.
 - **pnpm 12 or Corepack.** `app/package.json` names the exact pnpm version. Either install pnpm 12, or use [Corepack](https://nodejs.org/api/corepack.html) (`corepack enable`), which fetches that version by itself. Corepack should be 0.34.5 or newer: if `pnpm` fails to run, update it with `npm install -g corepack@latest`.
 - **CMake and libclang.** Whisper (whisper.cpp) is built from source with the app.
+- **A network connection for the first build.** The speaker separation library (sherpa-onnx, with onnxruntime inside) is not built from source: its build script downloads a prebuilt one (about 20 MB on macOS and Linux, 117 MB on Windows) into `target/sherpa-onnx-prebuilt` the first time. To build offline, put that archive in a folder and set `SHERPA_ONNX_ARCHIVE_DIR` to it, or set `SHERPA_ONNX_LIB_DIR` to the `lib` folder of an unpacked one.
 
 On top of that:
 

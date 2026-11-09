@@ -1,5 +1,6 @@
 //! The Whisper models the app can use: a catalog, a folder that holds them, and a resumable download from
-//! Hugging Face.
+//! Hugging Face. The same download fetches the files that have a fixed address and size (`RemoteFile`), such as the
+//! speaker separation models.
 //!
 //! A model file only ever appears under its final name once every byte has arrived: the download writes to
 //! `<file>.part`, checks the size and renames. An interrupted download leaves the `.part` behind (for resuming)
@@ -19,6 +20,16 @@ use crate::http::{self, ApiError};
 
 /// Where the app downloads models from; `download` appends the file name.
 pub const HUGGING_FACE_BASE_URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main";
+
+/// A file at a fixed address with a known size, downloaded by `download_file`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RemoteFile {
+    pub url: &'static str,
+    /// The name it is saved under.
+    pub file: &'static str,
+    /// Its size in bytes: the file is not kept unless the download comes to exactly this.
+    pub size: u64,
+}
 
 /// One downloadable model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -255,13 +266,72 @@ async fn download_with(
     let model = find(id).ok_or_else(|| {
         DownloadError::Http(ApiError::Invalid(format!("There is no model called {id}.")))
     })?;
-    let url = http::parse_url(&file_url(base_url, model.file))?;
+    let target = Target {
+        url: &file_url(base_url, model.file),
+        dir: dir.root(),
+        file: model.file,
+        size: None,
+    };
+    fetch(target, on_progress, cancel, read_timeout, redirect_allowed).await
+}
+
+/// Downloads `f` into `dir` and returns where it is: `download` for a file that has its own address and size.
+///
+/// The same `.part` file, `Range` resume, redirects and progress as `download`. In addition the size the server
+/// announces has to be `f.size`: a file of another size is not kept (and a `.part` of it is dropped).
+pub async fn download_file(
+    dir: &Path,
+    f: &RemoteFile,
+    on_progress: impl Fn(u64, Option<u64>) + Send,
+    cancel: CancellationToken,
+) -> Result<PathBuf, DownloadError> {
+    download_file_with(dir, f, on_progress, cancel, READ_TIMEOUT, redirect_allowed).await
+}
+
+/// `download_file` with the stall limit and the redirect rule as parameters, for tests (where the CDN is another
+/// server on plain http).
+async fn download_file_with(
+    dir: &Path,
+    f: &RemoteFile,
+    on_progress: impl Fn(u64, Option<u64>) + Send,
+    cancel: CancellationToken,
+    read_timeout: Duration,
+    redirect_ok: RedirectRule,
+) -> Result<PathBuf, DownloadError> {
+    let target = Target {
+        url: f.url,
+        dir,
+        file: f.file,
+        size: Some(f.size),
+    };
+    fetch(target, on_progress, cancel, read_timeout, redirect_ok).await
+}
+
+/// What `fetch` brings in, and where it goes.
+struct Target<'a> {
+    url: &'a str,
+    /// The folder, and the name of the file in it.
+    dir: &'a Path,
+    file: &'a str,
+    /// What the file has to come to, when that is known beforehand. `None` takes the size the server announces.
+    size: Option<u64>,
+}
+
+/// The shared download: see `download` and `download_file`.
+async fn fetch(
+    target: Target<'_>,
+    on_progress: impl Fn(u64, Option<u64>) + Send,
+    cancel: CancellationToken,
+    read_timeout: Duration,
+    redirect_ok: RedirectRule,
+) -> Result<PathBuf, DownloadError> {
+    let url = http::parse_url(target.url)?;
     let client = http::client()?;
-    tokio::fs::create_dir_all(dir.root())
+    tokio::fs::create_dir_all(target.dir)
         .await
         .map_err(io_error)?;
-    let part_path = dir.part_path(model);
-    let final_path = dir.root().join(model.file);
+    let part_path = target.dir.join(part_name(target.file));
+    let final_path = target.dir.join(target.file);
 
     // An unfinished download is continued from where it stopped, if the server goes along.
     let mut have = match tokio::fs::metadata(&part_path).await {
@@ -276,6 +346,7 @@ async fn download_with(
             (have > 0).then_some(have),
             &cancel,
             read_timeout,
+            redirect_ok,
         )
         .await?;
         match response.status().as_u16() {
@@ -316,6 +387,11 @@ async fn download_with(
         }
     };
 
+    // Not the file that was asked for, or a part of another one: nothing of it is kept.
+    if target.size.is_some_and(|want| want != total) {
+        let _ = tokio::fs::remove_file(&part_path).await;
+        return Err(DownloadError::SizeMismatch);
+    }
     // No model is empty: a server that says so has nothing to give.
     if total == 0 {
         return Err(DownloadError::SizeMismatch);
@@ -369,7 +445,7 @@ async fn download_with(
 }
 
 /// GET `url`, asking for the bytes from `range_from` on. Redirects are followed by hand (the shared client does
-/// not follow them): up to `MAX_REDIRECTS`, each to an address `redirect_allowed` accepts, with the same `Range`.
+/// not follow them): up to `MAX_REDIRECTS`, each to an address `redirect_ok` accepts, with the same `Range`.
 /// Only the user agent is ever sent, so nothing secret can reach the CDN a redirect names.
 async fn get(
     client: &reqwest::Client,
@@ -377,6 +453,7 @@ async fn get(
     range_from: Option<u64>,
     cancel: &CancellationToken,
     read_timeout: Duration,
+    redirect_ok: RedirectRule,
 ) -> Result<reqwest::Response, DownloadError> {
     let invalid = |message: &str| DownloadError::Http(ApiError::Invalid(message.to_string()));
     let mut url = url.clone();
@@ -393,7 +470,7 @@ async fn get(
         let next = header_str(&response, reqwest::header::LOCATION)
             .and_then(|location| url.join(location).ok())
             .ok_or_else(|| invalid("The server sent a redirect without a usable address."))?;
-        if !redirect_allowed(&url, &next) {
+        if !redirect_ok(&url, &next) {
             return Err(invalid(
                 "The server redirected to an address that is not https.",
             ));
@@ -454,8 +531,13 @@ const REDIRECTS: [u16; 5] = [301, 302, 303, 307, 308];
 /// How many redirects are followed before the download gives up.
 const MAX_REDIRECTS: usize = 5;
 
+/// Tells whether a redirect from the first address to the second may be followed; `redirect_allowed` in the app.
+type RedirectRule = fn(&reqwest::Url, &reqwest::Url) -> bool;
+
 /// Whether a redirect from `from` to `to` may be followed: to any https address (Hugging Face sends the file from
-/// its CDN), and to the same origin even over plain http (a test server, a local mirror).
+/// a host below `hf.co`, GitHub release assets come from `objects.githubusercontent.com` and
+/// `release-assets.githubusercontent.com`), and to the same origin even over plain http (a test server, a local
+/// mirror).
 fn redirect_allowed(from: &reqwest::Url, to: &reqwest::Url) -> bool {
     to.scheme() == "https" || to.origin() == from.origin()
 }
@@ -1479,6 +1561,208 @@ mod tests {
         ));
         assert!(!allowed("https://example.com/a", "ftp://example.com/a"));
         assert!(!allowed("https://example.com/a", "file:///etc/passwd"));
+    }
+
+    // ---- download_file: the same download for a file with a fixed address and size
+
+    const BLOB: &str = "model.onnx";
+
+    /// A `RemoteFile` for a test server: its address is `'static` in the app, so the test's is leaked.
+    fn remote(url: String, size: usize) -> RemoteFile {
+        RemoteFile {
+            url: Box::leak(url.into_boxed_str()),
+            file: BLOB,
+            size: size as u64,
+        }
+    }
+
+    fn blob_path(models: &ModelDir) -> PathBuf {
+        models.root().join(BLOB)
+    }
+
+    /// Serves `body` as `at` the way `RangeServer` does.
+    async fn serve_at(at: &str, responder: impl Respond + 'static) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(at))
+            .respond_with(responder)
+            .mount(&server)
+            .await;
+        server
+    }
+
+    /// Redirects `/model.onnx` to `target`.
+    async fn redirect_to(target: String) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/model.onnx"))
+            .respond_with(ResponseTemplate::new(302).insert_header("location", target))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    /// Stands in for the rule of the app where the CDN is a second test server: the app's rule, and any plain-http
+    /// address on this machine.
+    fn cdn_stand_in(from: &reqwest::Url, to: &reqwest::Url) -> bool {
+        redirect_allowed(from, to) || (to.scheme() == "http" && to.host_str() == Some("127.0.0.1"))
+    }
+
+    async fn fetch_remote(
+        models: &ModelDir,
+        file: &RemoteFile,
+        redirect_ok: RedirectRule,
+    ) -> (Result<PathBuf, DownloadError>, Vec<(u64, Option<u64>)>) {
+        let (on_progress, calls) = recorder();
+        let result = download_file_with(
+            models.root(),
+            file,
+            on_progress,
+            CancellationToken::new(),
+            READ_TIMEOUT,
+            redirect_ok,
+        )
+        .await;
+        let calls = calls.lock().unwrap().clone();
+        (result, calls)
+    }
+
+    #[tokio::test]
+    async fn download_file_follows_cdn_redirect_and_checks_size() {
+        // Hugging Face and GitHub answer with a 302 to a CDN that sends the bytes.
+        let (_tmp, models) = dir();
+        let cdn = serve_at("/blob/model.onnx", RangeServer(body(MIB))).await;
+        let origin = redirect_to(format!("{}/blob/model.onnx", cdn.uri())).await;
+        let file = remote(format!("{}/model.onnx", origin.uri()), MIB);
+
+        let (result, calls) = fetch_remote(&models, &file, cdn_stand_in).await;
+
+        assert_eq!(result.unwrap(), blob_path(&models));
+        assert_eq!(fs::read(blob_path(&models)).unwrap(), body(MIB));
+        assert!(!models.root().join("model.onnx.part").exists());
+        assert_eq!(calls.first(), Some(&(0, Some(MIB as u64))));
+        assert_eq!(calls.last(), Some(&(MIB as u64, Some(MIB as u64))));
+        assert_eq!(origin.received_requests().await.unwrap().len(), 1);
+        let requests = cdn.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        for name in ["authorization", "cookie", "x-api-key"] {
+            assert!(requests[0].headers.get(name).is_none(), "{name}");
+        }
+
+        // The size the file is declared to have is checked against what the CDN announces.
+        for wrong in [MIB + 1, MIB - 1] {
+            let (_tmp, models) = dir();
+            let file = remote(format!("{}/model.onnx", origin.uri()), wrong);
+
+            let (result, calls) = fetch_remote(&models, &file, cdn_stand_in).await;
+
+            assert_eq!(result, Err(DownloadError::SizeMismatch), "{wrong}");
+            assert!(calls.is_empty(), "nothing is written for it: {calls:?}");
+            assert!(!blob_path(&models).exists());
+            assert!(!models.root().join("model.onnx.part").exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn download_file_resumes_a_part_file_through_the_redirect() {
+        let (_tmp, models) = dir();
+        fs::write(
+            models.root().join("model.onnx.part"),
+            &body(MIB)[..100 * KIB],
+        )
+        .unwrap();
+        let cdn = serve_at("/blob/model.onnx", RangeServer(body(MIB))).await;
+        let origin = redirect_to(format!("{}/blob/model.onnx", cdn.uri())).await;
+        let file = remote(format!("{}/model.onnx", origin.uri()), MIB);
+
+        let (result, calls) = fetch_remote(&models, &file, cdn_stand_in).await;
+
+        assert_eq!(result.unwrap(), blob_path(&models));
+        assert_eq!(fs::read(blob_path(&models)).unwrap(), body(MIB));
+        let requests = cdn.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1, "the rest only");
+        assert_eq!(range_header(&requests[0]).as_deref(), Some("bytes=102400-"));
+        assert_eq!(calls.first(), Some(&(102_400, Some(MIB as u64))));
+    }
+
+    #[tokio::test]
+    async fn download_file_drops_a_part_file_that_is_not_this_file() {
+        // The part holds 100 KiB, and the server says the file is another length than the one expected.
+        let (_tmp, models) = dir();
+        fs::write(
+            models.root().join("model.onnx.part"),
+            &body(MIB)[..100 * KIB],
+        )
+        .unwrap();
+        let server = serve_at("/model.onnx", RangeServer(body(MIB))).await;
+        let file = remote(format!("{}/model.onnx", server.uri()), MIB + KIB);
+
+        let (result, _) = fetch_remote(&models, &file, redirect_allowed).await;
+
+        assert_eq!(result, Err(DownloadError::SizeMismatch));
+        assert!(!blob_path(&models).exists());
+        assert!(!models.root().join("model.onnx.part").exists());
+    }
+
+    #[tokio::test]
+    async fn download_file_follows_only_the_redirects_the_rule_allows() {
+        let (_tmp, models) = dir();
+        let elsewhere = serve_at("/blob/model.onnx", RangeServer(body(KIB))).await;
+        let origin = redirect_to(format!("{}/blob/model.onnx", elsewhere.uri())).await;
+        let file = remote(format!("{}/model.onnx", origin.uri()), KIB);
+
+        // The app's rule: another origin over plain http is refused.
+        let (result, _) = fetch_remote(&models, &file, redirect_allowed).await;
+
+        assert!(
+            matches!(result, Err(DownloadError::Http(ApiError::Invalid(_)))),
+            "{result:?}"
+        );
+        assert!(elsewhere.received_requests().await.unwrap().is_empty());
+        assert!(!blob_path(&models).exists());
+    }
+
+    #[test]
+    fn the_model_cdns_are_reached_over_https_only() {
+        let url = |u: &str| reqwest::Url::parse(u).unwrap();
+        let allowed = |from: &str, to: &str| redirect_allowed(&url(from), &url(to));
+        let hf = "https://huggingface.co/csukuangfj/m/resolve/main/model.onnx";
+        let github = "https://github.com/k2-fsa/sherpa-onnx/releases/download/t/m.onnx";
+
+        // Hugging Face sends the file from a host below hf.co, and GitHub release assets come from these two.
+        assert!(allowed(
+            hf,
+            "https://cas-bridge.xethub.hf.co/xet-bridge-us/abc?X-Amz-Signature=1"
+        ));
+        assert!(allowed(
+            github,
+            "https://objects.githubusercontent.com/github-production-release-asset/1?sig=1"
+        ));
+        assert!(allowed(
+            github,
+            "https://release-assets.githubusercontent.com/github-production-release-asset/1?sig=1"
+        ));
+
+        for plain in [
+            "http://cas-bridge.xethub.hf.co/abc",
+            "http://objects.githubusercontent.com/abc",
+            "http://release-assets.githubusercontent.com/abc",
+        ] {
+            assert!(!allowed(hf, plain), "{plain}");
+            assert!(!allowed(github, plain), "{plain}");
+        }
+    }
+
+    #[test]
+    fn download_file_can_run_on_another_thread() {
+        fn assert_send<T: Send>(_: &T) {}
+        let file = RemoteFile {
+            url: "http://localhost/model.onnx",
+            file: BLOB,
+            size: 1,
+        };
+        let future = download_file(Path::new(""), &file, |_, _| {}, CancellationToken::new());
+        assert_send(&future);
     }
 
     /// Fails the test instead of hanging it when a download that should end does not.

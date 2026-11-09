@@ -17,10 +17,14 @@
 #   tone-ima4.mov     IMA ADPCM (ima4) in QuickTime, 22.05 kHz, mono: a codec that symphonia does not know at all (its
 #                     track has no codec parameters), so the file is not "no audio" but only ffmpeg can read it
 #   tone-ac3.mkv      AC-3 in Matroska: a codec that symphonia cannot decode, so only ffmpeg can read it
+#   two-voices.wav    25.6 s of speech, 16 kHz mono 16-bit, for the speaker separation test (diarize.rs): two voices of
+#                     macOS's `say` (Samantha, Daniel) take turns, four sentences, so the speakers change at about
+#                     5.9, 13.5 and 19.1 s. Made only where `say` exists (macOS); the voices differ a little between
+#                     macOS versions, which moves the turns by a few hundredths of a second.
 #
 # Needs: ffmpeg with libmp3lame, libopus and libx264 (macOS: brew install ffmpeg). A tone is made by ffmpeg itself, so
-# neither `say` nor `afconvert` is needed. The metadata is stripped and the muxers write no version tag, so that a
-# regenerated file is the same bytes for the same ffmpeg.
+# neither `say` nor `afconvert` is needed for it; only two-voices.wav needs `say`. The metadata is stripped and the
+# muxers write no version tag, so that a regenerated file is the same bytes for the same ffmpeg.
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -57,5 +61,22 @@ ff "${tone[@]}" "${plain[@]}" "${half[@]}" -ar 16000 -c:a libopus -b:a 24k tone-
 ff "${video[@]}" "${plain[@]}" -an "${h264[@]}" video-only.mp4
 ff "${tone[@]}" "${plain[@]}" "${half[@]}" -ar 22050 -c:a adpcm_ima_qt tone-ima4.mov
 ff "${tone[@]}" "${plain[@]}" "${half[@]}" -ar 48000 -c:a ac3 -b:a 32k tone-ac3.mkv
+
+# Speech for the speaker separation test: each sentence is spoken to its own 16 kHz file, and ffmpeg joins them.
+if command -v say >/dev/null; then
+    voices=$(mktemp -d)
+    trap 'rm -rf "$voices"' EXIT
+    speak() {
+        say -v "$1" --file-format=WAVE --data-format=LEI16@16000 -o "$voices/$2.wav" "$3"
+    }
+    speak Samantha 1 "Good morning everyone, today we will review the quarterly budget and decide on the hiring plan for next year."
+    speak Daniel 2 "Thanks, I think we should freeze hiring until the second quarter, because revenue is behind the forecast by about ten percent."
+    speak Samantha 3 "That makes sense, but the support team is overloaded, can we at least hire two people for support?"
+    speak Daniel 4 "Fine, two support hires, and we revisit everything else in April. Let's write that down as a decision."
+    ff -i "$voices/1.wav" -i "$voices/2.wav" -i "$voices/3.wav" -i "$voices/4.wav" \
+        -filter_complex "concat=n=4:v=0:a=1" "${plain[@]}" -ar 16000 -ac 1 -c:a pcm_s16le two-voices.wav
+else
+    echo "say is not installed (macOS only): two-voices.wav is left as it is" >&2
+fi
 
 ls -l "$out"
