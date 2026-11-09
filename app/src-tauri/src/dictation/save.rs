@@ -31,12 +31,20 @@ impl SavePaths {
     }
 }
 
-/// The audio of one dictation, as it was written.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The audio of one dictation, as it was written. A temporary file goes when the `Take` does, whichever way the dictation
+/// ends (an early return, a bug that was caught); a saved one stays. It is not `Clone`: a copy that was dropped would
+/// delete the file under the one that is still in use.
+#[derive(Debug, PartialEq, Eq)]
 pub struct Take {
     pub wav: PathBuf,
     /// The file is a saved dictation: it stays when the dictation ends. Otherwise it is temporary.
     pub saved: bool,
+}
+
+impl Drop for Take {
+    fn drop(&mut self) {
+        discard_if_temporary(self);
+    }
 }
 
 /// The base name of a saved dictation: `20261109-101530`.
@@ -44,32 +52,38 @@ pub fn stamp(now: NaiveDateTime) -> String {
     now.format("%Y%m%d-%H%M%S").to_string()
 }
 
-/// Writes the 16 kHz audio of a dictation: into the saved folder when `save`, else (or when that fails) into the
-/// temporary one as `dictate-<stamp>.wav`. A second one in the same second gets `-2` after the stamp. A file that could not be
-/// written whole is deleted.
+/// Writes the 16 kHz audio of a dictation, where it is wanted: into the saved folder when `save`, and into the temporary one
+/// as `dictate-<stamp>.wav` when a speech API has to `upload` it and it was not saved (or could not be). `None` when
+/// nobody needs a file: local speech recognition works on what is in memory, and a recording nobody asked for is not left
+/// in a folder that other users of the machine can read. A second take in the same second gets `-2` after the stamp. A
+/// file that could not be written whole is deleted.
 pub fn write_take(
     paths: &SavePaths,
     save: bool,
+    upload: bool,
     now: NaiveDateTime,
     samples_16k: &[f32],
-) -> io::Result<Take> {
+) -> io::Result<Option<Take>> {
     if save {
         match saved_path(&paths.dir, &stamp(now))
             .and_then(|path| write_checked(&path, samples_16k, wav::write_16k_mono).map(|()| path))
         {
-            Ok(wav) => return Ok(Take { wav, saved: true }),
+            Ok(wav) => return Ok(Some(Take { wav, saved: true })),
             // A full or read-only disk must not cost the dictation: the audio is still needed by the speech API.
-            Err(e) => log::warn!("Could not save the recording, using a temporary file: {e}"),
+            Err(e) => log::warn!("Could not save the recording: {e}"),
         }
+    }
+    if !upload {
+        return Ok(None);
     }
     fs::create_dir_all(&paths.temp)?;
     let wav = temp_path(&paths.temp, &format!("{TEMP_PREFIX}{}", stamp(now)))?;
     write_checked(&wav, samples_16k, wav::write_16k_mono)?;
-    Ok(Take { wav, saved: false })
+    Ok(Some(Take { wav, saved: false }))
 }
 
 /// A file `name.wav` in `dir` that is not there yet, or `name-2.wav`, `name-3.wav`; the name is taken by making the file, so that
-/// two dictations never share one.
+/// two dictations never share one. Only its owner can read it (on Unix): the temporary folder of Linux is shared.
 fn temp_path(dir: &Path, name: &str) -> io::Result<PathBuf> {
     for n in 1.. {
         let wav = if n == 1 {
@@ -77,11 +91,11 @@ fn temp_path(dir: &Path, name: &str) -> io::Result<PathBuf> {
         } else {
             dir.join(format!("{name}-{n}.wav"))
         };
-        match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&wav)
-        {
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        match options.open(&wav) {
             Ok(_) => return Ok(wav),
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
             Err(e) => return Err(e),
@@ -197,6 +211,13 @@ mod tests {
         (0..1600).map(|i| (i as f32 / 100.0).sin() * 0.5).collect()
     }
 
+    /// The audio of a take that the person wants kept (`save`), or that a speech API has to hear (`upload`).
+    fn take_of(paths: &SavePaths, save: bool, upload: bool, now: NaiveDateTime) -> Take {
+        write_take(paths, save, upload, now, &tone())
+            .unwrap()
+            .expect("a take was wanted")
+    }
+
     #[test]
     fn save_names_and_sweep() {
         // The base name is the local time, to the second, with nothing in it that a file system refuses.
@@ -208,7 +229,7 @@ mod tests {
         fs::create_dir_all(&paths.temp).unwrap();
 
         // Saved: the audio and the text have one base name in the folder of the dictations, which is made on the way.
-        let take = write_take(&paths, true, at(10, 15, 30), &tone()).unwrap();
+        let take = take_of(&paths, true, false, at(10, 15, 30));
         assert_eq!(
             take,
             Take {
@@ -222,7 +243,7 @@ mod tests {
             "héllo wörld"
         );
         // The second one in the same second doesn't write over the first.
-        let second = write_take(&paths, true, at(10, 15, 30), &tone()).unwrap();
+        let second = take_of(&paths, true, false, at(10, 15, 30));
         assert_eq!(second.wav, paths.dir.join("20261109-101530-2.wav"));
         write_text(&second, "again").unwrap();
         assert!(paths.dir.join("20261109-101530-2.txt").is_file());
@@ -232,7 +253,7 @@ mod tests {
         );
 
         // Not saved: a temporary file named by the time, which goes after use. A saved one stays.
-        let temporary = write_take(&paths, false, at(10, 15, 31), &tone()).unwrap();
+        let temporary = take_of(&paths, false, true, at(10, 15, 31));
         assert!(!temporary.saved);
         assert_eq!(
             temporary.wav,
@@ -240,7 +261,7 @@ mod tests {
         );
         assert!(temporary.wav.is_file());
         // Two in the same second don't write over each other.
-        let twin = write_take(&paths, false, at(10, 15, 31), &tone()).unwrap();
+        let twin = take_of(&paths, false, true, at(10, 15, 31));
         assert_eq!(twin.wav, paths.temp.join("dictate-20261109-101531-2.wav"));
         // The text of a dictation that isn't saved is not written anywhere: it would be a transcript left in the temporary folder.
         write_text(&temporary, "private words").unwrap();
@@ -282,7 +303,7 @@ mod tests {
     fn an_empty_text_is_not_written() {
         let root = tempfile::tempdir().unwrap();
         let paths = paths(root.path());
-        let take = write_take(&paths, true, at(9, 0, 0), &tone()).unwrap();
+        let take = take_of(&paths, true, false, at(9, 0, 0));
         write_text(&take, "  \n").unwrap();
         assert!(!text_path(&take.wav).exists());
     }
@@ -290,7 +311,7 @@ mod tests {
     #[test]
     fn the_audio_is_a_16_khz_wav() {
         let root = tempfile::tempdir().unwrap();
-        let take = write_take(&paths(root.path()), true, at(9, 0, 0), &tone()).unwrap();
+        let take = take_of(&paths(root.path()), true, false, at(9, 0, 0));
         // The header of a WAV file: channels at byte 22, the sample rate at byte 24.
         let bytes = fs::read(&take.wav).unwrap();
         assert_eq!(&bytes[..4], b"RIFF");
@@ -321,7 +342,7 @@ mod tests {
         fs::create_dir_all(root.path().join("temp")).unwrap();
         // A file where the folder of the dictations should be.
         fs::write(root.path().join("saved"), b"in the way").unwrap();
-        let take = write_take(&paths(root.path()), true, at(9, 0, 0), &tone()).unwrap();
+        let take = take_of(&paths(root.path()), true, true, at(9, 0, 0));
         assert!(!take.saved, "{take:?}");
         assert!(take.wav.starts_with(root.path().join("temp")));
         assert!(take.wav.is_file());
@@ -333,7 +354,78 @@ mod tests {
         // Neither folder can be written to: the temporary one is a file.
         fs::write(root.path().join("temp"), b"in the way").unwrap();
         fs::write(root.path().join("saved"), b"in the way").unwrap();
-        assert!(write_take(&paths(root.path()), true, at(9, 0, 0), &tone()).is_err());
-        assert!(write_take(&paths(root.path()), false, at(9, 0, 0), &tone()).is_err());
+        assert!(write_take(&paths(root.path()), true, true, at(9, 0, 0), &tone()).is_err());
+        assert!(write_take(&paths(root.path()), false, true, at(9, 0, 0), &tone()).is_err());
+    }
+
+    // ---- audio that nobody asked for is not written
+
+    #[test]
+    fn a_take_that_is_neither_kept_nor_heard_by_an_api_is_written_nowhere() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths(root.path());
+        fs::create_dir_all(&paths.temp).unwrap();
+
+        let take = write_take(&paths, false, false, at(9, 0, 0), &tone()).unwrap();
+
+        assert_eq!(take, None);
+        assert_eq!(fs::read_dir(&paths.temp).unwrap().count(), 0);
+        assert!(!paths.dir.exists());
+    }
+
+    #[test]
+    fn a_saved_take_that_cannot_be_written_goes_to_a_temporary_file_only_for_an_api_to_hear() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("temp")).unwrap();
+        // A file where the folder of the dictations should be.
+        fs::write(root.path().join("saved"), b"in the way").unwrap();
+        let paths = paths(root.path());
+
+        // Nothing needs the audio when it can't be kept: no file for no one.
+        assert_eq!(
+            write_take(&paths, true, false, at(9, 0, 0), &tone()).unwrap(),
+            None
+        );
+        assert_eq!(fs::read_dir(&paths.temp).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_temporary_take_is_deleted_when_it_is_dropped_and_a_saved_one_is_not() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths(root.path());
+        let temporary = take_of(&paths, false, true, at(9, 0, 0));
+        let saved = take_of(&paths, true, false, at(9, 0, 1));
+        let (temporary_wav, saved_wav) = (temporary.wav.clone(), saved.wav.clone());
+        assert!(temporary_wav.is_file());
+
+        drop(temporary);
+        drop(saved);
+
+        assert!(
+            !temporary_wav.exists(),
+            "the temporary audio was left behind"
+        );
+        assert!(saved_wav.is_file(), "a saved dictation is kept");
+    }
+
+    #[test]
+    fn dropping_a_temporary_take_whose_file_is_gone_is_fine() {
+        let root = tempfile::tempdir().unwrap();
+        let take = take_of(&paths(root.path()), false, true, at(9, 0, 0));
+        fs::remove_file(&take.wav).unwrap();
+        // The file went already (the controller discards it when it is done): nothing is left to do, and nothing panics.
+        discard_if_temporary(&take);
+        drop(take);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_temporary_take_can_only_be_read_by_its_owner() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let take = take_of(&paths(root.path()), false, true, at(9, 0, 0));
+        let mode = fs::metadata(&take.wav).unwrap().permissions().mode();
+        // The temporary folder of Linux is shared by all the users of the machine.
+        assert_eq!(mode & 0o777, 0o600, "{mode:o}");
     }
 }

@@ -526,7 +526,9 @@ fn controller_cancel_while_listening_keeps_the_audio_and_drops_the_text() {
 }
 
 #[test]
-fn controller_cancel_without_saving_leaves_no_audio_behind() {
+fn controller_a_local_dictation_that_is_not_saved_writes_no_audio_at_all() {
+    // Local speech recognition works on what is in memory: a file would only be a recording left in the shared temporary
+    // folder (until the next launch if the app is killed) for no one to need.
     let fx = Fixture::new();
     fx.change_settings(|s| s.save_recordings = false);
     *fx.backend.refine_gate.lock().unwrap() = Some(Gate::closed());
@@ -534,7 +536,48 @@ fn controller_cancel_without_saving_leaves_no_audio_behind() {
     fx.talk(1);
     fx.press();
     fx.wait_for("the AI to be editing", || fx.ui.last().working.is_some());
-    // The recording is in a temporary file now.
+
+    assert_eq!(fx.files_in(&fx.temp_dir()), Vec::<String>::new());
+    assert_eq!(fx.saved_files(), Vec::<String>::new());
+
+    fx.ctl.cancel();
+    fx.wait_for("the panels to go", || fx.ui.last().view == View::Hidden);
+}
+
+#[test]
+fn controller_the_speech_api_hears_a_temporary_file_when_the_recording_is_not_saved() {
+    let fx = Fixture::new();
+    fx.uses_the_api(TranscribePreset::OpenAi);
+    fx.change_settings(|s| s.save_recordings = false);
+    fx.dictate_to_chip();
+
+    // The API was given a file to upload, and nothing of it is left once the text is written.
+    let uploads = fx.backend.calls();
+    let uploaded = uploads
+        .iter()
+        .find_map(|call| match call {
+            BackendCall::Transcribe { wav } | BackendCall::TranscribeAndEdit { wav, .. } => {
+                Some(wav.clone())
+            }
+            BackendCall::Refine { .. } => None,
+        })
+        .expect("the audio was uploaded");
+    assert!(uploaded.starts_with(fx.temp_dir()), "{uploaded:?}");
+    assert_eq!(fx.files_in(&fx.temp_dir()), Vec::<String>::new());
+    assert_eq!(fx.saved_files(), Vec::<String>::new());
+}
+
+#[test]
+fn controller_cancel_without_saving_leaves_no_audio_behind() {
+    let fx = Fixture::new();
+    fx.uses_the_api(TranscribePreset::OpenAi);
+    fx.change_settings(|s| s.save_recordings = false);
+    *fx.backend.refine_gate.lock().unwrap() = Some(Gate::closed());
+    fx.start_listening();
+    fx.talk(1);
+    fx.press();
+    fx.wait_for("the AI to be editing", || fx.ui.last().working.is_some());
+    // The recording is in a temporary file now, for the speech API.
     assert_eq!(fx.files_in(&fx.temp_dir()).len(), 1);
 
     fx.ctl.cancel();

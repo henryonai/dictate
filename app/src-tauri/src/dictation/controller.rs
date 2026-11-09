@@ -974,11 +974,20 @@ impl Controller {
             samples.clear();
         }
 
-        // 1. The audio first: whatever happens next, what was said is kept (when the setting is on).
+        // The speech API, when it is set up and the engine: it is the only one that needs the audio as a file.
+        let flags = &self.deps.keys_flags;
+        let api = config::dictation_api_plan(
+            &settings,
+            flags.get(Account::Ai),
+            flags.get(Account::Transcribe),
+        );
+
+        // 1. The audio first: whatever happens next, what was said is kept (when the setting is on). With the local
+        // engine and the setting off there is no file at all.
         let take = if samples.is_empty() {
             None
         } else {
-            self.write_audio(&settings, &samples)
+            self.write_audio(&settings, api.is_some(), &samples)
         };
         if recording.end == End::Gone || self.flow(id, token) == Flow::Gone {
             return self.abandon(take);
@@ -1016,13 +1025,8 @@ impl Controller {
         }
 
         // 3. The pipeline: the speech API hears it again, the AI edits it.
-        let flags = &self.deps.keys_flags;
         let config = PipelineConfig {
-            api: config::dictation_api_plan(
-                &settings,
-                flags.get(Account::Ai),
-                flags.get(Account::Transcribe),
-            ),
+            api,
             ai_configured: settings::is_ai_configured(&settings, flags.get(Account::Ai)),
             auto_refine: settings.auto_refine,
             style: find_edit_preset(&settings.default_edit_preset),
@@ -1097,15 +1101,17 @@ impl Controller {
         );
     }
 
-    /// Writes the audio of the take where `save_recordings` says. The recording is lost only if no folder can be written to.
-    fn write_audio(&self, settings: &Settings, samples: &[f32]) -> Option<Take> {
+    /// Writes the audio of the take where `save_recordings` says, and into a temporary file when the speech API has to hear
+    /// it. `None` when no one needs a file, and when it could not be written.
+    fn write_audio(&self, settings: &Settings, upload: bool, samples: &[f32]) -> Option<Take> {
         match save::write_take(
             &self.deps.files,
             settings.save_recordings,
+            upload,
             self.deps.clock.wall(),
             samples,
         ) {
-            Ok(take) => Some(take),
+            Ok(take) => take,
             Err(e) => {
                 log::warn!("Could not write the recording: {e}");
                 None
@@ -1113,11 +1119,10 @@ impl Controller {
         }
     }
 
-    /// The take is no longer needed: a temporary file is deleted, a saved one stays.
+    /// The take is no longer needed: a temporary file is deleted, a saved one stays. (A `Take` does the same when it is
+    /// dropped, so that no way out of `finish` can leave one behind; this makes the moment plain.)
     fn abandon(&self, take: Option<Take>) {
-        if let Some(take) = take {
-            save::discard_if_temporary(&take);
-        }
+        drop(take);
     }
 
     /// The live transcription is stopped, and waited for: the whole take is transcribed next, and two transcriptions of one
