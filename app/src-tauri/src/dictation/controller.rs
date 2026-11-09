@@ -68,6 +68,9 @@ pub trait PanelSink: Send + Sync {
     fn set_anchor(&self, anchor: Option<Rect>);
     /// Opens Settings, where a Whisper model is downloaded.
     fn open_settings(&self);
+    /// The Settings window keeps a copy of the settings, which it sends back whole with every save: it is told of a
+    /// language that was changed without it, so that it doesn't send the old one back.
+    fn language_changed(&self, lang: &str);
 }
 
 /// Local speech recognition.
@@ -1905,6 +1908,7 @@ impl Controller {
             .settings
             .update(|settings| settings.dictation_language = lang.to_owned())
             .map_err(|e| format!("Could not save the settings: {e}"))?;
+        self.deps.ui.language_changed(lang);
         self.publish();
         Ok(())
     }

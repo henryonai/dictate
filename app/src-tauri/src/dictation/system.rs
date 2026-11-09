@@ -170,6 +170,10 @@ impl PanelSink for PanelWindows {
     fn open_settings(&self) {
         tray::show_settings(&self.app);
     }
+
+    fn language_changed(&self, lang: &str) {
+        crate::commands::emit_language(&self.app, lang);
+    }
 }
 
 /// Where the commands of the panels find the controller. It exists from the start of the app, and the controller is put in

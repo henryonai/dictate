@@ -1483,6 +1483,19 @@ fn controller_language_is_a_language_code_and_nothing_else() {
 }
 
 #[test]
+fn controller_language_change_is_told_to_the_settings_window_after_it_was_saved() {
+    // The Settings window keeps its own copy of the settings and would send the old language back with its next save.
+    let fx = Fixture::new();
+    assert!(fx.ctl.set_language("../x").is_err());
+    assert!(fx.ui.languages.lock().unwrap().is_empty());
+
+    fx.ctl.set_language("vi-VN").unwrap();
+
+    assert_eq!(*fx.ui.languages.lock().unwrap(), ["vi-VN"]);
+    assert_eq!(fx.settings.get().dictation_language, "vi-VN");
+}
+
+#[test]
 fn controller_vocabulary_goes_to_local_speech_recognition() {
     let fx = Fixture::new();
     fx.change_settings(|s| s.vocabulary = "Dictate, Whisper".into());

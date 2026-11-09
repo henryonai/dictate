@@ -40,6 +40,8 @@ use crate::tray;
 
 /// The event that tells how a model download goes.
 const DOWNLOAD_EVENT: &str = "model-download";
+/// The event that tells the Settings window of settings that changed without it (see [`emit_language`]).
+const SETTINGS_EVENT: &str = "settings-changed";
 
 /// The settings plus what the UI may know about the keys.
 ///
@@ -516,6 +518,21 @@ pub fn open_dictations_folder_now(app: &AppHandle) -> Result<(), String> {
 }
 
 // ---- the commands
+
+/// Tells the Settings window that the dictation language was changed without it (by the language menu of the chip),
+/// with only that setting: the window keeps a copy of all of them and sends it back whole with every save.
+pub(crate) fn emit_language<R: tauri::Runtime>(app: &AppHandle<R>, lang: &str) {
+    #[derive(Serialize, Clone)]
+    struct Changed<'a> {
+        dictation_language: &'a str,
+    }
+    let changed = Changed {
+        dictation_language: lang,
+    };
+    if let Err(e) = app.emit(SETTINGS_EVENT, changed) {
+        log::warn!("Could not tell the Settings window of the new language: {e}");
+    }
+}
 
 #[tauri::command]
 pub async fn get_settings(state: State<'_, AppState>) -> Result<SettingsView, String> {
@@ -1030,6 +1047,25 @@ mod tests {
     }
 
     // ---- saving settings
+
+    #[test]
+    fn a_language_that_changed_without_the_window_reaches_the_window_as_the_setting_that_changed() {
+        use tauri::{test::mock_builder, Listener};
+        let app = mock_builder().build(crate::context()).unwrap();
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        let sink = heard.clone();
+        app.listen(SETTINGS_EVENT, move |event| {
+            sink.lock().unwrap().push(event.payload().to_owned());
+        });
+
+        emit_language(app.handle(), "vi-VN");
+
+        // Only the setting that changed: the window's own edits of the others stay as they are.
+        assert_eq!(
+            *heard.lock().unwrap(),
+            [r#"{"dictation_language":"vi-VN"}"#]
+        );
+    }
 
     #[test]
     fn save_settings_writes_and_returns_the_view() {

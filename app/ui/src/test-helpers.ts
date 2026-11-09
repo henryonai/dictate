@@ -56,11 +56,12 @@ export const EDIT_PRESET_IDS = ["clean", "formal", "concise", "bullets", "prompt
 
 /**
  * Stubs every call of `api` with a calm answer; a test changes the ones it cares about with
- * `vi.mocked(api.checkAi).mockRejectedValue(...)`. Returns a way to send `model-download` and `hotkey-status` events.
+ * `vi.mocked(api.checkAi).mockRejectedValue(...)`. Returns a way to send `model-download`, `hotkey-status` and `settings-changed` events.
  */
 export function stubApi() {
   let listener: ((event: DownloadEvent) => void) | undefined;
   let hotkeyListener: ((status: HotkeyStatus) => void) | undefined;
+  let settingsListener: ((patch: Partial<Settings>) => void) | undefined;
 
   vi.spyOn(api, "getSettings").mockResolvedValue(fakeView());
   vi.spyOn(api, "saveSettings").mockImplementation(async (settings) => fakeView(settings));
@@ -108,9 +109,17 @@ export function stubApi() {
     };
   });
 
+  vi.spyOn(api, "onSettingsChanged").mockImplementation(async (handler) => {
+    settingsListener = handler;
+    return () => {
+      settingsListener = undefined;
+    };
+  });
+
   return {
     emitDownload: (event: DownloadEvent) => listener?.(event),
     emitHotkey: (status: HotkeyStatus) => hotkeyListener?.(status),
+    emitSettings: (patch: Partial<Settings>) => settingsListener?.(patch),
   };
 }
 

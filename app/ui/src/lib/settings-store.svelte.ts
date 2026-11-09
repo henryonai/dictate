@@ -42,6 +42,8 @@ export class SettingsStore {
 
   /** What the Rust side last confirmed. */
   private saved: SettingsView | null = null;
+  /** What the Rust side changed by itself while a call was on its way, or null when none is. See `fold`. */
+  private heard: Partial<Settings> | null = null;
   private pending: Pending[] = [];
   private failures = 0;
   private queue: Promise<unknown> = Promise.resolve();
@@ -76,6 +78,24 @@ export class SettingsStore {
     return api.onHotkeyStatus((status) => {
       this.hotkey = status;
     });
+  }
+
+  /**
+   * Follows the settings that the Rust side changes without the window: the language menu of the dictation chip saves
+   * the dictation language while this window is only hidden. Without it the window would show the old value and send
+   * it back with its next save. Resolves with the function that stops it.
+   */
+  watchSettings(): Promise<() => void> {
+    return api.onSettingsChanged((patch) => this.fold(patch));
+  }
+
+  /** What the Rust side changed joins what it confirmed. The changes of the window that wait for their save stay on top. */
+  private fold(patch: Partial<Settings>): void {
+    if (!this.saved) return;
+    this.saved = { ...this.saved, ...patch };
+    // The answer of a call that is on its way was made before this and doesn't know it.
+    if (this.heard) Object.assign(this.heard, patch);
+    this.show();
   }
 
   dismissWarning(): void {
@@ -167,8 +187,14 @@ export class SettingsStore {
     this.pending.push(entry);
     this.show();
     const sent = this.queue.then(async () => {
+      const heard: Partial<Settings> = {};
       try {
-        this.saved = await call(this.saved && settingsOf(this.laidOn(this.saved, entry)));
+        const sending = this.saved && settingsOf(this.laidOn(this.saved, entry));
+        this.heard = heard;
+        const answer = await call(sending);
+        // What the Rust side changed by itself meanwhile is newer than the answer, except for what this very call set.
+        const newer = Object.fromEntries(Object.entries(heard).filter(([key]) => !(key in entry.patch)));
+        this.saved = { ...answer, ...newer };
         this.loadWarning = this.saved.load_warning ?? this.loadWarning;
         // A call that was queued before a failure doesn't make that failure go away.
         if (this.failures === entry.failuresBefore) this.error = "";
@@ -182,6 +208,7 @@ export class SettingsStore {
         }
         return false;
       } finally {
+        this.heard = null;
         this.pending = this.pending.filter((other) => other !== entry);
         this.show();
       }

@@ -111,6 +111,19 @@ test("the hotkey-status event reaches the listener", async () => {
   stop();
 });
 
+test("the settings-changed event brings the settings that changed, until it is removed", async () => {
+  recordCalls();
+  const heard: unknown[] = [];
+  const stop = await api.onSettingsChanged((patch) => heard.push(patch));
+
+  await emit("settings-changed", { dictation_language: "vi-VN" });
+  expect(heard).toEqual([{ dictation_language: "vi-VN" }]);
+
+  stop();
+  await emit("settings-changed", { dictation_language: "en-US" });
+  expect(heard).toHaveLength(1);
+});
+
 test("the panel-state event reaches the listener, until it is removed", async () => {
   recordCalls();
   const heard: unknown[] = [];

@@ -1,4 +1,4 @@
-// The commands of the Rust side and its `model-download` and `hotkey-status` events, with their types. Nothing else in the UI calls
+// The commands of the Rust side and its `model-download`, `hotkey-status` and `settings-changed` events, with their types. Nothing else in the UI calls
 // `invoke`: when a command changes, this is the one place to follow it. Names and argument names mirror
 // app/src-tauri/src/commands.rs.
 import { invoke } from "@tauri-apps/api/core";
@@ -201,6 +201,9 @@ export const api = {
   /** Resolves with the function that stops listening. */
   onHotkeyStatus: (handler: (status: HotkeyStatus) => void) =>
     listen<HotkeyStatus>("hotkey-status", (event) => handler(event.payload)),
+  /** Settings that the Rust side changed without the window (the language menu of the dictation chip): only the ones that changed. */
+  onSettingsChanged: (handler: (patch: Partial<Settings>) => void) =>
+    listen<Partial<Settings>>("settings-changed", (event) => handler(event.payload)),
   /** Both panel windows hear every state. Resolves with the function that stops listening. */
   onPanelState: (handler: (state: PanelState) => void) =>
     listen<PanelState>("panel-state", (event) => handler(event.payload)),

@@ -173,6 +173,33 @@ test("stops following the shortcut when the window goes", async () => {
   await vi.waitFor(() => expect(stop).toHaveBeenCalledTimes(1));
 });
 
+test("shows a language that the dictation chip changed while the window was closed, and keeps it through the next save", async () => {
+  const user = userEvent.setup();
+  const { emitSettings } = stubApi();
+  render(Settings);
+  await screen.findAllByRole("tab");
+  await vi.waitFor(() => expect(api.onSettingsChanged).toHaveBeenCalled());
+  expect(screen.getByLabelText("Language")).toHaveValue("en-US");
+
+  emitSettings({ dictation_language: "vi-VN" });
+  await vi.waitFor(() => expect(screen.getByLabelText("Language")).toHaveValue("vi-VN"));
+
+  await user.click(screen.getByRole("checkbox", { name: "Save recordings + transcripts" }));
+  expect(vi.mocked(api.saveSettings).mock.lastCall?.[0]).toMatchObject({ dictation_language: "vi-VN" });
+});
+
+test("stops following the settings when the window goes", async () => {
+  const stop = vi.fn();
+  vi.mocked(api.onSettingsChanged).mockResolvedValue(stop);
+  const { unmount } = render(Settings);
+  await screen.findAllByRole("tab");
+  await vi.waitFor(() => expect(api.onSettingsChanged).toHaveBeenCalled());
+
+  unmount();
+
+  await vi.waitFor(() => expect(stop).toHaveBeenCalledTimes(1));
+});
+
 test.each(["en", "vi"] as const)("no text on screen is a key that has no translation (%s)", async (language) => {
   const catalog = ["tiny", "base", "small", "large-v3-turbo-q5_0", "medium", "large-v3-turbo"];
   vi.mocked(api.listModels).mockResolvedValue(

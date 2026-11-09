@@ -464,3 +464,76 @@ describe("the shortcut", () => {
     expect(store.hotkey?.label).toBe("Ctrl+Alt+D");
   });
 });
+
+describe("a setting that the Rust side changed by itself", () => {
+  test("shows at once, and a later save of another setting carries it instead of the old value", async () => {
+    // The language menu of the dictation chip saves the language without the window: the window must not send the old one back.
+    const { emitSettings } = stubApi();
+    const store = await loaded(fakeView({ dictation_language: "en-US" }));
+    await store.watchSettings();
+
+    emitSettings({ dictation_language: "vi-VN" });
+    expect(store.view?.dictation_language).toBe("vi-VN");
+
+    await store.update({ auto_refine: false });
+    expect(vi.mocked(api.saveSettings).mock.calls[0][0]).toMatchObject({
+      dictation_language: "vi-VN",
+      auto_refine: false,
+    });
+    expect(store.view?.dictation_language).toBe("vi-VN");
+  });
+
+  test("leaves the other settings, and an edit that waits for its save, alone", async () => {
+    const { emitSettings } = stubApi();
+    const store = await loaded();
+    await store.watchSettings();
+    const first = later<ReturnType<typeof fakeView>>();
+    vi.mocked(api.saveSettings).mockReturnValueOnce(first.promise);
+    const saving = store.update({ push_to_talk: true });
+    await vi.waitFor(() => expect(api.saveSettings).toHaveBeenCalledTimes(1));
+
+    emitSettings({ dictation_language: "vi-VN" });
+    expect(store.view).toMatchObject({ push_to_talk: true, dictation_language: "vi-VN" });
+
+    // The save started before the event: it carried the old language and its answer says so. The window goes on with the new one.
+    expect(vi.mocked(api.saveSettings).mock.calls[0][0]).toMatchObject({ dictation_language: "en-US" });
+    first.resolve(fakeView({ push_to_talk: true, dictation_language: "en-US" }));
+    await saving;
+    expect(store.view).toMatchObject({ push_to_talk: true, dictation_language: "vi-VN" });
+    await store.update({ auto_refine: false });
+    expect(vi.mocked(api.saveSettings).mock.calls[1][0]).toMatchObject({ dictation_language: "vi-VN" });
+  });
+
+  test("a setting that the person is changing in the window wins over the one that came by itself", async () => {
+    const { emitSettings } = stubApi();
+    const store = await loaded();
+    await store.watchSettings();
+    const first = later<ReturnType<typeof fakeView>>();
+    vi.mocked(api.saveSettings).mockReturnValueOnce(first.promise);
+    const saving = store.update({ dictation_language: "pt-BR" });
+    await vi.waitFor(() => expect(api.saveSettings).toHaveBeenCalledTimes(1));
+
+    emitSettings({ dictation_language: "vi-VN" });
+    expect(store.view?.dictation_language).toBe("pt-BR");
+
+    first.resolve(fakeView({ dictation_language: "pt-BR" }));
+    await saving;
+    expect(store.view?.dictation_language).toBe("pt-BR");
+  });
+
+  test("is not heard before the settings are loaded, nor after the window stops listening", async () => {
+    const { emitSettings } = stubApi();
+    vi.mocked(api.getSettings).mockRejectedValue("not yet");
+    const store = new SettingsStore();
+    await store.load();
+    const stop = await store.watchSettings();
+    emitSettings({ dictation_language: "vi-VN" });
+    expect(store.view).toBeNull();
+
+    vi.mocked(api.getSettings).mockResolvedValue(fakeView());
+    await store.load();
+    stop();
+    emitSettings({ dictation_language: "vi-VN" });
+    expect(store.view?.dictation_language).toBe("en-US");
+  });
+});

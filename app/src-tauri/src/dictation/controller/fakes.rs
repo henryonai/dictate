@@ -688,6 +688,8 @@ pub struct FakeUi {
     pub states: Mutex<Vec<PanelState>>,
     pub anchors: Mutex<Vec<Option<Rect>>>,
     pub settings_opened: AtomicUsize,
+    /// The languages that the Settings window was told about.
+    pub languages: Mutex<Vec<String>>,
 }
 
 impl FakeUi {
@@ -717,6 +719,10 @@ impl PanelSink for FakeUi {
 
     fn open_settings(&self) {
         self.settings_opened.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn language_changed(&self, lang: &str) {
+        lock(&self.languages).push(lang.to_owned());
     }
 }
 
