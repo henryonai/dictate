@@ -334,6 +334,23 @@ mod tests {
         assert_eq!(version.to_str().unwrap(), "1.13.8");
     }
 
+    /// Linux links sherpa-onnx as a shared library (Cargo.toml). The static build is not usable there: its objects come
+    /// from GCC 11, whisper.cpp's from the GCC of the machine, both carry their own copies of libstdc++'s header-only
+    /// `std::regex`, and the linker keeps one copy of each function for both. onnxruntime's `ParseSemVerVersion`
+    /// then runs `_Compiler` code of one compiler on the `_Scanner` of the other and frees a pointer it never got:
+    /// `free(): invalid pointer`, in the first call that makes a speaker diarizer, on x86_64 (the aarch64 build
+    /// happens to survive). As a shared library, its copy of libstdc++'s templates stays inside it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn on_linux_sherpa_onnx_is_a_shared_library_that_the_program_finds_by_itself() {
+        // Loading it is what finding it takes; the version string is the call that needs it.
+        let _ = unsafe { sherpa_onnx_sys::SherpaOnnxGetVersionStr() };
+        let maps = fs::read_to_string("/proc/self/maps").unwrap();
+        for library in ["libsherpa-onnx-c-api.so", "libonnxruntime.so"] {
+            assert!(maps.contains(library), "{library} is not loaded");
+        }
+    }
+
     #[test]
     fn diarize_models_are_https_with_sizes() {
         assert_eq!(

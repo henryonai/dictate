@@ -33,15 +33,6 @@ serde_json = "1.0.154"
 # Checking that a downloaded model is the file that was published: a corrupt model of the right size stops the whole
 # program inside sherpa-onnx. Already in Cargo.lock (tauri-codegen uses it), so no new crate; pinned to the version that is locked.
 sha2 = "=0.10.9"
-# Speaker separation. The raw bindings, not the `sherpa-onnx` wrapper: the wrapper keeps the C pointer to itself, and the
-# only call that reports progress (`SherpaOnnxOfflineSpeakerDiarizationProcessWithCallback`) is not in either crate.
-# The build script downloads the prebuilt static library (onnxruntime included, about 20 MB on macOS and Linux) into
-# target/sherpa-onnx-prebuilt; CI caches that folder. SHERPA_ONNX_LIB_DIR points it at a library dir that is already
-# extracted, which Windows needs: the archive the build script fetches there is built for the static C runtime and cannot
-# be linked with whisper.cpp, so CI and app/README.md use the 92 MB /MD archive of the same release. Its build
-# dependencies need `cargo update -p deflate64 --precise 0.1.9` to build with Rust 1.85 (0.1.12 needs 1.87); a
-# `cargo update` of anything else leaves that pin alone.
-sherpa-onnx-sys = "=1.13.8"
 # Reading the audio of imported files (wav, mp3, m4a, mp4, mkv, webm, ogg, flac, caf, aiff). Pure Rust.
 symphonia = { version = "=0.6.1", default-features = false, features = ["opt-simd", "aac", "isomp4", "mp3", "mkv", "ogg", "wav", "aiff", "flac", "pcm", "vorbis", "alac", "caf"] }
 # Only the memory figures: the default features pull in disks, networks, users and components too.
@@ -58,6 +49,12 @@ whisper-rs = { version = "0.15.1", features = ["log_backend"] }
 # On Linux the pure-Rust Secret Service client avoids a libdbus build dependency.
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3.6.3", features = ["apple-native"] }
+# Speaker separation: see the Linux entry below for why these are bindings and not the `sherpa-onnx` wrapper. Here
+# sherpa-onnx is linked statically: its build script downloads the prebuilt library (onnxruntime included, about 20 MB)
+# into target/sherpa-onnx-prebuilt, and CI caches that folder. Its build dependencies need
+# `cargo update -p deflate64 --precise 0.1.9` to build with Rust 1.85 (0.1.12 needs 1.87); a `cargo update` of anything
+# else leaves that pin alone.
+sherpa-onnx-sys = "=1.13.8"
 # Whisper runs on the GPU through Metal here; the other systems use the CPU.
 whisper-rs = { version = "0.15.1", features = ["metal"] }
 # audio.m4a is written by the system's own AAC encoder: AudioToolbox's ExtAudioFile encodes and writes the file in one go.
@@ -68,6 +65,10 @@ objc2-core-foundation = { version = "0.3.2", default-features = false, features 
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3.6.3", features = ["windows-native"] }
+# Speaker separation, linked statically as on macOS. The archive that the build script downloads for Windows is built
+# for the static C runtime and cannot be linked with whisper.cpp, so SHERPA_ONNX_LIB_DIR points at the 92 MB /MD archive
+# of the same release, which CI and app/README.md fetch themselves.
+sherpa-onnx-sys = "=1.13.8"
 # CREATE_NO_WINDOW for the child processes, in the form process-wrap takes it; and Media Foundation, whose Sink Writer
 # is the AAC encoder that writes audio.m4a (COM has to be started for it, and its DLLs are looked for when it is first
 # used: a Windows "N" edition has none unless the Media Feature Pack is installed, and a program that imports them
@@ -77,6 +78,14 @@ windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_Media_Med
 
 [target.'cfg(not(any(target_os = "macos", target_os = "windows")))'.dependencies]
 keyring = { version = "3.6.3", features = ["async-secret-service", "async-io", "crypto-rust"] }
+# Speaker separation. The raw bindings, not the `sherpa-onnx` wrapper: the wrapper keeps the C pointer to itself, and the
+# only call that reports progress (`SherpaOnnxOfflineSpeakerDiarizationProcessWithCallback`) is not in either crate.
+# On Linux sherpa-onnx is a shared library ("shared"), not the static one: next to whisper.cpp the static build
+# aborts with `free(): invalid pointer` on x86_64 (both carry their own, differently compiled, copies of libstdc++'s
+# `std::regex`, and the linker keeps one of each function). The build script downloads the library (about 10 MB) into
+# target/sherpa-onnx-prebuilt and copies the .so files next to the binaries in target/<profile>; build.rs makes the
+# binaries of this crate look there, and the app's does the same. A package of the app has to ship the .so files.
+sherpa-onnx-sys = { version = "=1.13.8", default-features = false, features = ["shared"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"

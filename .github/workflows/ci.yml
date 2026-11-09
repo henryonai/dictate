@@ -39,7 +39,8 @@ jobs:
           shared-key: ${{ runner.os }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # The prebuilt sherpa-onnx library (onnxruntime inside) that the build script of sherpa-onnx-sys downloads and
-      # unpacks into target/sherpa-onnx-prebuilt: 20 MB on macOS and Linux. It is cached as unpacked, so that a run
+      # unpacks into target/sherpa-onnx-prebuilt: 20 MB static on macOS, 10 MB shared on Linux (the static one aborts
+      # next to whisper.cpp there, see crates/dictate-services/Cargo.toml). It is cached as unpacked, so that a run
       # with a hit neither downloads nor unpacks it. The build script looks for the folder of the version it is built
       # for, so after a version change it fetches the new one whatever this key hits; change the key with it.
       # Windows does not use this download: see the next step.
@@ -98,10 +99,10 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --all --locked
-      # Speaker separation on the real models. It is the only run of the statically linked sherpa-onnx on each system,
-      # and so the check of the Linux build (its authors warn of "free(): invalid pointer" there) and of the Windows
-      # one. The two models (46 MB) are cached under the SHA-256 of each: a new model is a new key. They are fetched
-      # with curl when the cache misses; the test itself refuses a file whose size or SHA-256 differs.
+      # Speaker separation on the real models. It is the only run of sherpa-onnx next to whisper.cpp on each system: on
+      # Linux the static build aborted here with "free(): invalid pointer", and this step keeps that from coming back
+      # unseen. The two models (46 MB) are cached under the SHA-256 of each: a new model is a new key. They are
+      # fetched with curl when the cache misses; the test itself refuses a file whose size or SHA-256 differs.
       - uses: actions/cache@v4
         id: diarize-models
         with:
