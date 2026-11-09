@@ -31,6 +31,11 @@ const PIECE_SAMPLES: usize = 16_384;
 
 /// The arguments of ffmpeg, ending with the name of the file it writes.
 ///
+/// There is nothing to find out about the input (the format, rate and channels are all given), so ffmpeg is told to
+/// look at as little of it as it may: `-probesize 32` is the least, `-analyzeduration 1` (a microsecond: 0 means the
+/// default, 5 s) is the other limit it would otherwise go by. Left to itself, ffmpeg 6 reads 5 s of audio or 5 MB of
+/// a pipe before it does anything, and nothing is written to the file until then. ffmpeg 9 does not wait.
+///
 /// The file is a `.part`, which has no format of its own to ffmpeg, so the format is given (`ipod`: MP4 with the brand
 /// `M4A `, what the name `.m4a` would have picked). `file:` in front of the name keeps ffmpeg from taking a part of
 /// it for a protocol (`ghi âm: 1.m4a`), or a name that starts with `-` for an option.
@@ -41,7 +46,22 @@ fn arguments(part: &Path) -> Vec<OsString> {
         .map(OsString::from)
         .into();
     args.push(M4A_RATE.to_string().into());
-    args.extend(["-ac", "1", "-i", "pipe:0", "-c:a", "aac", "-b:a"].map(OsString::from));
+    args.extend(
+        [
+            "-ac",
+            "1",
+            "-analyzeduration",
+            "1",
+            "-probesize",
+            "32",
+            "-i",
+            "pipe:0",
+            "-c:a",
+            "aac",
+            "-b:a",
+        ]
+        .map(OsString::from),
+    );
     args.push(format!("{}k", M4A_BITRATE / 1000).into());
     args.extend(["-movflags", "+faststart", "-f", "ipod"].map(OsString::from));
     args.push(output);
@@ -236,6 +256,24 @@ mod tests {
         writes_into_a_vietnamese_folder(&start);
     }
 
+    #[test]
+    fn ffmpeg_starts_on_the_audio_it_has_without_waiting_to_probe_its_input() {
+        // ffmpeg 6 makes its output file only after it has read enough of its input to know what it is: 5 s of audio, or
+        // 5 MB, unless told that there is nothing to find out. With the pipe held open (the pipeline streams a recording,
+        // which does not end for a long while) one second of audio is not that much, and no file means no sign that the
+        // encoder works until a long way into the recording.
+        let Some(start) = real_writer() else { return };
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("audio.m4a");
+        let mut sink = start(&out);
+
+        sink.write(&tone(M4A_RATE as usize)).unwrap();
+
+        wait_for("ffmpeg to start writing the file", || {
+            part_path(&out).exists()
+        });
+    }
+
     #[cfg(unix)]
     #[test]
     fn ffmpeg_gets_the_samples_as_f32le_and_the_documented_arguments() {
@@ -276,6 +314,10 @@ mod tests {
                 "48000",
                 "-ac",
                 "1",
+                "-analyzeduration",
+                "1",
+                "-probesize",
+                "32",
                 "-i",
                 "pipe:0",
                 "-c:a",
@@ -336,11 +378,13 @@ mod tests {
         let out = dir.path().join("audio.m4a");
         let late = dir.path().join("late.txt");
         let started = dir.path().join("started.txt");
+        let pid_file = dir.path().join("pid.txt");
         let fake = script(
             dir.path(),
             "fake-ffmpeg",
             &format!(
-                "(sleep 2; echo late > '{}') & echo started > '{}'; sleep 60",
+                "echo $$ > '{}'; (sleep 2; echo late > '{}') & echo started > '{}'; sleep 60",
+                pid_file.display(),
                 late.display(),
                 started.display()
             ),
@@ -366,6 +410,18 @@ mod tests {
 
         drop(sink);
 
+        // The program itself is gone, and reaped (a zombie still answers `kill -0`).
+        #[cfg(unix)]
+        {
+            let pid = fs::read_to_string(&pid_file).unwrap();
+            let alive = std::process::Command::new("sh")
+                .args(["-c", &format!("kill -0 {}", pid.trim())])
+                .stderr(std::process::Stdio::null())
+                .status()
+                .unwrap()
+                .success();
+            assert!(!alive, "ffmpeg is still there (running, or a zombie)");
+        }
         // Long enough for the program of the fake to have written the file, had it been left running.
         std::thread::sleep(Duration::from_secs(6));
         assert!(

@@ -144,13 +144,22 @@ pub(crate) mod checks {
             .collect()
     }
 
-    /// Waits for `condition`, which becomes true on its own (the encoder is another process or thread).
-    pub fn wait_for(what: &str, condition: impl Fn() -> bool) {
-        let give_up = Instant::now() + Duration::from_secs(10);
+    /// Waits up to `seconds` for `condition`, which becomes true on its own (the encoder is another process or thread),
+    /// and says whether it did.
+    pub fn becomes_true_within(seconds: u64, condition: impl Fn() -> bool) -> bool {
+        let give_up = Instant::now() + Duration::from_secs(seconds);
         while !condition() {
-            assert!(Instant::now() < give_up, "waited 10 s for {what}");
+            if Instant::now() >= give_up {
+                return false;
+            }
             std::thread::sleep(Duration::from_millis(20));
         }
+        true
+    }
+
+    /// Waits for `condition` as long as it takes (10 s at most), and fails when it never becomes true.
+    pub fn wait_for(what: &str, condition: impl Fn() -> bool) {
+        assert!(becomes_true_within(10, condition), "waited 10 s for {what}");
     }
 
     /// Three seconds of tone in blocks that do not divide it evenly come out as a playable file: an `ftyp` box with a
@@ -240,8 +249,10 @@ pub(crate) mod checks {
         let part = part_path(&out);
         let mut sink = start(&out);
         sink.write(&tone(M4A_RATE as usize)).unwrap();
-        // The file is there to be removed (an encoder that is another process makes it a moment after it starts).
-        wait_for("the .part file", || part.exists());
+        // Given a moment, so that there is a file to remove when the encoder makes one early. It is not waited for:
+        // an encoder that is another process makes its file when it likes (ffmpeg 6 only once it has read enough of
+        // its input to start), and the drop has to leave nothing behind whether the file is there yet or not.
+        becomes_true_within(2, || part.exists());
 
         drop(sink);
 
