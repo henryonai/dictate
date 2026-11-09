@@ -1,4 +1,4 @@
-import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
+import { clearMocks, mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import { emit } from "@tauri-apps/api/event";
 import { afterEach, describe, expect, test } from "vitest";
 import { api } from "./api";
@@ -61,6 +61,32 @@ describe("each wrapper calls its command with the argument names the Rust side e
     ["panelState", "panel_state", undefined, () => api.panelState()],
     ["panelResized", "panel_resized", { label: "bubble", width: 428, height: 100 }, () => api.panelResized("bubble", 428, 100)],
     ["panelLanguage", "panel_language", undefined, () => api.panelLanguage()],
+    ["meetingsList", "meetings_list", { query: "plan" }, () => api.meetingsList("plan")],
+    ["meetingDetail", "meeting_detail", { id: "2026-03-02 10-00-00" }, () => api.meetingDetail("2026-03-02 10-00-00")],
+    ["meetingsPickFiles", "meetings_pick_files", undefined, () => api.meetingsPickFiles()],
+    ["meetingsImportFiles", "meetings_import_files", { paths: ["/a/b.mp4"] }, () => api.meetingsImportFiles(["/a/b.mp4"])],
+    ["meetingsImportLink", "meetings_import_link", { url: "https://youtu.be/x" }, () => api.meetingsImportLink("https://youtu.be/x")],
+    ["meetingCancel", "meeting_cancel", { id: "m1" }, () => api.meetingCancel("m1")],
+    ["meetingRerun", "meeting_rerun", { id: "m1" }, () => api.meetingRerun("m1")],
+    ["meetingResummarize", "meeting_resummarize", { id: "m1" }, () => api.meetingResummarize("m1")],
+    ["meetingRetry", "meeting_retry", { id: "m1" }, () => api.meetingRetry("m1")],
+    ["meetingSetTask", "meeting_set_task", { id: "m1", index: 2, done: true }, () => api.meetingSetTask("m1", 2, true)],
+    [
+      "meetingRenameSpeakers",
+      "meeting_rename_speakers",
+      { id: "m1", names: { "Speaker 1": "Lan" }, resummarize: false },
+      () => api.meetingRenameSpeakers("m1", { "Speaker 1": "Lan" }, false),
+    ],
+    ["meetingAsk", "meeting_ask", { id: "m1", question: "Who?" }, () => api.meetingAsk("m1", "Who?")],
+    ["meetingMarkdown", "meeting_markdown", { id: "m1" }, () => api.meetingMarkdown("m1")],
+    ["meetingExport", "meeting_export", { id: "m1" }, () => api.meetingExport("m1")],
+    ["meetingLog", "meeting_log", { id: "m1" }, () => api.meetingLog("m1")],
+    ["meetingOpenFolder", "meeting_open_folder", { id: "m1" }, () => api.meetingOpenFolder("m1")],
+    ["meetingOpenMedia", "meeting_open_media", { id: "m1" }, () => api.meetingOpenMedia("m1")],
+    ["meetingDelete", "meeting_delete", { id: "m1" }, () => api.meetingDelete("m1")],
+    ["copyText", "copy_text", { text: "brew install yt-dlp" }, () => api.copyText("brew install yt-dlp")],
+    ["meetingsOpenSettings", "meetings_open_settings", { tab: "accounts" }, () => api.meetingsOpenSettings("accounts")],
+    ["meetingsReadiness", "meetings_readiness", undefined, () => api.meetingsReadiness()],
     ["openUrl", "plugin:opener|open_url", { url: "https://example.com/keys" }, () => api.openUrl("https://example.com/keys")],
   ];
 
@@ -148,4 +174,55 @@ test("the panel-state event reaches the listener, until it is removed", async ()
   stop();
   await emit("panel-state", state);
   expect(heard).toHaveLength(1);
+});
+
+test("the meeting-job event brings the job as the Rust side sends it, until it is removed", async () => {
+  recordCalls();
+  const heard: unknown[] = [];
+  const stop = await api.onMeetingJob((job) => heard.push(job));
+
+  const job = { id: "m1", step: "transcript", progress: 0.4, stepStartedMs: 1_700_000_000_000, outcome: null };
+  await emit("meeting-job", job);
+  expect(heard).toEqual([job]);
+
+  stop();
+  await emit("meeting-job", job);
+  expect(heard).toHaveLength(1);
+});
+
+test("the meetings-changed event tells that the list changed, until it is removed", async () => {
+  recordCalls();
+  let heard = 0;
+  const stop = await api.onMeetingsChanged(() => (heard += 1));
+
+  await emit("meetings-changed");
+  expect(heard).toBe(1);
+
+  stop();
+  await emit("meetings-changed");
+  expect(heard).toBe(1);
+});
+
+describe("the files dropped on the window", () => {
+  const position = { x: 10, y: 20 };
+
+  test("a drop brings the paths, and entering and leaving say when the window is a target", async () => {
+    mockWindows("meetings");
+    recordCalls();
+    const heard: unknown[] = [];
+    const stop = await api.onFileDrop((event) => heard.push(event));
+
+    await emit("tauri://drag-enter", { paths: ["/a/talk.mp4"], position });
+    await emit("tauri://drag-drop", { paths: ["/a/talk.mp4", "/a/b.m4a"], position });
+    await emit("tauri://drag-leave");
+    expect(heard).toEqual([
+      { type: "enter" },
+      { type: "drop", paths: ["/a/talk.mp4", "/a/b.m4a"] },
+      { type: "leave" },
+    ]);
+
+    stop();
+    await emit("tauri://drag-drop", { paths: ["/a/c.mp4"], position });
+    expect(heard).toHaveLength(3);
+  });
 });

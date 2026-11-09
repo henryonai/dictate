@@ -2,8 +2,11 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { render } from "@testing-library/svelte";
-import { expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
+import { stubMeetingsApi } from "../test-helpers";
 import MeetingsApp from "./MeetingsApp.svelte";
+
+afterEach(() => vi.restoreAllMocks());
 
 const uiRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -21,6 +24,7 @@ test("the page mounts the app of the meetings window", () => {
   expect(main).toContain('import MeetingsApp from "./MeetingsApp.svelte"');
   expect(main).toContain("mount(MeetingsApp");
 
+  stubMeetingsApi();
   const { container } = render(MeetingsApp);
   expect(container.querySelector("main")).not.toBeNull();
 });

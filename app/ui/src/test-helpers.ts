@@ -1,7 +1,19 @@
 // Shared by the tests only: settings as the Rust side sends them, and the api with every call stubbed.
 import { vi } from "vitest";
 import { api } from "./lib/api";
-import type { DownloadEvent, HotkeyStatus, Settings, SettingsTab, SettingsView } from "./lib/api";
+import type {
+  DownloadEvent,
+  ErrorView,
+  FileDropEvent,
+  HotkeyStatus,
+  JobView,
+  MeetingDetail,
+  MeetingRow,
+  Readiness,
+  Settings,
+  SettingsTab,
+  SettingsView,
+} from "./lib/api";
 import { SettingsStore } from "./lib/settings-store.svelte";
 import type { PanelState } from "./panel/state";
 
@@ -228,5 +240,105 @@ export function stubPanelApi() {
   return {
     emitState: (state: PanelState) => listener?.(state),
     stopListening,
+  };
+}
+
+// ---- The meetings window
+
+/** An error as the Rust side sends it: the one of a failed summary, unless a test says otherwise. */
+export function fakeError(overrides: Partial<ErrorView> = {}): ErrorView {
+  return { kind: "Other", key: "meetings.error.other", detail: "Something broke.", command: null, ...overrides };
+}
+
+/** A job that is on its transcript, with no figure yet. */
+export function fakeJob(overrides: Partial<JobView> = {}): JobView {
+  return { id: "2026-03-02 10-00-00", step: "transcript", progress: null, stepStartedMs: 0, outcome: null, ...overrides };
+}
+
+/** A recording that is done and summarized: a file of 12 minutes with two action items open. */
+export function fakeRow(overrides: Partial<MeetingRow> = {}): MeetingRow {
+  return {
+    id: "2026-03-02 10-00-00",
+    title: "Weekly planning",
+    kind: "file",
+    created: new Date(2026, 2, 2, 10, 0, 0).getTime() / 1000,
+    duration: 720,
+    hasSummary: true,
+    openTasks: 2,
+    live: null,
+    error: null,
+    ...overrides,
+  };
+}
+
+/** The detail of a recording: a transcript of two lines and no summary, which a test fills in as it needs. */
+export function fakeDetail(overrides: Partial<MeetingDetail> = {}): MeetingDetail {
+  return {
+    row: fakeRow(),
+    source: "/home/lan/talks/planning.mp4",
+    sourceLabel: "planning.mp4",
+    transcript: [
+      { start: 0, stamp: "00:00", speaker: "Speaker 1", text: "Let's start." },
+      { start: 65, stamp: "01:05", speaker: "Speaker 2", text: "First, the budget." },
+    ],
+    transcriptIsLive: false,
+    speakers: [],
+    summary: null,
+    media: null,
+    mediaMissing: false,
+    ...overrides,
+  };
+}
+
+/**
+ * Stubs every call of the meetings window with a calm answer: the library holds `rows`, and the detail of a row is
+ * `fakeDetail` of it. A test changes the calls it cares about with `vi.mocked(api.meetingRetry).mockRejectedValue(...)`.
+ * Returns a way to send the events of the window.
+ */
+export function stubMeetingsApi(rows: MeetingRow[] = []) {
+  const jobListeners = new Set<(job: JobView) => void>();
+  const changedListeners = new Set<() => void>();
+  const dropListeners = new Set<(event: FileDropEvent) => void>();
+  const listener = <T>(set: Set<T>) => async (handler: T) => {
+    set.add(handler);
+    return () => {
+      set.delete(handler);
+    };
+  };
+
+  vi.spyOn(api, "meetingsList").mockResolvedValue(rows);
+  vi.spyOn(api, "meetingDetail").mockImplementation(async (id) =>
+    fakeDetail({ row: rows.find((row) => row.id === id) ?? fakeRow({ id }) }),
+  );
+  vi.spyOn(api, "meetingsPickFiles").mockResolvedValue([]);
+  vi.spyOn(api, "meetingsImportFiles").mockResolvedValue([]);
+  vi.spyOn(api, "meetingsImportLink").mockResolvedValue("2026-03-02 11-00-00");
+  vi.spyOn(api, "meetingCancel").mockResolvedValue();
+  vi.spyOn(api, "meetingRerun").mockResolvedValue();
+  vi.spyOn(api, "meetingResummarize").mockResolvedValue();
+  vi.spyOn(api, "meetingRetry").mockResolvedValue();
+  vi.spyOn(api, "meetingSetTask").mockResolvedValue();
+  vi.spyOn(api, "meetingRenameSpeakers").mockResolvedValue([]);
+  vi.spyOn(api, "meetingAsk").mockResolvedValue("An answer.");
+  vi.spyOn(api, "meetingMarkdown").mockResolvedValue("# Weekly planning");
+  vi.spyOn(api, "meetingExport").mockResolvedValue(true);
+  vi.spyOn(api, "meetingLog").mockResolvedValue("");
+  vi.spyOn(api, "meetingOpenFolder").mockResolvedValue();
+  vi.spyOn(api, "meetingOpenMedia").mockResolvedValue();
+  vi.spyOn(api, "meetingDelete").mockResolvedValue();
+  vi.spyOn(api, "copyText").mockResolvedValue();
+  vi.spyOn(api, "meetingsOpenSettings").mockResolvedValue();
+  vi.spyOn(api, "meetingsReadiness").mockResolvedValue({ ai: true, whisper: true });
+  vi.spyOn(api, "onMeetingJob").mockImplementation(listener(jobListeners));
+  vi.spyOn(api, "onMeetingsChanged").mockImplementation(listener(changedListeners));
+  vi.spyOn(api, "onFileDrop").mockImplementation(listener(dropListeners));
+
+  return {
+    emitJob: (job: JobView) => jobListeners.forEach((handler) => handler(job)),
+    emitChanged: () => changedListeners.forEach((handler) => handler()),
+    emitDrop: (event: FileDropEvent) => dropListeners.forEach((handler) => handler(event)),
+    /** How many listeners of each event are on now. */
+    listening: () => ({ jobs: jobListeners.size, changed: changedListeners.size, drops: dropListeners.size }),
+    setReadiness: (readiness: Readiness) => vi.mocked(api.meetingsReadiness).mockResolvedValue(readiness),
   };
 }
