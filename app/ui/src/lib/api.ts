@@ -169,6 +169,10 @@ export const api = {
   dictationMenuOpen: (open: boolean) => invoke<void>("dictation_menu_open", { open }),
   /** The system's prompt for the Accessibility permission (macOS). */
   dictationGrantAccessibility: () => invoke<void>("dictation_grant_accessibility"),
+  /** The button of an error that is solved in Settings (a missing Whisper model). */
+  dictationOpenSettings: () => invoke<void>("dictation_open_settings"),
+  /** The state of the panels now: for a page that loads after a state was sent, which it didn't hear. */
+  panelState: () => invoke<PanelState>("panel_state"),
   /** What the page now measures, in CSS pixels: the Rust side sizes the window to it and places it. `label` is the window. */
   panelResized: (label: string, width: number, height: number) =>
     invoke<void>("panel_resized", { label, width, height }),

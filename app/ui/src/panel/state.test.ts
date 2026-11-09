@@ -10,12 +10,15 @@ import {
   CARD_STYLES,
   chipMenuStyles,
   chipTitle,
+  errorText,
   formatTimer,
+  HIDDEN_STATE,
   isPanelView,
   joiner,
   languageLabel,
   languageName,
   noticeText,
+  type PanelError,
   VIEWS_OF,
   WAVE_SHAPE,
 } from "./state";
@@ -291,5 +294,39 @@ describe("the shortcuts of the card", () => {
     expect(cardShortcut(press("Enter", {}, "Enter"), true)).toBeNull();
     expect(cardShortcut(press("Escape", {}, "Escape"), true)).toEqual({ kind: "discard" });
     expect(cardShortcut(press("Escape", {}, "Escape"), false)).toEqual({ kind: "discard" });
+  });
+});
+
+describe("errors", () => {
+  afterEach(() => setLanguage("en"));
+
+  const error = (key: string, detail: string | null = null, action: PanelError["action"] = null): PanelError => ({ key, detail, action });
+
+  test("an error is the text of its key, with its detail where the text has a place for it", () => {
+    expect(errorText(error("audio.no_device"))).toBe("No microphone found.");
+    expect(errorText(error("audio.stream", "device gone"))).toContain("device gone");
+    setLanguage("vi");
+    expect(errorText(error("audio.no_device"))).toBe("Không tìm thấy micro.");
+  });
+
+  test("a key no text has shows as itself, so that a missing translation is seen and not blank", () => {
+    expect(errorText(error("dictation.invented"))).toBe("dictation.invented");
+  });
+
+  test("the chip says the error, ahead of a notice and of the style", () => {
+    const state = fakePanelState({
+      view: "chip",
+      phase: "written",
+      text: "Hello.",
+      style: "concise",
+      original: "hello",
+      notice: { key: "not_edited_no_key", detail: null },
+      error: error("audio.stream", "gone"),
+    });
+    expect(chipTitle(state)).toBe(errorText(error("audio.stream", "gone")));
+  });
+
+  test("a state that says nothing went wrong has no error", () => {
+    expect(HIDDEN_STATE.error).toBeNull();
   });
 });

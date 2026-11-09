@@ -4,7 +4,7 @@
   import { t } from "../lib/i18n";
   import LanguageMenu from "./LanguageMenu.svelte";
   import Waveform from "./Waveform.svelte";
-  import { bubbleHint, bubbleTitle, joiner, type PanelState } from "./state";
+  import { bubbleHint, bubbleTitle, errorText, joiner, type PanelState } from "./state";
 
   // The bubble by the caret: the words as they are heard, then what the app does with them until they are written.
   let { panel }: { panel: PanelState } = $props();
@@ -56,6 +56,10 @@
         {#if done !== ""}<span>{done.trimEnd()}</span>{/if}{between}{#if live !== ""}<span style:color="rgba(255, 255, 255, 0.6)">{live.trimStart()}</span>{/if}
       </p>
     </div>
+  {/if}
+
+  {#if panel.error}
+    <div class="problem" role="alert">{errorText(panel.error)}</div>
   {/if}
 
   {#if hint}
@@ -162,5 +166,12 @@
     margin-top: 8px;
     color: rgb(140 140 140);
     font-size: 10px;
+  }
+
+  .problem {
+    margin-top: 8px;
+    color: rgb(255 159 10);
+    font-size: 11px;
+    line-height: 1.35;
   }
 </style>

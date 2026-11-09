@@ -30,6 +30,18 @@ export interface Notice {
   detail: string | null;
 }
 
+/** What an error offers to do about itself: the button next to its text. */
+export type ErrorAction = "open_settings";
+
+/** Something that went wrong, apart from what the pipeline reports in a notice: the microphone, a paste, a missing model. */
+export interface PanelError {
+  /** The key of its text in the locale files: `audio.no_device`, `dictation.not_landed`. */
+  key: string;
+  /** The detail the text has a place for, when there is one. */
+  detail: string | null;
+  action: ErrorAction | null;
+}
+
 export interface PanelState {
   view: PanelViewName;
   phase: Phase;
@@ -50,6 +62,7 @@ export interface PanelState {
   original: string | null;
   style: string | null;
   notice: Notice | null;
+  error: PanelError | null;
   fromChip: boolean;
   /** The card opens with its box for a custom request open: the chip's "Custom request…". */
   openCustom: boolean;
@@ -73,6 +86,7 @@ export const HIDDEN_STATE: PanelState = {
   original: null,
   style: null,
   notice: null,
+  error: null,
   fromChip: false,
   openCustom: false,
   canWrite: false,
@@ -187,8 +201,19 @@ export function noticeText(notice: Notice): string {
   return t(`notice.${notice.key}`, { detail: notice.detail ?? "" });
 }
 
-/** What the chip says: the notice, else "Original" when the text is the one that was heard, else the style, else "Written". */
+/**
+ * An error in words: the text of its key, with the detail where the text has a place for it. A detail the error doesn't have
+ * leaves no empty brackets behind.
+ */
+export function errorText(error: PanelError): string {
+  return t(error.key, { detail: error.detail ?? "" })
+    .replace(/\s*\(\s*\)/g, "")
+    .trim();
+}
+
+/** What the chip says: an error, else the notice, else "Original" when the text is the one that was heard, else the style, else "Written". */
 export function chipTitle(state: PanelState): string {
+  if (state.error) return errorText(state.error);
   if (state.notice) return noticeText(state.notice);
   if (state.original !== null && state.original === state.text) return t("chip.original");
   if (state.style) return styleTitle(state.style);

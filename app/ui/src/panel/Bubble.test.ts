@@ -181,3 +181,16 @@ test("the text goes on scrolling to the end as it grows", async () => {
   rerender({ panel: fakePanelState({ committed: "a", partial: "b" }) });
   await vi.waitFor(() => expect(text.scrollTop).toBe(300));
 });
+
+test("what went wrong while listening is said under the words, and the recording goes on", () => {
+  render(Bubble, {
+    panel: fakePanelState({ committed: "Hello", error: { key: "audio.silent", detail: null, action: null } }),
+  });
+  expect(screen.getByRole("alert")).toHaveTextContent("Dictate only hears silence");
+  expect(screen.getByText("Listening")).toBeInTheDocument();
+});
+
+test("with nothing wrong there is no alert", () => {
+  render(Bubble, { panel: fakePanelState({ committed: "Hello" }) });
+  expect(screen.queryByRole("alert")).toBeNull();
+});

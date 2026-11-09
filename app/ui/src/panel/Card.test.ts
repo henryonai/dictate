@@ -500,3 +500,40 @@ test("every word of the card is in Vietnamese when the UI is", () => {
   expect(screen.getByText("⌘1–5 sửa · ⌥⌘Z hoàn tác · Esc bỏ")).toBeInTheDocument();
   expect(screen.getByRole("textbox", { name: "Văn bản vừa đọc" })).toBeInTheDocument();
 });
+
+// ---- What went wrong ------------------------------------------------------------------------------------------------
+
+test("an error is an error label of its own, apart from a notice", () => {
+  render(Card, {
+    panel: review({
+      error: { key: "dictation.not_landed", detail: null, action: null },
+      notice: { key: "api_failed", detail: "HTTP 500" },
+    }),
+  });
+  const labels = screen.getAllByRole("alert").map((label) => label.textContent?.trim());
+  expect(labels).toEqual([
+    "The focused field didn't take the text — edit or copy it here.",
+    "Couldn't re-transcribe with the API (HTTP 500) — kept the local version.",
+  ]);
+});
+
+test("the error of a missing model has a button that opens Settings", async () => {
+  render(Card, {
+    panel: review({ text: "", error: { key: "dictation.no_model", detail: null, action: "open_settings" } }),
+  });
+  expect(screen.getByRole("alert")).toHaveTextContent("No Whisper model yet — download one in Settings → Speech recognition.");
+
+  await fireEvent.click(screen.getByRole("button", { name: "Open Settings" }));
+  expect(api.dictationOpenSettings).toHaveBeenCalledTimes(1);
+});
+
+test("an error with no action has no button for it", () => {
+  render(Card, { panel: review({ error: { key: "audio.no_device", detail: null, action: null } }) });
+  expect(screen.queryByRole("button", { name: "Open Settings" })).toBeNull();
+});
+
+test("an error is told in the language of the UI", () => {
+  setLanguage("vi");
+  render(Card, { panel: review({ error: { key: "audio.no_device", detail: null, action: null } }) });
+  expect(screen.getByRole("alert")).toHaveTextContent("Không tìm thấy micro.");
+});

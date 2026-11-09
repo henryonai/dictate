@@ -11,7 +11,7 @@
   let { panel }: { panel: PanelState } = $props();
 
   const title = $derived(chipTitle(panel));
-  const warning = $derived(panel.notice !== null);
+  const warning = $derived(panel.notice !== null || panel.error !== null);
   const writtenSomething = $derived(panel.text !== "");
 
   let open = $state(false);

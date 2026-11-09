@@ -154,6 +154,7 @@ export function fakePanelState(overrides: Partial<PanelState> = {}): PanelState 
     original: null,
     style: null,
     notice: null,
+    error: null,
     fromChip: false,
     openCustom: false,
     canWrite: true,
@@ -195,6 +196,8 @@ export function stubPanelApi() {
   vi.spyOn(api, "dictationChipHover").mockResolvedValue();
   vi.spyOn(api, "dictationMenuOpen").mockResolvedValue();
   vi.spyOn(api, "dictationGrantAccessibility").mockResolvedValue();
+  vi.spyOn(api, "dictationOpenSettings").mockResolvedValue();
+  vi.spyOn(api, "panelState").mockResolvedValue(fakePanelState({ view: "hidden", phase: "hidden" }));
   vi.spyOn(api, "panelResized").mockResolvedValue();
   vi.spyOn(api, "panelLanguage").mockResolvedValue("en");
   vi.spyOn(api, "onPanelState").mockImplementation(async (handler) => {

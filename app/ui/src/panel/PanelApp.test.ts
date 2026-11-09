@@ -187,3 +187,30 @@ test("the size of what is drawn is reported to the Rust side under the name of t
   const calls = vi.mocked(api.panelResized).mock.calls.filter(([, w, h]) => w === 428 && h === 100);
   expect(calls).toHaveLength(1);
 });
+
+test("a page that loads after a state was sent asks for it, and shows it", async () => {
+  vi.mocked(api.panelState).mockResolvedValue(fakePanelState({ view: "bubble", committed: "Already here" }));
+  await renderPanel("bubble");
+  expect(await screen.findByText("Already here")).toBeInTheDocument();
+});
+
+test("a state that came by the event is newer than the one that was asked for, and wins", async () => {
+  let answer: (state: ReturnType<typeof fakePanelState>) => void = () => {};
+  vi.mocked(api.panelState).mockReturnValue(new Promise((resolve) => (answer = resolve)));
+  await renderPanel("bubble");
+
+  act(() => panel.emitState(fakePanelState({ view: "bubble", committed: "Newer" })));
+  await screen.findByText("Newer");
+  answer(fakePanelState({ view: "bubble", committed: "Older" }));
+  await Promise.resolve();
+  await Promise.resolve();
+
+  expect(screen.getByText("Newer")).toBeInTheDocument();
+  expect(screen.queryByText("Older")).toBeNull();
+});
+
+test("a window with no state to show asks for it and stays blank", async () => {
+  const { container } = await renderPanel("card");
+  await vi.waitFor(() => expect(api.panelState).toHaveBeenCalled());
+  expect(container.querySelector(".card, .pill")).toBeNull();
+});

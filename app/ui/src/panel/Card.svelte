@@ -2,7 +2,7 @@
   import { untrack } from "svelte";
   import { api } from "../lib/api";
   import { currentLanguage, t } from "../lib/i18n";
-  import { CARD_MORE_STYLES, CARD_STYLES, cardHeader, cardMeta, cardShortcut, noticeText, onMac, type PanelState } from "./state";
+  import { CARD_MORE_STYLES, CARD_STYLES, cardHeader, cardMeta, cardShortcut, errorText, noticeText, onMac, type PanelState } from "./state";
 
   // The review card: the text in a box to edit, the styles to write it in again, and what to do with it. It comes up
   // when there is no field to write into, and when "Edit…" of the chip is pressed. It takes the keyboard.
@@ -207,6 +207,17 @@
     {/if}
   </div>
 
+  {#if panel.error}
+    <div class="error" role="alert">
+      <span>{errorText(panel.error)}</span>
+      {#if panel.error.action === "open_settings"}
+        <button type="button" class="link" onclick={() => ask("open Settings", api.dictationOpenSettings())}>
+          {t("dictation.open_settings")}
+        </button>
+      {/if}
+    </div>
+  {/if}
+
   {#if panel.notice}
     <p class="error" role="alert">{noticeText(panel.notice)}</p>
   {/if}
@@ -369,6 +380,10 @@
   }
 
   .error {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 10px;
     margin: 0;
     color: rgb(255 159 10);
     font-size: 12px;

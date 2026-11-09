@@ -175,3 +175,11 @@ test("the labels are in Vietnamese when the UI is", () => {
   expect(screen.getByText("Đã viết")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Thêm tuỳ chọn" })).toBeInTheDocument();
 });
+
+test("an error is the title of the chip, with the orange exclamation", () => {
+  const { container } = render(Chip, {
+    panel: written({ error: { key: "audio.stream", detail: "device gone", action: null } }),
+  });
+  expect(screen.getByText(/microphone stopped/i)).toBeInTheDocument();
+  expect(container.querySelector("[data-mark]")).toHaveAttribute("data-mark", "warning");
+});

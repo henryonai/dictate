@@ -103,3 +103,15 @@ test("the capsule has the dot, the waveform and the language of the dictation", 
   expect(container.querySelector(".wave")).not.toBeNull();
   expect(screen.getByRole("button", { name: "Change recognition language" })).toHaveTextContent("VI");
 });
+
+test("what went wrong while listening is said above the caption", () => {
+  render(Pill, {
+    panel: fakePanelState({ view: "pill", error: { key: "audio.silent", detail: null, action: null } }),
+  });
+  expect(screen.getByRole("alert")).toHaveTextContent("Dictate only hears silence");
+});
+
+test("with nothing wrong the pill has no alert", () => {
+  render(Pill, { panel: fakePanelState({ view: "pill" }) });
+  expect(screen.queryByRole("alert")).toBeNull();
+});

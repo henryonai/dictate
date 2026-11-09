@@ -47,3 +47,30 @@ describe("what the Rust side lists, the UI has words for", () => {
     }
   });
 });
+
+describe("what the controller says, the UI has words for", () => {
+  /** The keys of the texts that the controller puts in `PanelError`: they are strings of the Rust source. */
+  function errorKeys(): string[] {
+    const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "../../../..");
+    const source = readFileSync(join(repoRoot, "app/src-tauri/src/dictation/controller.rs"), "utf8");
+    // Only the part before the tests: their fixtures name keys too, and those are not the controller's.
+    const code = source.slice(0, source.indexOf("#[cfg(test)]"));
+    return [...new Set([...code.matchAll(/"((?:dictation|audio)\.[a-z_]+)"/g)].map((match) => match[1]))];
+  }
+
+  test("every error key of the controller has a text in both locales", () => {
+    const keys = errorKeys();
+    expect(keys.length).toBeGreaterThan(8);
+    for (const key of keys) {
+      for (const locale of [en, vi] as Record<string, string>[]) {
+        expect(locale[key], key).toBeTruthy();
+      }
+    }
+  });
+
+  test("the button of an error that has one has its words too", () => {
+    for (const locale of [en, vi] as Record<string, string>[]) {
+      expect(locale["dictation.open_settings"]).toBeTruthy();
+    }
+  });
+});

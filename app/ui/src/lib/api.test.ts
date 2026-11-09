@@ -58,6 +58,8 @@ describe("each wrapper calls its command with the argument names the Rust side e
     ["dictationChipHover", "dictation_chip_hover", { hovering: true }, () => api.dictationChipHover(true)],
     ["dictationMenuOpen", "dictation_menu_open", { open: false }, () => api.dictationMenuOpen(false)],
     ["dictationGrantAccessibility", "dictation_grant_accessibility", undefined, () => api.dictationGrantAccessibility()],
+    ["dictationOpenSettings", "dictation_open_settings", undefined, () => api.dictationOpenSettings()],
+    ["panelState", "panel_state", undefined, () => api.panelState()],
     ["panelResized", "panel_resized", { label: "bubble", width: 428, height: 100 }, () => api.panelResized("bubble", 428, 100)],
     ["panelLanguage", "panel_language", undefined, () => api.panelLanguage()],
     ["openUrl", "plugin:opener|open_url", { url: "https://example.com/keys" }, () => api.openUrl("https://example.com/keys")],

@@ -4,7 +4,7 @@
   import { t } from "../lib/i18n";
   import LanguageMenu from "./LanguageMenu.svelte";
   import Waveform from "./Waveform.svelte";
-  import { formatTimer, joiner, pillCaption, type PanelState } from "./state";
+  import { errorText, formatTimer, joiner, pillCaption, type PanelState } from "./state";
 
   // The pill while dictating with no text field to write into: the words so far above, and a capsule to stop from.
   let { panel }: { panel: PanelState } = $props();
@@ -59,6 +59,10 @@
       <span class="label">{finishing ? t("panel.finishing") : t("panel.stop")}</span>
     </button>
   </div>
+
+  {#if panel.error}
+    <p class="problem" role="alert">{errorText(panel.error)}</p>
+  {/if}
 
   <p class="caption">{pillCaption(panel)}</p>
 </div>
@@ -147,6 +151,19 @@
     height: 10px;
     border-radius: 2px;
     background: currentColor;
+  }
+
+  .problem {
+    box-sizing: border-box;
+    width: 420px;
+    margin: 0;
+    padding: 6px 12px;
+    border-radius: 12px;
+    background: rgb(28 28 28 / 0.94);
+    color: rgb(255 159 10);
+    font-size: 12px;
+    line-height: 1.35;
+    text-align: center;
   }
 
   .caption {

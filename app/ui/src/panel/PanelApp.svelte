@@ -40,15 +40,27 @@
     });
   }
 
+  // A page that loads after a state was sent never heard it: it asks for the state now, once it listens. A state that comes
+  // by the event meanwhile is newer than the answer, and the answer is dropped.
   $effect(() => {
     if (!known) return;
     let stopped = false;
     let stop: (() => void) | undefined;
+    let heard = false;
     api
-      .onPanelState(apply)
+      .onPanelState((state) => {
+        heard = true;
+        apply(state);
+      })
       .then((unlisten) => {
-        if (stopped) unlisten();
-        else stop = unlisten;
+        if (stopped) {
+          unlisten();
+          return;
+        }
+        stop = unlisten;
+        return api.panelState().then((state) => {
+          if (!stopped && !heard) apply(state);
+        });
       })
       .catch((e) => console.warn("Could not listen for the panel state:", e));
     return () => {

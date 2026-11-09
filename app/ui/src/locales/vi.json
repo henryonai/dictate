@@ -189,5 +189,19 @@
   "card.paste_into_field": "Dán vào ô",
   "card.hint_edit": "{mod}1–5 sửa",
   "card.hint_undo": "{undo} hoàn tác",
-  "card.hint_discard": "Esc bỏ"
+  "card.hint_discard": "Esc bỏ",
+  "dictation.no_model": "Chưa có model Whisper — hãy tải một model trong Cài đặt → Nhận dạng giọng nói.",
+  "dictation.open_settings": "Mở Cài đặt",
+  "dictation.not_landed": "Ô đang chọn không nhận văn bản — hãy sửa hoặc sao chép tại đây.",
+  "dictation.copied_only": "Không ghi được vào ô nhập văn bản — đây là văn bản, đã sao chép sẵn.",
+  "dictation.copied_elevated": "Ứng dụng đó chạy với quyền cao hơn Dictate nên hệ thống chặn việc dán — đây là văn bản, đã sao chép sẵn.",
+  "dictation.copied_no_wayland_tool": "Dán trên môi trường desktop này cần wtype hoặc ydotool, mà chưa cài cái nào — đây là văn bản, đã sao chép sẵn.",
+  "dictation.not_copied": "Không ghi được vào ô nhập văn bản và cũng không sao chép được — hãy sao chép tại đây.",
+  "dictation.not_written": "Con trỏ không còn ở trong ô nhập văn bản — đây là văn bản, hãy sửa hoặc sao chép.",
+  "dictation.local_failed": "Whisper không phiên âm được bản ghi ({detail}).",
+  "audio.no_device": "Không tìm thấy micro.",
+  "audio.silent": "Dictate chỉ nghe thấy im lặng — hãy kiểm tra micro đã được cho phép và không bị tắt tiếng (trên Windows: Settings → Privacy → Microphone → cho ứng dụng máy tính dùng micro).",
+  "audio.stream": "Micro đã dừng ({detail}) — phần đã ghi được giữ lại.",
+  "audio.start_failed": "Không bật được micro: {detail}",
+  "audio.denied": "Dictate chưa có quyền dùng Micro — hãy bật trong System Settings → Privacy & Security."
 }

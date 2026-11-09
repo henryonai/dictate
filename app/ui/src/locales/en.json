@@ -189,5 +189,19 @@
   "card.paste_into_field": "Paste into field",
   "card.hint_edit": "{mod}1–5 edit",
   "card.hint_undo": "{undo} undo",
-  "card.hint_discard": "Esc discard"
+  "card.hint_discard": "Esc discard",
+  "dictation.no_model": "No Whisper model yet — download one in Settings → Speech recognition.",
+  "dictation.open_settings": "Open Settings",
+  "dictation.not_landed": "The focused field didn't take the text — edit or copy it here.",
+  "dictation.copied_only": "Couldn't write into the text field — here it is, already copied.",
+  "dictation.copied_elevated": "That app runs with more rights than Dictate, so the system blocks the paste — here it is, already copied.",
+  "dictation.copied_no_wayland_tool": "Pasting on this desktop needs wtype or ydotool, and neither is installed — here it is, already copied.",
+  "dictation.not_copied": "Couldn't write into the text field or copy the text — copy it from here.",
+  "dictation.not_written": "The focus is no longer in a text field — here is the text, edit or copy it.",
+  "dictation.local_failed": "Whisper couldn't transcribe the recording ({detail}).",
+  "audio.no_device": "No microphone found.",
+  "audio.silent": "Dictate only hears silence — check that the microphone is allowed and not muted (on Windows: Settings → Privacy → Microphone → let desktop apps use it).",
+  "audio.stream": "The microphone stopped ({detail}) — what was recorded so far was kept.",
+  "audio.start_failed": "Couldn't start the microphone: {detail}",
+  "audio.denied": "Dictate doesn't have Microphone access — turn it on in System Settings → Privacy & Security."
 }
