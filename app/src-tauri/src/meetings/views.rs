@@ -608,6 +608,15 @@ mod tests {
     }
 
     #[test]
+    fn the_detail_of_an_error_view_is_capped_like_the_one_of_a_job() {
+        let view = ErrorView::other("é".repeat(10_000));
+        assert_eq!(
+            view.detail.unwrap().chars().count(),
+            dictate_services::meetings::error::DETAIL_LIMIT + 1
+        );
+    }
+
+    #[test]
     fn rows_are_sent_in_camel_case() {
         let f = Fixture::new();
         let row = row(&record(&f, SCREEN), None, None);

@@ -32,6 +32,23 @@ const STOP_LIMIT: Duration = Duration::from_secs(30);
 
 const NOT_FOUND: &str = "The recording was not found.";
 
+/// The extensions of the audio and video that a recording is made of: what the file dialog offers first, and the only
+/// files that "Open video/audio in another app" opens. `meta.json` is data, and a library that came from elsewhere may
+/// name anything as its media: opening a script or a program with the system's opener would run it.
+pub const MEDIA_EXTENSIONS: &[&str] = &[
+    "mp4", "mov", "m4v", "mkv", "webm", "avi", "wmv", "flv", "mpg", "mpeg", "3gp", "ts", "m2ts",
+    "mts", "ogv", "asf", "m4a", "mp3", "wav", "aac", "flac", "ogg", "oga", "opus", "wma", "aiff",
+    "aif", "caf", "amr", "mka", "mp2", "ac3",
+];
+
+/// Whether the file is named like audio or video.
+fn is_media_file(path: &Path) -> bool {
+    path.extension().is_some_and(|extension| {
+        let extension = extension.to_string_lossy().to_ascii_lowercase();
+        MEDIA_EXTENSIONS.contains(&extension.as_str())
+    })
+}
+
 /// Where a deleted recording goes: the Trash (the Recycle Bin), so that it can be got back.
 pub trait Trash: Send + Sync {
     fn delete(&self, folder: &Path) -> Result<(), String>;
@@ -311,11 +328,11 @@ impl Meetings {
         }
     }
 
-    /// The media file of the recording, when it is there.
+    /// The media file of the recording, when it is there and is audio or video.
     pub fn media_path(&self, id: &str) -> Result<PathBuf, String> {
         self.record(id)?
             .media()
-            .filter(|path| path.is_file())
+            .filter(|path| path.is_file() && is_media_file(path))
             .ok_or_else(|| "The media file is not there.".to_owned())
     }
 
@@ -1189,6 +1206,53 @@ mod tests {
         assert!(rig.meetings.media_path("2026-11-09 10-00-00").is_err());
         // A recording with no media file in `meta.json`.
         assert!(rig.meetings.media_path(SCREEN).is_err());
+    }
+
+    #[test]
+    fn only_a_media_file_is_opened_in_another_app() {
+        // `meta.json` is data: a library that came from elsewhere may name anything as the media, and opening it would run it.
+        let rig = Rig::new();
+        let dir = rig
+            .library
+            .dir()
+            .parent()
+            .unwrap()
+            .join("dictate-test-media");
+        fs::create_dir_all(&dir).unwrap();
+        let named = |name: &str| {
+            let path = dir.join(name);
+            fs::write(&path, b"x").unwrap();
+            rig.library.write(
+                "2026-11-09 10-00-00",
+                Some(json!({"title": "T", "media": path.to_string_lossy()})),
+                &[],
+            );
+            path
+        };
+        for name in ["talk.mp4", "talk.MOV", "call.m4a", "voice.wav", "clip.webm"] {
+            let path = named(name);
+            assert_eq!(
+                rig.meetings.media_path("2026-11-09 10-00-00"),
+                Ok(path),
+                "{name}"
+            );
+        }
+        for name in [
+            "evil.command",
+            "run.sh",
+            "setup.exe",
+            "script.bat",
+            "noextension",
+            "notes.txt",
+            "x.app",
+        ] {
+            named(name);
+            assert!(
+                rig.meetings.media_path("2026-11-09 10-00-00").is_err(),
+                "{name}"
+            );
+        }
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     // ---- deleting

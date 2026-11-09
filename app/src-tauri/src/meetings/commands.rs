@@ -18,7 +18,7 @@ use tauri_plugin_opener::OpenerExt;
 use tokio_util::sync::CancellationToken;
 
 use super::backend::{ai_ready, whisper_ready};
-use super::library::{is_settings_tab, Meetings};
+use super::library::{is_settings_tab, Meetings, MEDIA_EXTENSIONS};
 use super::notify;
 use super::views::{ErrorView, MeetingDetail, MeetingRow};
 use crate::commands::blocking;
@@ -28,13 +28,6 @@ use crate::tray;
 
 /// The event that tells the Settings window to show another of its pages.
 pub const SETTINGS_TAB_EVENT: &str = "settings-tab";
-
-/// The extensions of what the file dialog offers first: the audio and video that a recording is made of. The decoder reads
-/// what it can and asks ffmpeg for the rest; "All files" is offered too.
-const MEDIA_EXTENSIONS: &[&str] = &[
-    "mp4", "mov", "m4v", "mkv", "webm", "avi", "wmv", "flv", "mpg", "mpeg", "3gp", "ts", "m4a",
-    "mp3", "wav", "aac", "flac", "ogg", "oga", "opus", "wma", "aiff", "aif", "caf", "amr",
-];
 
 /// How long `ffmpeg -version` and `yt-dlp --version` may take.
 const VERSION_LIMIT: Duration = Duration::from_secs(10);

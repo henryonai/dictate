@@ -970,6 +970,39 @@ mod tests {
         assert!(lock(&logged).is_empty(), "no model: nothing to say it runs");
     }
 
+    #[tokio::test]
+    async fn local_transcription_says_which_model_runs_and_that_it_is_loading_it() {
+        let p = parts();
+        // A file that is no model: it is "downloaded", so Whisper is asked to run, and it can't load it.
+        let id = models::recommended(system::total_ram_gb());
+        fs::write(p.state.models.path(id), b"not a real model").unwrap();
+        let logged = Mutex::new(Vec::new());
+
+        let error = p
+            .backend
+            .transcribe_local(
+                Arc::new(vec![0.0; 16_000]),
+                false,
+                &CancellationToken::new(),
+                &|_| {},
+                &|line| lock(&logged).push(line.to_owned()),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(
+            error.contains("Could not load the Whisper model"),
+            "{error}"
+        );
+        assert_eq!(
+            *lock(&logged),
+            [
+                format!("Whisper on this computer · {id}…"),
+                "Loading the Whisper model…".to_owned()
+            ]
+        );
+    }
+
     // ---- downloading a link
 
     /// A stand-in for yt-dlp that prints what it prints: a title, progress lines (one that has no figures), a plain line
