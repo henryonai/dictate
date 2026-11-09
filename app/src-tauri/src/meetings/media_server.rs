@@ -8,12 +8,18 @@
 //!
 //! The address holds a random 128-bit token, so that another program or a web page can't ask for a file by guessing: a
 //! wrong token and a number that was never given out are the same 404.
+//!
+//! tiny_http's accept thread ends at its first error and takes the listener with it (a player that bails out of a seek can
+//! cause one, and so can running out of file handles); `recv` then answers that one error and waits for ever. So the server
+//! makes another listener on a fresh port when `recv` fails, with the same token and the same numbers. **The addresses given
+//! out before that stop working**, and `url_for` gives the new port: whoever plays from an address (the window) asks for a
+//! fresh one when playing fails.
 
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::Duration;
 
@@ -26,68 +32,135 @@ const TOKEN_BYTES: usize = 16;
 /// threshold that no body reaches. A player needs the length to know how long a recording is and to seek in it.
 const NEVER_CHUNKED: usize = usize::MAX;
 
-/// The wait after the server could not take a request, and the longest it grows to.
+/// The wait after the server could not take a request or listen again, and the longest it grows to.
 const RETRY_FIRST: Duration = Duration::from_millis(100);
 const RETRY_LONGEST: Duration = Duration::from_secs(5);
 
+/// Makes a tiny_http server on a fresh port of 127.0.0.1. The tests give one that sometimes fails.
+type Bind = dyn Fn() -> io::Result<Server> + Send + Sync;
+
+/// Waits for the given time. The tests give one that only notes it.
+type Pause = dyn Fn(Duration) + Send + Sync;
+
 pub struct MediaServer {
-    port: u16,
+    shared: Arc<Shared>,
+}
+
+/// What the thread that takes requests, the threads that answer them and `url_for` share.
+struct Shared {
     token: String,
-    /// The files that have an address: the address of the one at place `n` ends in `/n`.
-    paths: Arc<Mutex<Vec<PathBuf>>>,
+    /// The files that have an address: the address of the one at place `n` ends in `/n`. They stay when the listener is made
+    /// again.
+    paths: Mutex<Vec<PathBuf>>,
+    live: Mutex<Live>,
+    /// Told whenever `live` holds another server.
+    replaced: Condvar,
+    stopped: AtomicBool,
+}
+
+/// The listener that takes requests now.
+struct Live {
     server: Arc<Server>,
-    stopped: Arc<AtomicBool>,
+    port: u16,
+    /// How many times the listener was made again.
+    generation: u64,
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// A server on a free port of 127.0.0.1, and the port.
+fn bind_loopback() -> io::Result<Server> {
+    Server::http("127.0.0.1:0").map_err(io::Error::other)
+}
+
+fn port_of(server: &Server) -> io::Result<u16> {
+    server
+        .server_addr()
+        .to_ip()
+        .map(|address| address.port())
+        .ok_or_else(|| io::Error::other("the media server has no port"))
 }
 
 impl MediaServer {
     /// Starts the server on a free port of 127.0.0.1, on a thread of its own.
     pub fn start() -> io::Result<MediaServer> {
-        let server = Arc::new(Server::http("127.0.0.1:0").map_err(io::Error::other)?);
-        let port = server
-            .server_addr()
-            .to_ip()
-            .map(|address| address.port())
-            .ok_or_else(|| io::Error::other("the media server has no port"))?;
-        let token = new_token()?;
-        let paths = Arc::new(Mutex::new(Vec::new()));
-        let stopped = Arc::new(AtomicBool::new(false));
-
-        let listening = (
-            server.clone(),
-            token.clone(),
-            paths.clone(),
-            stopped.clone(),
-        );
-        thread::Builder::new()
-            .name("media-server".into())
-            .spawn(move || serve(&listening.0, &listening.1, &listening.2, &listening.3))?;
-        Ok(MediaServer {
-            port,
-            token,
-            paths,
-            server,
-            stopped,
-        })
+        Self::start_with(Arc::new(bind_loopback), Arc::new(thread::sleep))
     }
 
-    /// The address of `path`, which the server serves from now on: the same one each time for the same path.
+    fn start_with(bind: Arc<Bind>, pause: Arc<Pause>) -> io::Result<MediaServer> {
+        let server = bind()?;
+        let port = port_of(&server)?;
+        let shared = Arc::new(Shared {
+            token: new_token()?,
+            paths: Mutex::new(Vec::new()),
+            live: Mutex::new(Live {
+                server: Arc::new(server),
+                port,
+                generation: 0,
+            }),
+            replaced: Condvar::new(),
+            stopped: AtomicBool::new(false),
+        });
+        let worker = shared.clone();
+        thread::Builder::new()
+            .name("media-server".into())
+            .spawn(move || serve(&worker, &*bind, &*pause))?;
+        Ok(MediaServer { shared })
+    }
+
+    /// The address of `path`, which the server serves from now on: the same one each time for the same path, as long as the
+    /// listener is the same. After it was made again the address is on its new port, and the one from before is dead.
     pub fn url_for(&self, path: &Path) -> String {
-        let mut paths = self.paths.lock().unwrap_or_else(PoisonError::into_inner);
-        let n = match paths.iter().position(|known| known == path) {
-            Some(n) => n,
-            None => {
-                paths.push(path.to_path_buf());
-                paths.len() - 1
+        let n = {
+            let mut paths = lock(&self.shared.paths);
+            match paths.iter().position(|known| known == path) {
+                Some(n) => n,
+                None => {
+                    paths.push(path.to_path_buf());
+                    paths.len() - 1
+                }
             }
         };
-        format!("http://127.0.0.1:{}/{}/{n}", self.port, self.token)
+        let port = lock(&self.shared.live).port;
+        format!("http://127.0.0.1:{port}/{}/{n}", self.shared.token)
+    }
+}
+
+#[cfg(test)]
+impl MediaServer {
+    /// Makes the thread that takes requests meet an error, as an accept error does. (The listener of tiny_http stays, so
+    /// the old address answers until the server is made again, which is when it is let go of.)
+    fn fail_accept(&self) {
+        lock(&self.shared.live).server.unblock();
+    }
+
+    /// Waits until the listener was made again `generation` times.
+    fn wait_for_generation(&self, generation: u64) {
+        let mut live = lock(&self.shared.live);
+        while live.generation < generation {
+            // The limit is only a net under the test: the server is made again at once.
+            let (next, waited) = self
+                .shared
+                .replaced
+                .wait_timeout(live, Duration::from_secs(30))
+                .unwrap_or_else(PoisonError::into_inner);
+            live = next;
+            assert!(
+                !waited.timed_out() || live.generation >= generation,
+                "the listener was not made again"
+            );
+        }
     }
 }
 
 impl Drop for MediaServer {
     fn drop(&mut self) {
-        self.stopped.store(true, Ordering::SeqCst);
-        self.server.unblock();
+        // Before the listener is read: a thread that is making another one then sees that it is to stop, or the one it made is
+        // the one that is unblocked here.
+        self.shared.stopped.store(true, Ordering::SeqCst);
+        lock(&self.shared.live).server.unblock();
     }
 }
 
@@ -99,38 +172,87 @@ fn new_token() -> io::Result<String> {
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
-/// Takes the requests one by one until the server is stopped. Each is answered on a thread of its own: a player that is
-/// seeking in a long recording asks for the end of the file while the start is still being sent, and a client that is
-/// slow to read must not hold up the others.
-fn serve(server: &Server, token: &str, paths: &Arc<Mutex<Vec<PathBuf>>>, stopped: &AtomicBool) {
+/// Takes the requests one by one until the server is stopped, making the listener again when it fails. Each request is
+/// answered on a thread of its own: a player that is seeking in a long recording asks for the end of the file while the
+/// start is still being sent, and a client that is slow to read must not hold up the others.
+fn serve(shared: &Arc<Shared>, bind: &Bind, pause: &Pause) {
     let mut failing = Backoff::default();
+    let mut server = lock(&shared.live).server.clone();
     loop {
         match server.recv() {
             Ok(request) => {
                 failing.recovered();
-                let (token, paths) = (token.to_owned(), paths.clone());
+                let shared = shared.clone();
                 let spawned = thread::Builder::new()
                     .name("media-answer".into())
-                    .spawn(move || answer(request, &token, &paths));
+                    .spawn(move || answer(request, &shared));
                 if let Err(e) = spawned {
                     log::warn!("The media server could not start a thread: {e}");
                 }
             }
-            Err(_) if stopped.load(Ordering::SeqCst) => return,
+            Err(_) if shared.stopped.load(Ordering::SeqCst) => return,
             Err(e) => {
                 let (wait, first) = failing.failed();
-                // Once for a run of failures: a socket that stays broken would fill the log ten times a second.
+                // Once for a run of failures: a listener that keeps failing would fill the log.
                 if first {
-                    log::warn!("The media server could not take a request: {e}");
+                    log::warn!(
+                        "The media server stopped taking requests ({e}): it starts again on another port, and the addresses given out before stop working"
+                    );
                 }
-                thread::sleep(wait);
+                pause(wait);
+                match listen_again(shared, bind, pause, &mut failing, server) {
+                    Some(fresh) => server = fresh,
+                    None => return,
+                }
             }
         }
     }
 }
 
-/// How long to wait after the server failed to take a request: a little at first, twice as long each time it fails again,
-/// and never more than `RETRY_LONGEST`.
+/// Makes another server, waiting longer after each try that fails, and puts it where `url_for` finds it. `old` is let go of
+/// first, so that when the new address is out the old one is closed. `None` when the server was stopped meanwhile.
+fn listen_again(
+    shared: &Shared,
+    bind: &Bind,
+    pause: &Pause,
+    failing: &mut Backoff,
+    old: Arc<Server>,
+) -> Option<Arc<Server>> {
+    let mut old = Some(old);
+    let mut said = false;
+    loop {
+        if shared.stopped.load(Ordering::SeqCst) {
+            return None;
+        }
+        match bind().and_then(|server| port_of(&server).map(|port| (server, port))) {
+            Ok((fresh, port)) => {
+                let fresh = Arc::new(fresh);
+                let mut live = lock(&shared.live);
+                // The last holders of the old server, which closes its listener when it is dropped.
+                drop(old.take());
+                drop(std::mem::replace(&mut live.server, fresh.clone()));
+                live.port = port;
+                live.generation += 1;
+                shared.replaced.notify_all();
+                drop(live);
+                // `Drop` sets the flag before it reads `live`: either it read this server and unblocks it, or the flag is
+                // set by now.
+                return (!shared.stopped.load(Ordering::SeqCst)).then_some(fresh);
+            }
+            Err(e) => {
+                if !said {
+                    log::warn!("The media server could not listen again: {e}");
+                    said = true;
+                }
+                let (wait, _) = failing.failed();
+                pause(wait);
+            }
+        }
+    }
+}
+
+/// How long to wait after the server failed to take a request or to listen again: a little at first, twice as long each time it
+/// fails again, and never more than `RETRY_LONGEST`.
 #[derive(Default)]
 struct Backoff {
     failures: u32,
@@ -221,18 +343,14 @@ fn header(name: &str, value: &str) -> Header {
 }
 
 /// The file at the place that a request names, if it names one this server gave out.
-fn registered(url: &str, token: &str, paths: &Mutex<Vec<PathBuf>>) -> Option<PathBuf> {
+fn registered(url: &str, shared: &Shared) -> Option<PathBuf> {
     let path = url.split(['?', '#']).next()?.strip_prefix('/')?;
     let (given, n) = path.split_once('/')?;
-    if !same(given, token) {
+    if !same(given, &shared.token) {
         return None;
     }
     let n: usize = n.parse().ok()?;
-    paths
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .get(n)
-        .cloned()
+    lock(&shared.paths).get(n).cloned()
 }
 
 /// Whether two strings are equal, in a time that does not tell how much of the first one is right.
@@ -245,9 +363,9 @@ fn same(given: &str, token: &str) -> bool {
             == 0
 }
 
-fn answer(request: Request, token: &str, paths: &Mutex<Vec<PathBuf>>) {
+fn answer(request: Request, shared: &Shared) {
     let found = matches!(request.method(), Method::Get | Method::Head)
-        .then(|| registered(request.url(), token, paths))
+        .then(|| registered(request.url(), shared))
         .flatten()
         .and_then(|path| File::open(&path).ok().map(|file| (path, file)))
         .and_then(|(path, file)| {
@@ -322,6 +440,7 @@ mod tests {
     use std::fs;
     use std::io::{Read, Write};
     use std::net::TcpStream;
+    use std::sync::atomic::AtomicUsize;
 
     /// What a request got: the status, the headers (names in lower case) and the body.
     struct Reply {
@@ -501,6 +620,152 @@ mod tests {
             let whole = range(&url, unknown);
             assert_eq!((whole.status, whole.body.len()), (200, 100), "{unknown}");
         }
+    }
+
+    /// A GET that may get no answer (nobody listens on the port, or the connection is dropped): the status when there was one.
+    fn try_status(url: &str) -> Option<u16> {
+        let rest = url.strip_prefix("http://")?;
+        let (host, path) = rest.split_once('/')?;
+        let mut stream = TcpStream::connect(host).ok()?;
+        // Only a net under the test: a listener that is gone answers with a reset at once.
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .ok()?;
+        write!(
+            stream,
+            "GET /{path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
+        )
+        .ok()?;
+        let mut raw = Vec::new();
+        stream.read_to_end(&mut raw).ok()?;
+        String::from_utf8_lossy(&raw)
+            .lines()
+            .next()?
+            .split(' ')
+            .nth(1)?
+            .parse()
+            .ok()
+    }
+
+    /// The port and what follows it in an address.
+    fn port_and_path(url: &str) -> (u16, String) {
+        let rest = url.strip_prefix("http://127.0.0.1:").expect("loopback");
+        let (port, path) = rest.split_once('/').expect("a path");
+        (port.parse().expect("a port"), path.to_owned())
+    }
+
+    #[test]
+    fn a_listener_that_died_is_replaced_and_new_addresses_come_from_the_new_one() {
+        // tiny_http's accept thread ends at its first error and takes the listener with it, and `recv` then waits for ever: one
+        // transient error (a player that bailed out of a seek) would end the playback of every recording until the app was
+        // restarted. The server makes another listener, with the same token and the same numbers.
+        let dir = tempfile::tempdir().unwrap();
+        let (one, two) = (
+            counted(dir.path(), "one.m4a"),
+            counted(dir.path(), "two.m4a"),
+        );
+        let server = MediaServer::start().unwrap();
+        let before = server.url_for(&one);
+        assert_eq!(get(&before).status, 200);
+
+        server.fail_accept();
+        server.wait_for_generation(1);
+
+        // The same file, the same token and number, on the port of the new listener, which serves it.
+        let after = server.url_for(&one);
+        let ((port_before, path_before), (port_after, path_after)) =
+            (port_and_path(&before), port_and_path(&after));
+        assert_ne!(port_before, port_after);
+        assert_eq!(path_before, path_after);
+        let served = get(&after);
+        assert_eq!(served.status, 200);
+        assert_eq!(served.body, (0..100u8).collect::<Vec<_>>());
+        // A file that is given an address now gets the next number, and is served too.
+        let later = server.url_for(&two);
+        assert_eq!(port_and_path(&later).0, port_after);
+        assert!(later.ends_with("/1"), "{later}");
+        assert_eq!(get(&later).status, 200);
+        // The address from before the rebuild is dead: nothing answers on the old port any more.
+        assert_eq!(try_status(&before), None);
+    }
+
+    /// A way to make a server that fails to bind a given number of times after the first, and notes how long it was asked to
+    /// wait, without waiting.
+    struct Flaky {
+        binds: Arc<AtomicUsize>,
+        waits: Arc<Mutex<Vec<Duration>>>,
+    }
+
+    impl Flaky {
+        /// A server whose binds number `from` up to `until` (counted from 0, the first one is the start) fail.
+        fn start(from: usize, until: usize) -> (MediaServer, Flaky) {
+            let flaky = Flaky {
+                binds: Arc::new(AtomicUsize::new(0)),
+                waits: Arc::new(Mutex::new(Vec::new())),
+            };
+            let (binds, waits) = (flaky.binds.clone(), flaky.waits.clone());
+            let server = MediaServer::start_with(
+                Arc::new(move || {
+                    let n = binds.fetch_add(1, Ordering::SeqCst);
+                    if (from..until).contains(&n) {
+                        Err(io::Error::other("no port to be had"))
+                    } else {
+                        bind_loopback()
+                    }
+                }),
+                Arc::new(move |wait| waits.lock().unwrap().push(wait)),
+            )
+            .unwrap();
+            (server, flaky)
+        }
+
+        fn waits_ms(&self) -> Vec<u128> {
+            self.waits
+                .lock()
+                .unwrap()
+                .iter()
+                .map(Duration::as_millis)
+                .collect()
+        }
+    }
+
+    #[test]
+    fn a_listener_that_cannot_be_made_again_at_once_is_tried_again_after_longer_waits() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = counted(dir.path(), "one.m4a");
+        // The first bind starts the server; the next two (the first two tries of the rebuild) fail; the third works.
+        let (server, flaky) = Flaky::start(1, 3);
+        let before = server.url_for(&file);
+
+        server.fail_accept();
+        server.wait_for_generation(1);
+
+        // The failure itself waited 100 ms, and each failed try twice as long as the one before.
+        assert_eq!(flaky.waits_ms(), [100, 200, 400]);
+        assert_eq!(flaky.binds.load(Ordering::SeqCst), 4);
+        let after = server.url_for(&file);
+        assert_eq!(get(&after).status, 200);
+        assert_eq!(try_status(&before), None);
+    }
+
+    #[test]
+    fn the_wait_starts_over_once_a_request_was_taken() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = counted(dir.path(), "one.m4a");
+        let (server, flaky) = Flaky::start(usize::MAX, usize::MAX);
+
+        server.fail_accept();
+        server.wait_for_generation(1);
+        // Another failure at once, with no request taken between: the wait is the longer one.
+        server.fail_accept();
+        server.wait_for_generation(2);
+        assert_eq!(flaky.waits_ms(), [100, 200]);
+
+        // A request that is taken ends the run: the next failure waits as the first one did.
+        assert_eq!(get(&server.url_for(&file)).status, 200);
+        server.fail_accept();
+        server.wait_for_generation(3);
+        assert_eq!(flaky.waits_ms(), [100, 200, 100]);
     }
 
     #[test]

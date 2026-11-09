@@ -44,9 +44,10 @@ tauri-plugin-opener = "2"
 trash = "=5.2.9"
 # The loopback server that plays a recording's media to the meetings window (src/meetings/media_server.rs).
 tiny_http = "=0.12.0"
-# The channel the shortcut and `dictate --toggle` send their events on, the timer for the release of a key, and `select!` (the
-# meeting backend waits for a blocking thread and for what it reports at once; the feature is also turned on by the services).
-tokio = { version = "1.54.1", default-features = false, features = ["macros", "sync", "time"] }
+# The channel the shortcut and `dictate --toggle` send their events on, the timer for the release of a key, `select!` (the
+# meeting backend waits for a blocking thread and for what it reports at once) and `#[tokio::test]`, which needs the runtime:
+# the services turn these features on too, and the app does not rely on that.
+tokio = { version = "1.54.1", default-features = false, features = ["macros", "rt", "sync", "time"] }
 tokio-util = { version = "0.7.20", default-features = false }
 
 # The platform layer (src/platform): the focused text field, the frontmost app, the permissions, and pasting into

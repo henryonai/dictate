@@ -288,7 +288,7 @@ impl Meetings {
             if let Err(e) = self.resummarize(id) {
                 log::warn!(
                     "Could not summarize {id} again after renaming speakers: {}",
-                    e.key
+                    e.detail.as_deref().unwrap_or(&e.key)
                 );
             }
         }
