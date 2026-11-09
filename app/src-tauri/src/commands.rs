@@ -34,6 +34,7 @@ use tokio_util::sync::CancellationToken;
 use crate::config::{ai_config, local_model, transcribe_config};
 use crate::dictation::save::SavePaths;
 use crate::hotkey::{ChangeError, HotkeyStatus, Hotkeys, INVALID, TAKEN};
+use crate::platform::rules::Os;
 use crate::platform::{Permission, Platform, SystemPlatform};
 use crate::state::{lock, AppState, Job, KeyFlags};
 use crate::tray;
@@ -198,8 +199,12 @@ fn request_permission_now(platform: &dyn Platform, kind: &str) -> Result<(), Str
 }
 
 /// The link to the pane of System Settings where the permission `kind` names is turned on. A fixed list: the window
-/// can't have this command open any other link.
-fn permission_settings_url(kind: &str) -> Result<&'static str, String> {
+/// can't have this command open any other link. Only the Mac has such panes: on another system an address like this is
+/// one that the opener would hand to the browser.
+fn permission_settings_url(os: Os, kind: &str) -> Result<&'static str, String> {
+    if os != Os::Mac {
+        return Err("The permissions are managed in System Settings on a Mac only".to_owned());
+    }
     match kind {
         "microphone" => {
             Ok("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
@@ -812,7 +817,7 @@ pub async fn request_permission(
 
 #[tauri::command]
 pub async fn open_permission_settings(kind: String, app: AppHandle) -> Result<(), String> {
-    let url = permission_settings_url(&kind)?;
+    let url = permission_settings_url(Os::current(), &kind)?;
     blocking(move || {
         app.opener()
             .open_url(url, None::<String>)
@@ -1964,14 +1969,24 @@ mod tests {
     #[test]
     fn the_permission_links_open_the_privacy_pane_of_each() {
         assert_eq!(
-            permission_settings_url("microphone"),
+            permission_settings_url(Os::Mac, "microphone"),
             Ok("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
         );
         assert_eq!(
-            permission_settings_url("accessibility"),
+            permission_settings_url(Os::Mac, "accessibility"),
             Ok("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
         );
         // The window can't make this command open any other link.
-        assert!(permission_settings_url("https://example.com").is_err());
+        assert!(permission_settings_url(Os::Mac, "https://example.com").is_err());
+    }
+
+    #[test]
+    fn the_permission_links_are_for_macos_only_and_no_other_system_is_handed_one() {
+        // The link is an address of the Mac's System Settings: the opener would give it to the browser or to nothing.
+        for os in [Os::Windows, Os::Linux] {
+            for kind in ["microphone", "accessibility"] {
+                assert!(permission_settings_url(os, kind).is_err(), "{os:?} {kind}");
+            }
+        }
     }
 }
