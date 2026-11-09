@@ -52,8 +52,6 @@ pub fn ai_config(store: &SettingsStore, secrets: &dyn SecretStore) -> Result<AiC
 
 /// The AI provider for summaries and questions about a recording: `ai_config`, with the summary model in place of the
 /// main one when one is set.
-// The meetings commands that call it are added after it: remove the attribute with the first call.
-#[allow(dead_code)]
 pub fn summary_ai_config(
     store: &SettingsStore,
     secrets: &dyn SecretStore,

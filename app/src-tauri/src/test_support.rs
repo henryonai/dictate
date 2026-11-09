@@ -1,5 +1,6 @@
 //! Test doubles the tests of several modules share.
 
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::thread;
@@ -105,5 +106,26 @@ impl Registry for FakeRegistry {
         self.calls.fetch_add(1, Ordering::SeqCst);
         lock(&self.registered).retain(|s| *s != shortcut);
         Ok(())
+    }
+}
+
+/// Writes a runnable script into `dir` and returns its path: a shell script with the body `unix` on Unix, a batch file
+/// with the body `windows` on Windows. A stand-in for a program such as yt-dlp.
+pub fn script(dir: &Path, name: &str, unix: &str, windows: &str) -> PathBuf {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{unix}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = windows;
+        path
+    }
+    #[cfg(windows)]
+    {
+        let path = dir.join(format!("{name}.cmd"));
+        std::fs::write(&path, format!("@echo off\r\n{windows}\r\n")).unwrap();
+        let _ = unix;
+        path
     }
 }

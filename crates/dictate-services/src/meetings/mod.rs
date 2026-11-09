@@ -166,8 +166,9 @@ pub trait MeetingBackend: Send + Sync {
     ) -> Result<TimedTranscript, String>;
 
     /// Who speaks when in `samples`. Downloading the models the first time is part of it. `on_progress` hears 0
-    /// to 1, but only in the second half of the work, and not at all for audio with nothing to tell apart. `log` is
-    /// for the download of the models, which says nothing in `on_progress` (for example every 10%).
+    /// to 1: when the models have to be downloaded first, that is the first half of it and the separation the second.
+    /// The separation says nothing for the first part of its own work (it is "preparing"), and not at all for audio with
+    /// nothing to tell apart. `log` is for the download of the models (for example every 10%).
     async fn diarize(
         &self,
         samples: Arc<Vec<f32>>,

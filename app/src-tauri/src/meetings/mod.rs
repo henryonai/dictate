@@ -4,6 +4,7 @@
 // Each part is wired into the app by a commit of its own; the commit that ends the series removes this.
 #![allow(dead_code)]
 
+pub mod backend;
 pub mod media_server;
 #[cfg(test)]
 mod test_fixture;
