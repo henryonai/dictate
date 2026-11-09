@@ -132,8 +132,15 @@ impl Registry {
         inner.events.job(&view);
         inner.events.changed();
 
+        // A second task watches the first: a job that panics would otherwise stay "running" in the window for ever.
+        let (watcher, id_and_folder) = (self.inner.clone(), spec.clone());
         let inner = self.inner.clone();
-        tauri::async_runtime::spawn(async move { inner.run(guard, spec, from).await });
+        let job = tauri::async_runtime::spawn(async move { inner.run(guard, spec, from).await });
+        tauri::async_runtime::spawn(async move {
+            if job.await.is_err() {
+                watcher.crashed(&id_and_folder);
+            }
+        });
         Ok(())
     }
 
@@ -234,17 +241,36 @@ impl Inner {
     /// The job is over: its outcome is kept, the recording is free to have another job, and then the window and the person
     /// are told. The recording is freed first because "Try again" comes straight after the event that shows the error.
     fn finish(self: &Arc<Self>, guard: JobGuard, spec: &JobSpec, outcome: Outcome) {
+        let view = self.keep(spec, &outcome);
+        drop(guard);
+        self.announce(spec, &view, outcome);
+    }
+
+    /// The task of the job panicked (its place was given up as it unwound): the job failed, and the person is told as for any
+    /// other failure.
+    fn crashed(self: &Arc<Self>, spec: &JobSpec) {
+        let outcome = Outcome::Failed(MeetingError::other("The job stopped unexpectedly."));
+        let view = self.keep(spec, &outcome);
+        self.announce(spec, &view, outcome);
+    }
+
+    /// Remembers how the job ended, as the recording's last outcome.
+    fn keep(&self, spec: &JobSpec, outcome: &Outcome) -> JobView {
         let view = JobView {
             id: spec.id.clone(),
             step: None,
             progress: None,
             step_started_ms: (self.now)(),
-            outcome: Some(OutcomeView::from(&outcome)),
+            outcome: Some(OutcomeView::from(outcome)),
         };
         lock(&self.views).insert(spec.id.clone(), view.clone());
-        drop(guard);
+        view
+    }
+
+    /// Tells whoever waits for the job, the window and the person that it ended.
+    fn announce(self: &Arc<Self>, spec: &JobSpec, view: &JobView, outcome: Outcome) {
         self.ended.notify_waiters();
-        self.events.job(&view);
+        self.events.job(view);
         self.events.changed();
 
         // A job that was cancelled is what the person asked for.
@@ -319,10 +345,15 @@ mod tests {
         notices: Mutex<mpsc::Sender<Notice>>,
         /// What the window does at once when it hears a job has ended.
         on_end: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+        /// A bug in whoever hears a step: the job's task panics.
+        panic_on_step: std::sync::atomic::AtomicBool,
     }
 
     impl Events for Heard {
         fn job(&self, view: &JobView) {
+            if view.step.is_some() && self.panic_on_step.load(Ordering::SeqCst) {
+                panic!("a bug while hearing a step");
+            }
             if view.outcome.is_some() {
                 // Taken out first: what it does may start another job, whose end would come here too. It is done before the
                 // test hears of the event, so that the test finds what it did.
@@ -371,6 +402,7 @@ mod tests {
                 events: Mutex::new(events_tx),
                 notices: Mutex::new(notices_tx),
                 on_end: Mutex::new(None),
+                panic_on_step: std::sync::atomic::AtomicBool::new(false),
             });
             let backend = Arc::new(backend);
             let jobs = Arc::new(Jobs::default());
@@ -710,6 +742,34 @@ mod tests {
         assert_eq!(*lock(&answer), Some(Ok(())), "the recording was not free");
         // And that job ends too.
         rig.ended(&spec.id);
+    }
+
+    #[test]
+    fn a_job_that_panics_still_ends_and_frees_the_recording() {
+        let rig = Rig::new(FakeBackend::new());
+        let spec = rig.recording("2026-11-09 10-00-00", "Weekly");
+        rig.heard.panic_on_step.store(true, Ordering::SeqCst);
+
+        rig.registry.start(spec.clone(), StartAt::Audio).unwrap();
+        let last = rig.ended(&spec.id);
+
+        // The row does not stay "running" for ever: it fails, with a reason, and the recording is free again.
+        let error = error_of(&last);
+        assert_eq!(error.kind, "Other");
+        assert_eq!(
+            error.detail.as_deref(),
+            Some("The job stopped unexpectedly.")
+        );
+        assert_eq!(rig.registry.status(&spec.id), Some(last));
+        assert!(!rig.registry.is_running(&spec.id));
+        rig.heard.panic_on_step.store(false, Ordering::SeqCst);
+        assert_eq!(rig.registry.start(spec.clone(), StartAt::Audio), Ok(()));
+        assert_eq!(
+            rig.ended(&spec.id).outcome,
+            Some(OutcomeView::Done { summary: true })
+        );
+        // A banner says so, as for any failure.
+        assert!(matches!(notice(&rig).kind, NoticeKind::Failed(_)));
     }
 
     #[test]
