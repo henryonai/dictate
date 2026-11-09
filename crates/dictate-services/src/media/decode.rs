@@ -14,11 +14,12 @@ use std::ffi::OsString;
 use std::fmt;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 use std::process::{Child, ChildStdout, Stdio};
 use std::thread::JoinHandle;
 
-use opus_decoder::OpusDecoder;
+use opus_decoder::{OpusDecoder, OpusError};
 use symphonia::core::codecs::audio::well_known::CODEC_ID_OPUS;
 use symphonia::core::codecs::audio::{AudioCodecParameters, AudioDecoder, AudioDecoderOptions};
 use symphonia::core::errors::Error as SymphoniaError;
@@ -31,8 +32,11 @@ use symphonia::core::units::{Duration, TimeBase};
 
 use super::tools::{self, install_command, Tool};
 
-/// The rate of what ffmpeg is asked for, and of what Opus decodes to.
+/// The rate of what ffmpeg is asked for.
 const FFMPEG_RATE: u32 = 48_000;
+/// The rate Opus decodes to, whatever rate the file says: the header of an Opus stream tells the rate of the source,
+/// which is only a hint to a player.
+const OPUS_RATE: u32 = 48_000;
 /// How much of ffmpeg's output is read at a time: 16 384 samples, a third of a second.
 const PIPE_BYTES: usize = 64 * 1024;
 /// How many lines at the start and at the end of what ffmpeg printed an error keeps.
@@ -114,7 +118,8 @@ impl MonoDecoder {
         }
     }
 
-    /// The sample rate of the blocks. It is the rate the file has, except for Opus and ffmpeg, which are 48 kHz.
+    /// The sample rate of the blocks. It is the rate the decoder gives, which is the file's own except for Opus and
+    /// ffmpeg: they are 48 kHz.
     pub fn rate(&self) -> u32 {
         self.rate
     }
@@ -126,7 +131,8 @@ impl MonoDecoder {
     }
 
     /// The next block of audio: mono (the channels averaged), at `rate()`. `None` is the end of the file; a block is
-    /// never empty. A packet that cannot be decoded is skipped, and a file that is cut short ends where it ends.
+    /// never empty. A packet that cannot be decoded is skipped, and a file that is cut short or damaged ends where it
+    /// can no longer be read.
     pub fn next_block(&mut self) -> Result<Option<Vec<f32>>, DecodeError> {
         if let Some(block) = self.first.take() {
             return Ok(Some(block));
@@ -146,8 +152,8 @@ fn unsupported(what: impl Into<String>) -> DecodeError {
 }
 
 /// What symphonia's error means for the caller. Before any audio has come out, a file that symphonia cannot make sense
-/// of is one that ffmpeg may still read (`Unsupported`); a real read error is not. After that, a damaged file is
-/// just damaged.
+/// of is one that ffmpeg may still read (`Unsupported`); a real read error is not. After that, what is left of a
+/// damaged file is not asked for (see `SymphoniaReader::next_block`).
 fn from_symphonia(error: SymphoniaError, produced_audio: bool) -> DecodeError {
     match error {
         SymphoniaError::Unsupported(what) => unsupported(what),
@@ -179,12 +185,17 @@ fn open_with_symphonia(file: File, path: &Path) -> Result<MonoDecoder, DecodeErr
         .map_err(|e| from_symphonia(e, false))?;
 
     let Some(track) = format.default_track(TrackType::Audio) else {
-        // A track that symphonia does not know the codec of is not "no audio".
-        return Err(if format.first_track(TrackType::Audio).is_some() {
-            unsupported("the audio codec is not known")
-        } else {
-            DecodeError::NoAudio
-        });
+        // A track that symphonia does not know the codec of is not "no audio". One with a codec that is known but has
+        // no decoder is an audio track here; one with no codec parameters at all (an AMR, IMA4 or other entry that the
+        // container reader does not map) cannot even say what it is, and may well be the sound.
+        let unknown_track = format.tracks().iter().any(|t| t.codec_params.is_none());
+        return Err(
+            if format.first_track(TrackType::Audio).is_some() || unknown_track {
+                unsupported("the audio codec is not known")
+            } else {
+                DecodeError::NoAudio
+            },
+        );
     };
     let Some(params) = track.codec_params.as_ref().and_then(|p| p.audio()).cloned() else {
         return Err(unsupported("the audio track has no parameters"));
@@ -212,7 +223,11 @@ fn open_with_symphonia(file: File, path: &Path) -> Result<MonoDecoder, DecodeErr
         format,
         track_id,
         decoder,
-        rate: params.sample_rate.unwrap_or(0),
+        rate: if params.codec == CODEC_ID_OPUS {
+            OPUS_RATE
+        } else {
+            params.sample_rate.unwrap_or(0)
+        },
         produced_audio: false,
     };
     // Decoding the first block finds out what the parameters could not say (the rate of an AAC with SBR, say) and
@@ -274,6 +289,8 @@ impl SymphoniaReader {
                 }
                 // The tracks changed (a chained stream): what comes after is not read.
                 Err(SymphoniaError::ResetRequired) if self.produced_audio => return Ok(None),
+                // The container is damaged from here on and cannot be read on: the audio before it is still audio.
+                Err(SymphoniaError::DecodeError(_)) if self.produced_audio => return Ok(None),
                 Err(e) => return Err(from_symphonia(e, self.produced_audio)),
             };
             if packet.track_id != self.track_id {
@@ -366,8 +383,8 @@ impl OpusReader {
                 "Opus with {channels} channels (mapping {family})"
             )));
         }
-        let decoder = OpusDecoder::new(FFMPEG_RATE, channels)
-            .map_err(|e| unsupported(format!("Opus: {e}")))?;
+        let decoder =
+            OpusDecoder::new(OPUS_RATE, channels).map_err(|e| unsupported(format!("Opus: {e}")))?;
         Ok(OpusReader {
             decoder,
             channels,
@@ -390,9 +407,8 @@ impl OpusReader {
         if packet.data.is_empty() {
             return Vec::new();
         }
-        let Ok(frames) = self
-            .decoder
-            .decode_float(&packet.data, &mut self.pcm, false)
+        let Some(frames) =
+            self.decode_frames(|decoder, pcm| decoder.decode_float(&packet.data, pcm, false))
         else {
             return Vec::new();
         };
@@ -409,11 +425,29 @@ impl OpusReader {
         mono
     }
 
+    /// Runs `decode` (the decoder and its output buffer are given to it) and returns the number of samples of each
+    /// channel that it made; `None` when it failed or panicked. A panic is caught because the decoder is a young crate
+    /// that is given files from anywhere: a packet that it cannot take costs that packet, and not the whole import.
+    /// What the decoder remembers from before the panic may be half changed, so it starts over.
+    fn decode_frames(
+        &mut self,
+        decode: impl FnOnce(&mut OpusDecoder, &mut [f32]) -> Result<usize, OpusError>,
+    ) -> Option<usize> {
+        let (decoder, pcm) = (&mut self.decoder, &mut self.pcm[..]);
+        match catch_unwind(AssertUnwindSafe(|| decode(decoder, pcm))) {
+            Ok(result) => result.ok(),
+            Err(_) => {
+                self.decoder.reset();
+                None
+            }
+        }
+    }
+
     /// The samples at the end of the packet that are padding, from its end trim (in the time base of the track).
     fn padding(&self, packet: &Packet) -> usize {
         match self.time_base {
             Some(base) => base.calc_duration(packet.trim_end).map_or(0, |t| {
-                (t.as_secs_f64() * f64::from(FFMPEG_RATE)).round() as usize
+                (t.as_secs_f64() * f64::from(OPUS_RATE)).round() as usize
             }),
             None => packet.trim_end.get() as usize,
         }
@@ -681,6 +715,7 @@ mod tests {
             ("tone.mp4", 48_000, 0.03),
             ("tone.webm", 48_000, 0.02),
             ("tone.opus", 48_000, 0.02),
+            ("tone-16k.webm", 48_000, 0.02),
         ] {
             let mut decoder =
                 MonoDecoder::open(&fixture(name), None).unwrap_or_else(|e| panic!("{name}: {e:?}"));
@@ -714,6 +749,34 @@ mod tests {
             MonoDecoder::open(&video, Some(Path::new("/no/such/ffmpeg"))).err(),
             Some(DecodeError::NoAudio)
         );
+    }
+
+    #[test]
+    fn decode_opus_is_48_khz_whatever_the_file_says() {
+        // Opus always decodes to 48 kHz. A WebM made from a 16 kHz source says 16 kHz (symphonia takes 8 kHz when the
+        // file says nothing), and a rate that is read from there turns 1 s of audio into 3 s.
+        for name in ["tone.webm", "tone-16k.webm", "tone.opus"] {
+            let mut decoder = MonoDecoder::open(&fixture(name), None).unwrap();
+            assert_eq!(decoder.rate(), 48_000, "{name}: rate");
+
+            let seconds = read_all(&mut decoder).len() as f64 / f64::from(decoder.rate());
+
+            assert!((seconds - 1.0).abs() < 0.02, "{name}: {seconds} s");
+        }
+    }
+
+    #[test]
+    fn decode_an_audio_codec_symphonia_does_not_know_is_unsupported_not_no_audio() {
+        // IMA ADPCM in QuickTime: symphonia gives the track no codec parameters at all, so it cannot even say that it
+        // is audio. That is a file ffmpeg can read, not a file without sound.
+        let error = MonoDecoder::open(&fixture("tone-ima4.mov"), None)
+            .err()
+            .unwrap();
+
+        let DecodeError::Unsupported { ffmpeg_hint, .. } = error else {
+            panic!("{error:?}")
+        };
+        assert_eq!(ffmpeg_hint, install_command(Tool::Ffmpeg));
     }
 
     #[test]
@@ -853,6 +916,24 @@ mod tests {
     }
 
     #[test]
+    fn decode_a_damaged_container_ends_with_what_was_decoded() {
+        // 64 bytes of zeros in the middle of a WebM: the container reader gives up there with an error of its own ("invalid
+        // ebml element id length"), and the first 32 of its 51 packets (0.64 s of the 1 s) were fine. Losing the rest of
+        // a long recording is better than losing all of it.
+        let dir = tempfile::tempdir().unwrap();
+        let webm = dir.path().join("damaged.webm");
+        let mut bytes = fs::read(fixture("tone.webm")).unwrap();
+        let at = bytes.len() * 6 / 10;
+        bytes[at..at + 64].fill(0);
+        fs::write(&webm, bytes).unwrap();
+
+        let mut decoder = MonoDecoder::open(&webm, None).unwrap();
+        let seconds = read_all(&mut decoder).len() as f64 / f64::from(decoder.rate());
+
+        assert!((seconds - 0.64).abs() < 0.1, "{seconds} s");
+    }
+
+    #[test]
     fn decode_tells_how_long_the_file_is() {
         for name in [
             "tone.wav",
@@ -878,6 +959,41 @@ mod tests {
         let mut decoder = MonoDecoder::open(&fixture("tone.opus"), None).unwrap();
 
         assert_eq!(read_all(&mut decoder).len(), 48_000);
+    }
+
+    /// The first packet of `tone.opus`, as an Opus decoder takes it.
+    fn first_opus_packet() -> Vec<u8> {
+        let file = fs::File::open(fixture("tone.opus")).unwrap();
+        let stream = MediaSourceStream::new(Box::new(file), Default::default());
+        let mut format = symphonia::default::get_probe()
+            .probe(
+                &Hint::new(),
+                stream,
+                FormatOptions::default(),
+                MetadataOptions::default(),
+            )
+            .unwrap();
+        format.next_packet().unwrap().unwrap().data.to_vec()
+    }
+
+    #[test]
+    fn a_packet_that_makes_the_opus_decoder_panic_is_skipped_and_the_next_one_decodes() {
+        // opus-decoder is a young crate (0.1) that is fed files from anywhere: a packet it panics on (nothing in the
+        // fixtures does, so the decoder is told to) must cost that packet, not the import.
+        let mut head = b"OpusHead".to_vec();
+        // Version 1, 1 channel, pre-skip 0, 48 000 Hz, gain 0, channel mapping 0.
+        head.extend([1, 1, 0, 0, 0x80, 0xbb, 0, 0, 0, 0, 0]);
+        let mut params = AudioCodecParameters::new();
+        params.for_codec(CODEC_ID_OPUS).with_extra_data(head.into());
+        let mut reader = OpusReader::new(&params, None).unwrap();
+        let packet = first_opus_packet();
+
+        let after_a_panic =
+            reader.decode_frames(|_, _| panic!("index out of bounds, in a decoder far away"));
+        let next = reader.decode_frames(|decoder, pcm| decoder.decode_float(&packet, pcm, false));
+
+        assert_eq!(after_a_panic, None);
+        assert_eq!(next, Some(960));
     }
 
     #[test]
@@ -1148,6 +1264,23 @@ mod tests {
 
         // AC-3 is a codec that symphonia cannot decode.
         let mut decoder = MonoDecoder::open(&fixture("tone-ac3.mkv"), Some(&ffmpeg)).unwrap();
+        assert_eq!(decoder.rate(), 48_000);
+        let samples = read_all(&mut decoder);
+
+        assert!(
+            samples.len().abs_diff(48_000) <= 960,
+            "{} samples",
+            samples.len()
+        );
+        let crossings = zero_crossings(&samples);
+        assert!(crossings.abs_diff(880) <= 20, "{crossings} zero crossings");
+    }
+
+    #[test]
+    fn decode_falls_back_to_ffmpeg_for_an_audio_codec_symphonia_does_not_know() {
+        let Some(ffmpeg) = real_ffmpeg() else { return };
+
+        let mut decoder = MonoDecoder::open(&fixture("tone-ima4.mov"), Some(&ffmpeg)).unwrap();
         assert_eq!(decoder.rate(), 48_000);
         let samples = read_all(&mut decoder);
 

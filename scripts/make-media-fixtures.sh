@@ -12,7 +12,10 @@
 #   tone.mp4          H.264 video (64x48, 10 fps, a test pattern) and the same AAC audio
 #   tone.webm         Opus in WebM, 48 kHz, mono, 24 kbit/s (symphonia has no Opus decoder: opus-decoder reads it)
 #   tone.opus         Opus in Ogg, the same audio (voice notes of chat apps)
+#   tone-16k.webm     Opus in WebM that was encoded from a 16 kHz source: the file says 16 kHz, but Opus decodes to 48 kHz
 #   video-only.mp4    the video of tone.mp4 with no audio track at all
+#   tone-ima4.mov     IMA ADPCM (ima4) in QuickTime, 22.05 kHz, mono: a codec that symphonia does not know at all (its
+#                     track has no codec parameters), so the file is not "no audio" but only ffmpeg can read it
 #   tone-ac3.mkv      AC-3 in Matroska: a codec that symphonia cannot decode, so only ffmpeg can read it
 #
 # Needs: ffmpeg with libmp3lame, libopus and libx264 (macOS: brew install ffmpeg). A tone is made by ffmpeg itself, so
@@ -50,7 +53,9 @@ ff "${video[@]}" "${tone[@]}" "${plain[@]}" "${half[@]}" -map 0:v -map 1:a "${h2
     -shortest tone.mp4
 ff "${tone[@]}" "${plain[@]}" "${half[@]}" -ar 48000 -c:a libopus -b:a 24k tone.webm
 ff "${tone[@]}" "${plain[@]}" "${half[@]}" -ar 48000 -c:a libopus -b:a 24k tone.opus
+ff "${tone[@]}" "${plain[@]}" "${half[@]}" -ar 16000 -c:a libopus -b:a 24k tone-16k.webm
 ff "${video[@]}" "${plain[@]}" -an "${h264[@]}" video-only.mp4
+ff "${tone[@]}" "${plain[@]}" "${half[@]}" -ar 22050 -c:a adpcm_ima_qt tone-ima4.mov
 ff "${tone[@]}" "${plain[@]}" "${half[@]}" -ar 48000 -c:a ac3 -b:a 32k tone-ac3.mkv
 
 ls -l "$out"
