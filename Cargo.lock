@@ -1181,6 +1181,9 @@ dependencies = [
  "dirs 7.0.0",
  "hound",
  "keyring",
+ "objc2-audio-toolbox",
+ "objc2-core-audio-types",
+ "objc2-core-foundation",
  "opus-decoder",
  "process-wrap",
  "reqwest 0.12.28",
@@ -3906,6 +3909,7 @@ dependencies = [
  "indexmap 2.14.2",
  "nix 0.30.1",
  "tokio",
+ "tracing",
  "windows 0.61.3",
 ]
 

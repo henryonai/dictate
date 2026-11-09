@@ -20,7 +20,11 @@ keyring = "3.6.3"
 opus-decoder = "=0.1.1"
 # Kills a whole process tree on cancel (yt-dlp starts ffmpeg): a process group on Unix, a job object on Windows.
 # 9.x and 10.x need Rust 1.87: stay on 8.2 until the minimum Rust version moves up.
-process-wrap = { version = "=8.2.2", default-features = false, features = ["tokio1", "job-object", "process-group", "creation-flags", "kill-on-drop"] }
+# "std" is for the encoder, which is a blocking process (ffmpeg writing audio.m4a from a pipe) that must be killed with
+# everything it started when the recording is dropped; "tokio1" is for the ones that are awaited. 8.2.2's job object
+# for "std" does not build without "tracing" (it calls `debug!` where the macro is only imported with that feature):
+# tracing is already in Cargo.lock, and it does nothing here without a subscriber.
+process-wrap = { version = "=8.2.2", default-features = false, features = ["std", "tokio1", "tracing", "job-object", "process-group", "creation-flags", "kill-on-drop"] }
 reqwest = { version = "0.12.28", default-features = false, features = ["json", "multipart", "rustls-tls", "stream"] }
 # Resampling the microphone to 16 kHz. 5.x needs Rust 1.87: stay on 4.0 until the minimum Rust version moves up.
 rubato = "4.0.0"
@@ -44,12 +48,20 @@ whisper-rs = { version = "0.15.1", features = ["log_backend"] }
 keyring = { version = "3.6.3", features = ["apple-native"] }
 # Whisper runs on the GPU through Metal here; the other systems use the CPU.
 whisper-rs = { version = "0.15.1", features = ["metal"] }
+# audio.m4a is written by the system's own AAC encoder: AudioToolbox's ExtAudioFile encodes and writes the file in one go.
+# These are the bindings cpal already builds (they are in Cargo.lock); the features are the ones the encoder needs.
+objc2-audio-toolbox = { version = "0.3.2", default-features = false, features = ["std", "AudioConverter", "AudioFile", "ExtendedAudioFile", "objc2-core-audio-types", "objc2-core-foundation"] }
+objc2-core-audio-types = { version = "0.3.2", default-features = false, features = ["std", "CoreAudioBaseTypes"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFURL"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3.6.3", features = ["windows-native"] }
-# CREATE_NO_WINDOW for the child processes, in the form process-wrap takes it. The version is the one the app and
-# process-wrap already build, so that no second copy of it is built.
-windows = { version = "0.61.3", features = ["Win32_System_Threading"] }
+# CREATE_NO_WINDOW for the child processes, in the form process-wrap takes it; and Media Foundation, whose Sink Writer
+# is the AAC encoder that writes audio.m4a (COM has to be started for it, and its DLLs are looked for when it is first
+# used: a Windows "N" edition has none unless the Media Feature Pack is installed, and a program that imports them
+# would not start there). The version is the one the app and process-wrap already build, so that no second copy of it
+# is built.
+windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_Media_MediaFoundation", "Win32_System_Com", "Win32_System_LibraryLoader", "Win32_System_Threading"] }
 
 [target.'cfg(not(any(target_os = "macos", target_os = "windows")))'.dependencies]
 keyring = { version = "3.6.3", features = ["async-secret-service", "async-io", "crypto-rust"] }

@@ -601,7 +601,7 @@ impl Drop for FfmpegPipe {
 /// What ffmpeg printed to stderr: the first lines and the last lines of it. The cause of a failure is usually in
 /// the first, and the last say what came of it (with `-v error` ffmpeg prints a line per thing that went wrong).
 #[derive(Default)]
-struct Tail {
+pub(super) struct Tail {
     first: Vec<String>,
     last: VecDeque<String>,
     /// Lines were left out between `first` and `last`.
@@ -611,7 +611,7 @@ struct Tail {
 }
 
 impl Tail {
-    fn read(stderr: impl Read) -> Tail {
+    pub(super) fn read(stderr: impl Read) -> Tail {
         let mut tail = Tail::default();
         let mut reader = BufReader::new(stderr);
         let mut line = Vec::new();
@@ -645,7 +645,7 @@ impl Tail {
         self.last.push_back(line);
     }
 
-    fn text(&self) -> String {
+    pub(super) fn text(&self) -> String {
         let mut lines: Vec<&str> = self.first.iter().map(String::as_str).collect();
         if self.cut {
             lines.push("...");
@@ -658,9 +658,9 @@ impl Tail {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::media::test_support::real_ffmpeg;
     #[cfg(unix)]
     use crate::media::test_support::script;
+    use crate::media::test_support::{read_all, real_ffmpeg, zero_crossings};
     use std::fs;
     use std::path::PathBuf;
 
@@ -668,34 +668,6 @@ mod tests {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/media")
             .join(name)
-    }
-
-    /// Every block the decoder gives, in one vector.
-    fn read_all(decoder: &mut MonoDecoder) -> Vec<f32> {
-        let mut samples = Vec::new();
-        while let Some(block) = decoder.next_block().unwrap() {
-            assert!(
-                !block.is_empty(),
-                "the end is `None`: an empty block is not a block"
-            );
-            samples.extend(block);
-        }
-        samples
-    }
-
-    /// How often the signal crosses zero, not counting what is near silence: the first frame of an AAC file is the
-    /// encoder's warm-up, a murmur of 0.003 that crosses zero 80 times, and a tone at half scale is nowhere near that.
-    fn zero_crossings(samples: &[f32]) -> usize {
-        let mut loud = samples.iter().filter(|s| s.abs() > 0.05);
-        let Some(mut before) = loud.next() else {
-            return 0;
-        };
-        let mut crossings = 0;
-        for sample in loud {
-            crossings += usize::from((*before < 0.0) != (*sample < 0.0));
-            before = sample;
-        }
-        crossings
     }
 
     fn ffmpeg_hint() -> &'static str {
