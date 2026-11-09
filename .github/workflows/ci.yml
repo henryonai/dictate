@@ -98,6 +98,27 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --all --locked
+      # Speaker separation on the real models. It is the only run of the statically linked sherpa-onnx on each system,
+      # and so the check of the Linux build (its authors warn of "free(): invalid pointer" there) and of the Windows
+      # one. The two models (46 MB) are cached under the SHA-256 of each: a new model is a new key. They are fetched
+      # with curl when the cache misses; the test itself refuses a file whose size or SHA-256 differs.
+      - uses: actions/cache@v4
+        id: diarize-models
+        with:
+          path: ${{ runner.temp }}/diarize-models
+          key: diarize-models-220ad67ca923bef2fa91f2390c786097bf305bceb5e261d4af67b38e938e1079-ad4a1802485d8b34c722d2a9d04249662f2ece5d28a7a039063ca22f515a789e
+      - name: Download the speaker separation models
+        if: steps.diarize-models.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/diarize-models"
+          cd "$RUNNER_TEMP/diarize-models"
+          curl -fsSL --retry 3 -o pyannote-segmentation-3.0.onnx https://huggingface.co/csukuangfj/sherpa-onnx-pyannote-segmentation-3-0/resolve/main/model.onnx
+          curl -fsSL --retry 3 -o nemo_en_titanet_small.onnx https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/nemo_en_titanet_small.onnx
+      - name: Separate the speakers of a recording with the real models
+        env:
+          DICTATE_TEST_DIARIZE_DIR: ${{ runner.temp }}/diarize-models
+        run: cargo test -p dictate-services --lib --locked -- --ignored --nocapture diarizer_finds_two_speakers no_audio_and_silence_have_no_turns
 
   # The app: its web UI (type check, tests, build) and the Tauri shell around it, on every OS.
   app:
