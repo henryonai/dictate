@@ -1529,11 +1529,19 @@ mod tests {
         format!("http://127.0.0.1:{port}")
     }
 
-    /// A base URL nothing listens on.
+    /// A base URL whose server hangs up on every connection, so that a download from it fails the same way whenever
+    /// it runs. The listener stays bound for the rest of the test run: a port that was only freed again would be
+    /// handed out by the next `bind("127.0.0.1:0")` of a test running in parallel (Windows does this), and the
+    /// download would reach that test's server instead.
     fn dead_url() -> String {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        drop(listener);
+        thread::spawn(move || {
+            // Dropping a stream closes it. `incoming` only ends with an error, which never happens to a listener.
+            for stream in listener.incoming() {
+                drop(stream);
+            }
+        });
         format!("http://127.0.0.1:{port}")
     }
 
@@ -1557,6 +1565,44 @@ mod tests {
         let events: Events = Arc::default();
         let sink = events.clone();
         (events, move |event| sink.lock().unwrap().push(event))
+    }
+
+    #[test]
+    fn a_dead_url_keeps_its_port_taken() {
+        // A port that was only freed again goes to whichever test binds port 0 next. On Windows that is the server
+        // of a test running in parallel, which then gets the connection of the download that was meant to fail.
+        let url = dead_url();
+        let port: u16 = url.rsplit(':').next().unwrap().parse().unwrap();
+
+        assert!(
+            TcpListener::bind(("127.0.0.1", port)).is_err(),
+            "{url} can be bound by another test"
+        );
+    }
+
+    #[test]
+    fn a_dead_url_hangs_up_on_every_connection() {
+        let url = dead_url();
+        let address = url.trim_start_matches("http://");
+
+        for _ in 0..3 {
+            let mut stream = std::net::TcpStream::connect(address).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut rest = Vec::new();
+            // Closed at once: the end of the stream (or, on Windows, a reset), never a wait for the timeout.
+            match stream.read_to_end(&mut rest) {
+                Ok(_) => assert!(rest.is_empty()),
+                Err(e) => assert!(
+                    !matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ),
+                    "the server kept the connection: {e}"
+                ),
+            }
+        }
     }
 
     #[test]
