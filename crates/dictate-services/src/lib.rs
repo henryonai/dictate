@@ -2,6 +2,7 @@
 
 pub mod ai;
 pub mod audio;
+pub mod diarize;
 pub mod dictation;
 pub mod http;
 pub mod media;

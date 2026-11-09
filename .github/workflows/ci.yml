@@ -21,7 +21,8 @@ jobs:
   test:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    # A cold Windows run took about 21 of the 30 minutes before sherpa-onnx; its 117 MB library comes on top.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 45 || 30 }}
     strategy:
       fail-fast: false
       matrix:
@@ -37,6 +38,14 @@ jobs:
         with:
           shared-key: ${{ runner.os }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      # The prebuilt sherpa-onnx library (onnxruntime inside) that the build script of sherpa-onnx-sys downloads and
+      # unpacks into target/sherpa-onnx-prebuilt: 20 MB on macOS and Linux, 117 MB on Windows. It is cached as unpacked,
+      # so that a run with a hit neither downloads nor unpacks it. The build script looks for the folder of the version
+      # it is built for, so after a version change it fetches the new one whatever this key hits; change the key with it.
+      - uses: actions/cache@v4
+        with:
+          path: target/sherpa-onnx-prebuilt
+          key: sherpa-onnx-1.13.8-${{ runner.os }}-${{ runner.arch }}
       # whisper.cpp is built from source: it needs cmake and a C++ compiler, and its bindings need libclang. The
       # macOS and Windows runners have them; this makes sure the Linux one does. libasound2-dev is the ALSA header
       # that microphone capture builds against. The rest is what the Tauri app links against: the web view, the
@@ -68,7 +77,7 @@ jobs:
   app:
     name: app (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 45 || 30 }}
     strategy:
       fail-fast: false
       matrix:
@@ -80,6 +89,11 @@ jobs:
         with:
           shared-key: ${{ runner.os }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      # The sherpa-onnx library, as in the test job.
+      - uses: actions/cache@v4
+        with:
+          path: target/sherpa-onnx-prebuilt
+          key: sherpa-onnx-1.13.8-${{ runner.os }}-${{ runner.arch }}
       - name: Install the Linux build dependencies
         if: runner.os == 'Linux'
         run: >
@@ -128,6 +142,11 @@ jobs:
         with:
           shared-key: msrv
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      # The sherpa-onnx library, as in the test job.
+      - uses: actions/cache@v4
+        with:
+          path: target/sherpa-onnx-prebuilt
+          key: sherpa-onnx-1.13.8-${{ runner.os }}-${{ runner.arch }}
       - name: Install the Linux build dependencies
         run: >
           sudo apt-get update && sudo apt-get install -y
