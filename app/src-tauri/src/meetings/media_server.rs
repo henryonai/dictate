@@ -22,6 +22,14 @@ use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 /// How many bytes of randomness the token has.
 const TOKEN_BYTES: usize = 16;
 
+/// tiny_http sends a body of 32 KiB or more as `Transfer-Encoding: chunked`, with no `Content-Length`, unless it is given a
+/// threshold that no body reaches. A player needs the length to know how long a recording is and to seek in it.
+const NEVER_CHUNKED: usize = usize::MAX;
+
+/// The wait after the server could not take a request, and the longest it grows to.
+const RETRY_FIRST: Duration = Duration::from_millis(100);
+const RETRY_LONGEST: Duration = Duration::from_secs(5);
+
 pub struct MediaServer {
     port: u16,
     token: String,
@@ -95,9 +103,11 @@ fn new_token() -> io::Result<String> {
 /// seeking in a long recording asks for the end of the file while the start is still being sent, and a client that is
 /// slow to read must not hold up the others.
 fn serve(server: &Server, token: &str, paths: &Arc<Mutex<Vec<PathBuf>>>, stopped: &AtomicBool) {
+    let mut failing = Backoff::default();
     loop {
         match server.recv() {
             Ok(request) => {
+                failing.recovered();
                 let (token, paths) = (token.to_owned(), paths.clone());
                 let spawned = thread::Builder::new()
                     .name("media-answer".into())
@@ -108,10 +118,38 @@ fn serve(server: &Server, token: &str, paths: &Arc<Mutex<Vec<PathBuf>>>, stopped
             }
             Err(_) if stopped.load(Ordering::SeqCst) => return,
             Err(e) => {
-                log::warn!("The media server could not take a request: {e}");
-                thread::sleep(Duration::from_millis(100));
+                let (wait, first) = failing.failed();
+                // Once for a run of failures: a socket that stays broken would fill the log ten times a second.
+                if first {
+                    log::warn!("The media server could not take a request: {e}");
+                }
+                thread::sleep(wait);
             }
         }
+    }
+}
+
+/// How long to wait after the server failed to take a request: a little at first, twice as long each time it fails again,
+/// and never more than `RETRY_LONGEST`.
+#[derive(Default)]
+struct Backoff {
+    failures: u32,
+}
+
+impl Backoff {
+    /// How long to wait now, and whether this is the first failure of a run (the only one that is logged).
+    fn failed(&mut self) -> (Duration, bool) {
+        let first = self.failures == 0;
+        let wait = RETRY_FIRST
+            .saturating_mul(2u32.saturating_pow(self.failures))
+            .min(RETRY_LONGEST);
+        self.failures = self.failures.saturating_add(1);
+        (wait, first)
+    }
+
+    /// A request was taken: the next failure starts a new run.
+    fn recovered(&mut self) {
+        self.failures = 0;
     }
 }
 
@@ -237,29 +275,35 @@ fn answer(request: Request, token: &str, paths: &Mutex<Vec<PathBuf>>) {
         all
     };
     let sent = match wanted(range.as_deref(), len) {
-        Wanted::Whole => request.respond(Response::new(
-            StatusCode(200),
-            headers(Vec::new()),
-            file,
-            usize::try_from(len).ok(),
-            None,
-        )),
+        Wanted::Whole => request.respond(
+            Response::new(
+                StatusCode(200),
+                headers(Vec::new()),
+                file,
+                usize::try_from(len).ok(),
+                None,
+            )
+            .with_chunked_threshold(NEVER_CHUNKED),
+        ),
         Wanted::Part(first, last) => {
             let size = last - first + 1;
             if file.seek(SeekFrom::Start(first)).is_err() {
                 let _ = request.respond(Response::empty(StatusCode(500)));
                 return;
             }
-            request.respond(Response::new(
-                StatusCode(206),
-                headers(vec![header(
-                    "Content-Range",
-                    &format!("bytes {first}-{last}/{len}"),
-                )]),
-                file.take(size),
-                usize::try_from(size).ok(),
-                None,
-            ))
+            request.respond(
+                Response::new(
+                    StatusCode(206),
+                    headers(vec![header(
+                        "Content-Range",
+                        &format!("bytes {first}-{last}/{len}"),
+                    )]),
+                    file.take(size),
+                    usize::try_from(size).ok(),
+                    None,
+                )
+                .with_chunked_threshold(NEVER_CHUNKED),
+            )
         }
         Wanted::Unsatisfiable => request.respond(
             Response::empty(StatusCode(416))
@@ -457,6 +501,74 @@ mod tests {
             let whole = range(&url, unknown);
             assert_eq!((whole.status, whole.body.len()), (200, 100), "{unknown}");
         }
+    }
+
+    #[test]
+    fn the_wait_after_a_failure_grows_to_a_limit_and_only_the_first_of_a_run_is_logged() {
+        let mut backoff = Backoff::default();
+        let ms = |(wait, first): (Duration, bool)| (wait.as_millis(), first);
+
+        assert_eq!(ms(backoff.failed()), (100, true));
+        assert_eq!(ms(backoff.failed()), (200, false));
+        assert_eq!(ms(backoff.failed()), (400, false));
+        for _ in 0..4 {
+            backoff.failed();
+        }
+        // 100 ms doubled 7 times is 12.8 s: it stops at 5 s, however many failures come.
+        assert_eq!(ms(backoff.failed()), (5_000, false));
+        for _ in 0..200 {
+            assert_eq!(backoff.failed().0, Duration::from_secs(5));
+        }
+
+        // A request that was taken ends the run: the next failure is logged again, and the wait starts over.
+        backoff.recovered();
+        assert_eq!(ms(backoff.failed()), (100, true));
+    }
+
+    #[test]
+    fn a_file_over_32_kib_is_sent_with_its_length_and_never_chunked() {
+        // tiny_http sends a body of 32 KiB or more as `Transfer-Encoding: chunked` unless told not to, which leaves a player
+        // with no length: it can't tell how long the recording is, and can't seek in it. Every real recording is that big.
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("talk.m4a");
+        let bytes: Vec<u8> = (0..100 * 1024u32).map(|i| (i % 251) as u8).collect();
+        fs::write(&file, &bytes).unwrap();
+        let server = MediaServer::start().unwrap();
+        let url = server.url_for(&file);
+
+        let whole = get(&url);
+        assert_eq!(whole.status, 200);
+        assert_eq!(whole.header("content-length"), Some("102400"));
+        assert_eq!(whole.header("transfer-encoding"), None);
+        assert_eq!(whole.body, bytes);
+
+        let part = range(&url, "bytes=1000-50999");
+        assert_eq!(part.status, 206);
+        assert_eq!(part.header("content-length"), Some("50000"));
+        assert_eq!(
+            part.header("content-range"),
+            Some("bytes 1000-50999/102400")
+        );
+        assert_eq!(part.header("transfer-encoding"), None);
+        assert_eq!(part.body, bytes[1000..51_000]);
+
+        // The end of the file, which is where an m4a keeps its `moov` atom, and an open range of the whole of it.
+        let end = range(&url, "bytes=-40000");
+        assert_eq!(end.header("content-length"), Some("40000"));
+        assert_eq!(end.header("transfer-encoding"), None);
+        assert_eq!(end.body, bytes[bytes.len() - 40_000..]);
+
+        // HEAD says how long the file is (or the range), with no body and no chunks.
+        let head = ask(&url, "HEAD", &[]);
+        assert_eq!(head.status, 200);
+        assert_eq!(head.header("content-length"), Some("102400"));
+        assert_eq!(head.header("transfer-encoding"), None);
+        assert!(head.body.is_empty());
+        let head = ask(&url, "HEAD", &[("Range", "bytes=0-49999")]);
+        assert_eq!(head.status, 206);
+        assert_eq!(head.header("content-length"), Some("50000"));
+        assert_eq!(head.header("transfer-encoding"), None);
+        assert!(head.body.is_empty());
     }
 
     #[test]
