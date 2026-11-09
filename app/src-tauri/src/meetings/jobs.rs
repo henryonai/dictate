@@ -32,9 +32,9 @@ pub const CHANGED_EVENT: &str = "meetings-changed";
 
 /// What happens in the jobs, for whoever shows it.
 ///
-/// `job()` and `changed()` are called while the registry's table of views is locked (so that the events of a recording come in
-/// the order the table changed): an implementation must not call back into the [`Registry`] (`start`, `status` and the rest
-/// take that lock), or it deadlocks.
+/// `job()` and `changed()` may be called while the registry's table of views is locked (so that the events of a recording
+/// come in the order the table changed): an implementation must not call back into the [`Registry`] (`start`, `status` and
+/// the rest take that lock), or it deadlocks.
 pub trait Events: Send + Sync {
     fn job(&self, view: &JobView);
     fn changed(&self);

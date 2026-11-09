@@ -13,7 +13,9 @@
 //! cause one, and so can running out of file handles); `recv` then answers that one error and waits for ever. So the server
 //! makes another listener on a fresh port when `recv` fails, with the same token and the same numbers. **The addresses given
 //! out before that stop working**, and `url_for` gives the new port: whoever plays from an address (the window) asks for a
-//! fresh one when playing fails.
+//! fresh one when playing fails. A connection that the old listener accepted outlives it, though (a player keeps one open
+//! between the ranges it asks for), and tiny_http reads its next requests into the old server's queue: that queue is still
+//! answered, on a thread of its own, until no request has come for `DRAIN_GRACE`.
 
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
@@ -36,6 +38,10 @@ const NEVER_CHUNKED: usize = usize::MAX;
 const RETRY_FIRST: Duration = Duration::from_millis(100);
 const RETRY_LONGEST: Duration = Duration::from_secs(5);
 
+/// How long a server that was replaced is still answered after its last request: the connections it accepted are still
+/// read, and a player asks for the next range of a recording on the connection it already has.
+const DRAIN_GRACE: Duration = Duration::from_secs(30);
+
 /// Makes a tiny_http server on a fresh port of 127.0.0.1. The tests give one that sometimes fails.
 type Bind = dyn Fn() -> io::Result<Server> + Send + Sync;
 
@@ -55,6 +61,10 @@ struct Shared {
     live: Mutex<Live>,
     /// Told whenever `live` holds another server.
     replaced: Condvar,
+    /// The servers that were replaced and whose queues are still answered, each by a thread of its own (`drain`).
+    draining: Mutex<Vec<Arc<Server>>>,
+    /// How long such a server is answered after its last request: `DRAIN_GRACE`, shorter in the tests.
+    grace: Duration,
     stopped: AtomicBool,
 }
 
@@ -86,10 +96,14 @@ fn port_of(server: &Server) -> io::Result<u16> {
 impl MediaServer {
     /// Starts the server on a free port of 127.0.0.1, on a thread of its own.
     pub fn start() -> io::Result<MediaServer> {
-        Self::start_with(Arc::new(bind_loopback), Arc::new(thread::sleep))
+        Self::start_with(
+            Arc::new(bind_loopback),
+            Arc::new(thread::sleep),
+            DRAIN_GRACE,
+        )
     }
 
-    fn start_with(bind: Arc<Bind>, pause: Arc<Pause>) -> io::Result<MediaServer> {
+    fn start_with(bind: Arc<Bind>, pause: Arc<Pause>, grace: Duration) -> io::Result<MediaServer> {
         let server = bind()?;
         let port = port_of(&server)?;
         let shared = Arc::new(Shared {
@@ -101,6 +115,8 @@ impl MediaServer {
                 generation: 0,
             }),
             replaced: Condvar::new(),
+            draining: Mutex::new(Vec::new()),
+            grace,
             stopped: AtomicBool::new(false),
         });
         let worker = shared.clone();
@@ -130,8 +146,9 @@ impl MediaServer {
 
 #[cfg(test)]
 impl MediaServer {
-    /// Makes the thread that takes requests meet an error, as an accept error does. (The listener of tiny_http stays, so
-    /// the old address answers until the server is made again, which is when it is let go of.)
+    /// Makes the thread that takes requests meet an error, as an accept error does. (Unlike after a real accept error, the
+    /// listener of tiny_http stays, so the old address takes new connections until the server is dropped: when it has been
+    /// drained.)
     fn fail_accept(&self) {
         lock(&self.shared.live).server.unblock();
     }
@@ -153,6 +170,11 @@ impl MediaServer {
             );
         }
     }
+
+    /// How many replaced servers are still being answered.
+    fn draining(&self) -> usize {
+        lock(&self.shared.draining).len()
+    }
 }
 
 impl Drop for MediaServer {
@@ -161,6 +183,11 @@ impl Drop for MediaServer {
         // the one that is unblocked here.
         self.shared.stopped.store(true, Ordering::SeqCst);
         lock(&self.shared.live).server.unblock();
+        // The same for the servers being drained: one that is put on the list after this sees the flag before it waits, and
+        // an unblock is kept in the queue until it is taken, so none is missed.
+        for server in lock(&self.shared.draining).iter() {
+            server.unblock();
+        }
     }
 }
 
@@ -182,13 +209,7 @@ fn serve(shared: &Arc<Shared>, bind: &Bind, pause: &Pause) {
         match server.recv() {
             Ok(request) => {
                 failing.recovered();
-                let shared = shared.clone();
-                let spawned = thread::Builder::new()
-                    .name("media-answer".into())
-                    .spawn(move || answer(request, &shared));
-                if let Err(e) = spawned {
-                    log::warn!("The media server could not start a thread: {e}");
-                }
+                answer_apart(request, shared);
             }
             Err(_) if shared.stopped.load(Ordering::SeqCst) => return,
             Err(e) => {
@@ -199,8 +220,10 @@ fn serve(shared: &Arc<Shared>, bind: &Bind, pause: &Pause) {
                         "The media server stopped taking requests ({e}): it starts again on another port, and the addresses given out before stop working"
                     );
                 }
+                // Its connections are still read into its queue: they are answered while the new listener is made.
+                drain(shared, server.clone());
                 pause(wait);
-                match listen_again(shared, bind, pause, &mut failing, server) {
+                match listen_again(shared, bind, pause, &mut failing) {
                     Some(fresh) => server = fresh,
                     None => return,
                 }
@@ -209,16 +232,63 @@ fn serve(shared: &Arc<Shared>, bind: &Bind, pause: &Pause) {
     }
 }
 
-/// Makes another server, waiting longer after each try that fails, and puts it where `url_for` finds it. `old` is let go of
-/// first, so that when the new address is out the old one is closed. `None` when the server was stopped meanwhile.
+/// Answers `request` on a thread of its own.
+fn answer_apart(request: Request, shared: &Arc<Shared>) {
+    let shared = shared.clone();
+    let spawned = thread::Builder::new()
+        .name("media-answer".into())
+        .spawn(move || answer(request, &shared));
+    if let Err(e) = spawned {
+        log::warn!("The media server could not start a thread: {e}");
+    }
+}
+
+/// Keeps answering a server that is being replaced, on a thread of its own, until no request has come to it for
+/// `shared.grace` or the media server is dropped; then lets go of it. Its accept thread is gone after a real accept error, but
+/// the connections it accepted are still read and their requests still come to its queue, which is all that `recv_timeout`
+/// waits on. The token and the paths are the same as the new server's, so the answers are too.
+fn drain(shared: &Arc<Shared>, old: Arc<Server>) {
+    // On the list before the thread waits, so that `Drop` unblocks it (see there).
+    lock(&shared.draining).push(old.clone());
+    let worker = shared.clone();
+    let held = old.clone();
+    let spawned = thread::Builder::new()
+        .name("media-drain".into())
+        .spawn(move || {
+            while !worker.stopped.load(Ordering::SeqCst) {
+                match held.recv_timeout(worker.grace) {
+                    Ok(Some(request)) => answer_apart(request, &worker),
+                    // Nothing for the whole grace, or `Drop` unblocked it.
+                    Ok(None) => break,
+                    // Another accept error (only when its accept thread was still alive): the requests may still come.
+                    Err(e) => log::debug!("A replaced media server failed again: {e}"),
+                }
+            }
+            let_go(&worker, held);
+        });
+    if let Err(e) = spawned {
+        log::warn!("The media server could not start a thread for the connections of the old listener: {e}");
+        let_go(shared, old);
+    }
+}
+
+/// Takes a drained server off the list and drops it (`server` is the last other reference), which makes tiny_http close its
+/// listener if it still has one. Both under the lock, so that a server that is no longer on the list is gone.
+fn let_go(shared: &Shared, server: Arc<Server>) {
+    let mut draining = lock(&shared.draining);
+    draining.retain(|other| !Arc::ptr_eq(other, &server));
+    drop(server);
+}
+
+/// Makes another server, waiting longer after each try that fails, and puts it where `url_for` finds it. The server it
+/// replaces is being `drain`ed (by `serve`): it is dropped once its queue has been quiet for a while, and tiny_http then closes
+/// its listener (already closed after a real accept error). `None` when the server was stopped meanwhile.
 fn listen_again(
     shared: &Shared,
     bind: &Bind,
     pause: &Pause,
     failing: &mut Backoff,
-    old: Arc<Server>,
 ) -> Option<Arc<Server>> {
-    let mut old = Some(old);
     let mut said = false;
     loop {
         if shared.stopped.load(Ordering::SeqCst) {
@@ -228,9 +298,8 @@ fn listen_again(
             Ok((fresh, port)) => {
                 let fresh = Arc::new(fresh);
                 let mut live = lock(&shared.live);
-                // The last holders of the old server, which closes its listener when it is dropped.
-                drop(old.take());
-                drop(std::mem::replace(&mut live.server, fresh.clone()));
+                // `serve` and the thread that drains it still hold the old server: it is not dropped here.
+                live.server = fresh.clone();
                 live.port = port;
                 live.generation += 1;
                 shared.replaced.notify_all();
@@ -463,6 +532,10 @@ mod tests {
         let rest = url.strip_prefix("http://").expect("an http address");
         let (host, path) = rest.split_once('/').expect("a path");
         let mut stream = TcpStream::connect(host).expect("the server is listening");
+        // Only a net under the test: an answer that never comes fails it instead of hanging it.
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
         let mut head =
             format!("{method} /{path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n");
         for (name, value) in headers {
@@ -472,7 +545,11 @@ mod tests {
         stream.write_all(head.as_bytes()).unwrap();
         let mut raw = Vec::new();
         stream.read_to_end(&mut raw).unwrap();
+        parse(&raw)
+    }
 
+    /// A status line, headers and a body, as they came over the socket.
+    fn parse(raw: &[u8]) -> Reply {
         let split = raw
             .windows(4)
             .position(|w| w == b"\r\n\r\n")
@@ -647,6 +724,20 @@ mod tests {
             .ok()
     }
 
+    /// A server like the app's, but whose replaced servers are let go of after `grace` with no request.
+    fn start_with_grace(grace: Duration) -> MediaServer {
+        MediaServer::start_with(Arc::new(bind_loopback), Arc::new(thread::sleep), grace).unwrap()
+    }
+
+    /// Waits until `done` holds; fails after 30 s, which only a regression takes.
+    fn wait_until(what: &str, done: impl Fn() -> bool) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while !done() {
+            assert!(std::time::Instant::now() < deadline, "{what}");
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     /// The port and what follows it in an address.
     fn port_and_path(url: &str) -> (u16, String) {
         let rest = url.strip_prefix("http://127.0.0.1:").expect("loopback");
@@ -664,7 +755,7 @@ mod tests {
             counted(dir.path(), "one.m4a"),
             counted(dir.path(), "two.m4a"),
         );
-        let server = MediaServer::start().unwrap();
+        let server = start_with_grace(Duration::from_millis(200));
         let before = server.url_for(&one);
         assert_eq!(get(&before).status, 200);
 
@@ -685,8 +776,86 @@ mod tests {
         assert_eq!(port_and_path(&later).0, port_after);
         assert!(later.ends_with("/1"), "{later}");
         assert_eq!(get(&later).status, 200);
-        // The address from before the rebuild is dead: nothing answers on the old port any more.
+        // Once the old server has had no request for the grace, it is let go of, and the address from before the rebuild is
+        // dead: nothing answers on the old port any more.
+        wait_until("the old server was not let go of", || {
+            server.draining() == 0
+        });
         assert_eq!(try_status(&before), None);
+    }
+
+    #[test]
+    fn replaced_servers_are_let_go_of_when_the_media_server_is_dropped() {
+        // Each rebuild leaves a thread that answers the old server; none of them may outlive the media server, however long
+        // their grace is.
+        let server = start_with_grace(Duration::from_secs(3600));
+        for generation in 1..=3 {
+            server.fail_accept();
+            server.wait_for_generation(generation);
+        }
+        assert_eq!(server.draining(), 3);
+
+        let shared = server.shared.clone();
+        drop(server);
+        wait_until("a replaced server outlived the media server", || {
+            lock(&shared.draining).is_empty()
+        });
+    }
+
+    /// Reads one answer from a connection that stays open: the head, then as many bytes as `Content-Length` says.
+    fn read_reply(stream: &mut TcpStream) -> Reply {
+        let mut raw = Vec::new();
+        let mut byte = [0u8; 1];
+        while !raw.ends_with(b"\r\n\r\n") {
+            stream.read_exact(&mut byte).expect("the head of an answer");
+            raw.push(byte[0]);
+        }
+        let mut reply = parse(&raw);
+        let len: usize = reply
+            .header("content-length")
+            .expect("a length")
+            .parse()
+            .expect("a number");
+        let mut body = vec![0u8; len];
+        stream.read_exact(&mut body).expect("the body of an answer");
+        reply.body = body;
+        reply
+    }
+
+    #[test]
+    fn a_connection_opened_before_the_listener_was_made_again_is_still_answered() {
+        // A player keeps its connection open between the ranges it asks for. tiny_http reads the next request of that
+        // connection into the queue of the server that accepted it, and nothing would ever answer it after the rebuild: the
+        // player would stall, with no error to tell it to ask for a fresh address.
+        let dir = tempfile::tempdir().unwrap();
+        let file = counted(dir.path(), "audio.m4a");
+        let server = MediaServer::start().unwrap();
+        let url = server.url_for(&file);
+        let rest = url.strip_prefix("http://").unwrap();
+        let (host, path) = rest.split_once('/').unwrap();
+        let mut stream = TcpStream::connect(host).unwrap();
+        // Only a net under the test: an answer that never comes fails it instead of hanging it.
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let send = |stream: &mut TcpStream, range: &str| {
+            write!(
+                stream,
+                "GET /{path} HTTP/1.1\r\nHost: {host}\r\nRange: {range}\r\n\r\n"
+            )
+            .unwrap();
+            read_reply(stream)
+        };
+        let first = send(&mut stream, "bytes=0-9");
+        assert_eq!((first.status, first.body), (206, (0..10u8).collect()));
+
+        server.fail_accept();
+        server.wait_for_generation(1);
+
+        let second = send(&mut stream, "bytes=90-99");
+        assert_eq!(second.status, 206);
+        assert_eq!(second.header("content-range"), Some("bytes 90-99/100"));
+        assert_eq!(second.body, (90..100u8).collect::<Vec<_>>());
     }
 
     /// A way to make a server that fails to bind a given number of times after the first, and notes how long it was asked to
@@ -714,6 +883,7 @@ mod tests {
                     }
                 }),
                 Arc::new(move |wait| waits.lock().unwrap().push(wait)),
+                Duration::from_millis(200),
             )
             .unwrap();
             (server, flaky)
@@ -745,6 +915,9 @@ mod tests {
         assert_eq!(flaky.binds.load(Ordering::SeqCst), 4);
         let after = server.url_for(&file);
         assert_eq!(get(&after).status, 200);
+        wait_until("the old server was not let go of", || {
+            server.draining() == 0
+        });
         assert_eq!(try_status(&before), None);
     }
 
