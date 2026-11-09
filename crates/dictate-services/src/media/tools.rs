@@ -29,11 +29,10 @@ const LAST_LINES: usize = 2;
 ///
 /// Child processes get this as their PATH too: yt-dlp looks for ffmpeg there.
 ///
-/// The system folders go first for cmd.exe, which handles a PATH of at most 8191 characters: a program that cmd
-/// starts (a `.cmd` or `.bat` shim of a tool is run by cmd, so it inherits the limit) may not see the folders far
-/// down a long PATH, and without System32 it cannot find `where`, `ping` or the other programs of the system.
-/// Putting them first helps a user whose PATH is long but under the limit; a PATH over it (one of 15000 under
-/// `cargo test` on Windows) cmd ignores altogether, whatever the order.
+/// The system folders go first because that is the order Windows itself puts in a PATH (the system folders before
+/// the user's), and so that a program started through cmd.exe finds `where`, `ping` and the other programs of the
+/// system. cmd.exe ignores a PATH longer than 8191 characters altogether (it does not read a prefix of it), whatever
+/// the order, and a `.cmd` or `.bat` shim of a tool is run by cmd, so it inherits that limit.
 pub fn search_path() -> OsString {
     search_path_from(
         system_folders(),
@@ -486,9 +485,8 @@ mod tests {
 
     #[test]
     fn search_path_puts_the_system_folders_first_then_the_path_then_the_user_folders() {
-        // cmd.exe reads only the first 8191 characters of a variable, and `cargo test` gives a Windows test
-        // process a PATH of 15000: a folder at the end of it is lost to a program that cmd starts. So the
-        // folders that the system's own programs live in go first, and a long PATH after them is cut instead.
+        // The system's own folders go first, as in Windows' own PATH, and the user's PATH is kept whole after them,
+        // however long it is (a Windows test process under `cargo test` has one of 15000 characters).
         let long_path = vec!["/some/long/folder/name"; 1000].join(&SEP.to_string());
 
         let joined = search_path_from(

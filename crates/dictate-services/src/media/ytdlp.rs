@@ -12,9 +12,14 @@ use tokio_util::sync::CancellationToken;
 
 use super::tools::{self, RunError};
 
-/// Whether the text is a link yt-dlp may be given: after trimming, `http` or `https` and a host.
+/// Whether the text is a link yt-dlp may be given: after trimming, `http` or `https` and a host, with no whitespace
+/// or control character left inside. (The url crate silently drops tabs and newlines from what it parses, and
+/// `args` hands the text on as it is.)
 pub fn link_is_valid(url: &str) -> bool {
     let url = url.trim();
+    if url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return false;
+    }
     let Some((scheme, rest)) = url.split_once("://") else {
         return false;
     };
@@ -35,6 +40,11 @@ pub fn args(url: &str, folder: &Path) -> Vec<OsString> {
         "--no-simulate",
         "--newline",
         "--no-colors",
+        // Windows yt-dlp prints `TITLE:` and `FILE:` in the ANSI code page otherwise, which mangles a Vietnamese path.
+        "--encoding",
+        "utf-8",
+        // `--print` implies `--quiet`, which also stops the progress lines: ask for them again.
+        "--progress",
         "--progress-template",
         "download:DL %(progress.downloaded_bytes)s %(progress.total_bytes)s %(progress.total_bytes_estimate)s",
         "--print",
@@ -188,6 +198,23 @@ mod tests {
         assert!(!link_is_valid("youtu.be/x"));
     }
 
+    #[test]
+    fn link_with_whitespace_or_control_characters_inside_is_not_valid() {
+        // The url crate drops tabs and newlines from what it parses, so these would pass `Url::parse`, but `args`
+        // hands the text on as it is.
+        assert!(!link_is_valid("https://youtu.be/x y"));
+        assert!(!link_is_valid("https://youtu.be/x\ty"));
+        assert!(!link_is_valid("https://youtu.be/x\ny"));
+        assert!(!link_is_valid("https://youtu.be/x\r\ny"));
+        assert!(!link_is_valid("https://you\ttu.be/x"));
+        assert!(!link_is_valid("https://youtu.be/x\u{0}y"));
+        assert!(!link_is_valid("https://youtu.be/x\u{7f}y"));
+        assert!(!link_is_valid("https://youtu.be/x\u{a0}y"));
+        assert!(!link_is_valid("https://youtu.be/x\u{3000}y"));
+        // Around the link is still trimmed away.
+        assert!(link_is_valid("\t https://youtu.be/x?a=1&b=2 \r\n"));
+    }
+
     fn strings(args: &[OsString]) -> Vec<String> {
         args.iter()
             .map(|a| a.to_string_lossy().into_owned())
@@ -209,10 +236,12 @@ mod tests {
     #[test]
     fn ytdlp_args_are_the_documented_command_line() {
         let args = strings(&args("https://youtu.be/x", Path::new("/lib/f")));
-        let head: Vec<&str> = args.iter().map(String::as_str).take(7).collect();
+        let template = Path::new("/lib/f").join("source.%(ext)s");
 
+        // `--print` makes yt-dlp quiet, which also stops its progress lines: `--progress` brings them back. On
+        // Windows yt-dlp writes `TITLE:` and `FILE:` in the ANSI code page unless it is told `--encoding utf-8`.
         assert_eq!(
-            head,
+            args,
             [
                 "-f",
                 "bestaudio[ext=m4a]/bestaudio/best",
@@ -220,23 +249,21 @@ mod tests {
                 "--no-simulate",
                 "--newline",
                 "--no-colors",
-                "--progress-template"
-            ]
-        );
-        assert_eq!(
-            args[7],
-            "download:DL %(progress.downloaded_bytes)s %(progress.total_bytes)s %(progress.total_bytes_estimate)s"
-        );
-        assert_eq!(
-            &args[8..12],
-            [
+                "--encoding",
+                "utf-8",
+                "--progress",
+                "--progress-template",
+                "download:DL %(progress.downloaded_bytes)s %(progress.total_bytes)s %(progress.total_bytes_estimate)s",
                 "--print",
                 "before_dl:TITLE:%(title)s",
                 "--print",
-                "after_move:FILE:%(filepath)s"
+                "after_move:FILE:%(filepath)s",
+                "-o",
+                template.to_str().unwrap(),
+                "--",
+                "https://youtu.be/x",
             ]
         );
-        assert_eq!(args[12], "-o");
     }
 
     #[test]
