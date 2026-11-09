@@ -47,6 +47,19 @@ jobs:
           sudo apt-get update && sudo apt-get install -y
           cmake libclang-dev libasound2-dev
           libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
+      # The tests of the code that runs ffmpeg (decoding what symphonia cannot read, writing audio.m4a on Linux and
+      # as the stand-in for Media Foundation on Windows) run against a real one. On a developer's machine they skip
+      # without it; they fail when the CI variable is set (Actions sets it), so that a runner without ffmpeg cannot
+      # pass them without running them.
+      - name: Install ffmpeg (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg
+      - name: Install ffmpeg (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y ffmpeg
+      - name: Install ffmpeg (Windows)
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg -y --no-progress
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --all --locked

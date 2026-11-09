@@ -658,9 +658,9 @@ impl Tail {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::media::test_support::real_ffmpeg;
     #[cfg(unix)]
     use crate::media::test_support::script;
-    use crate::media::tools::Tools;
     use std::fs;
     use std::path::PathBuf;
 
@@ -1247,15 +1247,6 @@ mod tests {
             panic!("{error:?}")
         };
         assert!(tail.contains("start"), "{tail}");
-    }
-
-    /// The ffmpeg of this machine, or a note that the test is skipped without it.
-    fn real_ffmpeg() -> Option<PathBuf> {
-        let found = Tools::find().ffmpeg;
-        if found.is_none() {
-            eprintln!("skipped: ffmpeg is not installed");
-        }
-        found
     }
 
     #[test]
