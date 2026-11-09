@@ -42,13 +42,14 @@ jobs:
       # unpacks into target/sherpa-onnx-prebuilt: 20 MB static on macOS, 10 MB shared on Linux (the static one aborts
       # next to whisper.cpp there, see crates/dictate-services/Cargo.toml). It is cached as unpacked, so that a run
       # with a hit neither downloads nor unpacks it. The build script looks for the folder of the version it is built
-      # for, so after a version change it fetches the new one whatever this key hits; change the key with it.
+      # for, so after a version change it fetches the new one whatever this key hits; change the key with it. The key
+      # names the link mode on Linux ("-shared"), so that an entry saved with the static archive cannot stand in for it.
       # Windows does not use this download: see the next step.
       - uses: actions/cache@v4
         if: runner.os != 'Windows'
         with:
           path: target/sherpa-onnx-prebuilt
-          key: sherpa-onnx-1.13.8-${{ runner.os }}-${{ runner.arch }}
+          key: sherpa-onnx-1.13.8-${{ runner.os }}-${{ runner.arch }}${{ runner.os == 'Linux' && '-shared' || '' }}
       # The library the build script downloads for Windows is built with the static C runtime (/MT, "RuntimeLibrary=
       # MT_StaticRelease" in its objects), and whisper.cpp and Rust use the DLL one (/MD): the linker refuses to put
       # them in one program (LNK2038, LNK2005). The same release has an /MD build, 92 MB. It is fetched here, cached
@@ -116,6 +117,15 @@ jobs:
           cd "$RUNNER_TEMP/diarize-models"
           curl -fsSL --retry 3 -o pyannote-segmentation-3.0.onnx https://huggingface.co/csukuangfj/sherpa-onnx-pyannote-segmentation-3-0/resolve/main/model.onnx
           curl -fsSL --retry 3 -o nemo_en_titanet_small.onnx https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/nemo_en_titanet_small.onnx
+      # On Linux the programs load the sherpa-onnx .so files from target/debug. rust-cache saves only build/, deps/
+      # and .fingerprint/ of it, so after a restore they are gone, and the build script of sherpa-onnx-sys, which
+      # copied them, is up to date and does not run again: the one of dictate-services has to bring them back. Delete
+      # them as a restore does; the next step then fails with "error while loading shared libraries" if it does not.
+      - name: Remove the sherpa-onnx libraries as a cache restore does (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          rm -f target/debug/libsherpa-onnx-*.so* target/debug/libonnxruntime.so*
+          if ls target/debug/*.so* 2>/dev/null; then echo 'a .so file is left in target/debug'; exit 1; fi
       - name: Separate the speakers of a recording with the real models
         env:
           DICTATE_TEST_DIARIZE_DIR: ${{ runner.temp }}/diarize-models
@@ -142,7 +152,7 @@ jobs:
         if: runner.os != 'Windows'
         with:
           path: target/sherpa-onnx-prebuilt
-          key: sherpa-onnx-1.13.8-${{ runner.os }}-${{ runner.arch }}
+          key: sherpa-onnx-1.13.8-${{ runner.os }}-${{ runner.arch }}${{ runner.os == 'Linux' && '-shared' || '' }}
       - uses: actions/cache@v4
         if: runner.os == 'Windows'
         with:
@@ -215,7 +225,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: target/sherpa-onnx-prebuilt
-          key: sherpa-onnx-1.13.8-${{ runner.os }}-${{ runner.arch }}
+          key: sherpa-onnx-1.13.8-${{ runner.os }}-${{ runner.arch }}-shared
       - name: Install the Linux build dependencies
         run: >
           sudo apt-get update && sudo apt-get install -y

@@ -49,9 +49,10 @@ const COMMANDS: &[&str] = &[
 ];
 
 fn main() {
-    // Linux: the program and its tests have to find the shared sherpa-onnx library that `sherpa-onnx-sys` copies into
-    // `target/<profile>` (the program is built there, the tests in its `deps`). A build script's link arguments
-    // reach only the binaries of its own package, so `dictate-services` cannot set this up for them.
+    // Linux: the program and its tests have to find the shared sherpa-onnx library that `sherpa-onnx-sys` and the build
+    // script of `dictate-services` copy into `target/<profile>` (the program is built there, the tests in its `deps`).
+    // A build script's link arguments reach only the binaries of its own package, so `dictate-services` cannot set this
+    // up for them.
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
         println!("cargo::rustc-link-arg=-Wl,-rpath,$ORIGIN");
         println!("cargo::rustc-link-arg=-Wl,-rpath,$ORIGIN/..");
