@@ -9,6 +9,7 @@ pub mod media;
 pub mod presets;
 pub mod secrets;
 pub mod settings;
+pub mod summary;
 pub mod system;
 pub mod transcribe_api;
 pub mod whisper;
