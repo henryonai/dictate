@@ -5,3 +5,6 @@
 #![allow(dead_code)]
 
 pub mod media_server;
+#[cfg(test)]
+mod test_fixture;
+pub mod views;
