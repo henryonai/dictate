@@ -624,6 +624,7 @@ impl Tail {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use crate::media::test_support::script;
     use crate::media::tools::Tools;
     use std::fs;
@@ -904,13 +905,20 @@ mod tests {
     }
 
     // The 8 bytes of two samples, 1.0 and -0.5, as ffmpeg writes them (f32, little-endian), for `printf`.
+    #[cfg(unix)]
     const TWO_SAMPLES: &str = r"\000\000\200\077\000\000\000\277";
 
     /// A file that symphonia cannot read, in a folder and with a name that are awkward on a command line.
     fn awkward_input(dir: &Path) -> PathBuf {
         let folder = dir.join("Cuộc họp tháng 11");
         fs::create_dir_all(&folder).unwrap();
-        let file = folder.join("bản ghi: 1.ac3");
+        // A colon cannot be in a file name on Windows (it would start a data stream of the file before it).
+        let name = if cfg!(windows) {
+            "bản ghi 1.ac3"
+        } else {
+            "bản ghi: 1.ac3"
+        };
+        let file = folder.join(name);
         fs::write(&file, b"this is not audio, whatever the name says").unwrap();
         file
     }

@@ -1,1 +1,3 @@
 tests/golden/** -text
+# Binary files that no checkout may change: an autocrlf Git on Windows would otherwise be free to rewrite a few bytes.
+crates/dictate-services/tests/fixtures/media/** binary
