@@ -491,9 +491,21 @@ fn sane_size(width: f64, height: f64) -> Option<(f64, f64)> {
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
     create_bubble(app)?;
     create_card(app)?;
-    app.manage(Panels::new(platform::current(app)));
+    app.manage(Panels::new(shared_platform(app, || platform::current(app))));
     log::info!("The panel windows are ready");
     Ok(())
+}
+
+/// The platform layer that the app manages, so that the panels ask the same one as the controller and the commands (on
+/// Windows each one has a thread of its own for UI Automation). `make` builds one only when none is managed yet.
+fn shared_platform<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    make: impl FnOnce() -> Arc<dyn Platform>,
+) -> Arc<dyn Platform> {
+    match app.try_state::<platform::SystemPlatform>() {
+        Some(managed) => managed.0.clone(),
+        None => make(),
+    }
 }
 
 /// What both windows are: transparent, without a frame or a shadow of their own (the page draws the shadows), above
@@ -1604,6 +1616,40 @@ mod tests {
             spot((276.0, 262.0), (428.0, 120.0), ON_PRIMARY, &[broken]),
             logical
         );
+    }
+
+    // ---- The platform layer ---------------------------------------------------------------------------------------
+
+    #[test]
+    fn the_panels_ask_the_platform_layer_that_the_app_manages_and_build_none_of_their_own() {
+        use crate::dictation::controller::fakes::{CallLog, FakePlatform};
+        use crate::platform::rules::Os;
+        use tauri::test::mock_builder;
+
+        let managed = FakePlatform::new(Os::Mac, Arc::new(CallLog::default()));
+        let shared: Arc<dyn Platform> = managed.clone();
+        let app = mock_builder()
+            .manage(platform::SystemPlatform(shared.clone()))
+            .build(crate::context())
+            .unwrap();
+
+        let used = shared_platform(app.handle(), || panic!("a second platform layer was built"));
+
+        assert!(Arc::ptr_eq(&used, &shared));
+    }
+
+    #[test]
+    fn without_a_managed_platform_layer_the_panels_make_one() {
+        use crate::dictation::controller::fakes::{CallLog, FakePlatform};
+        use crate::platform::rules::Os;
+        use tauri::test::mock_builder;
+
+        let app = mock_builder().build(crate::context()).unwrap();
+        let made: Arc<dyn Platform> = FakePlatform::new(Os::Mac, Arc::new(CallLog::default()));
+
+        let used = shared_platform(app.handle(), || made.clone());
+
+        assert!(Arc::ptr_eq(&used, &made));
     }
 
     // ---- A window the system hid ----------------------------------------------------------------------------------
