@@ -100,7 +100,9 @@ fn controller_toggle_flow_pastes_and_shows_chip() {
 
     // Written into the field the person was in.
     assert_eq!(*fx.clipboard.writes.lock().unwrap(), ["Hello, world."]);
-    assert_eq!(*fx.keys.forwarded.lock().unwrap(), [text_edit()]);
+    // Asked to come forward by the controller, which looks at its field, and again by the paste.
+    let forwarded = fx.keys.forwarded.lock().unwrap().clone();
+    assert!(!forwarded.is_empty() && forwarded.iter().all(|app| *app == text_edit()));
     assert_eq!(
         *fx.keys.pastes.lock().unwrap(),
         [(false, false)],
@@ -152,8 +154,9 @@ fn controller_toggle_flow_pastes_and_shows_chip() {
         .any(|n| n == "20261109-101530.wav" || n.ends_with(".wav")));
     assert_eq!(fx.files_in(&fx.temp_dir()), Vec::<String>::new());
 
-    // The shortcut was told that the dictation is over, and nothing is left running.
-    assert!(fx.resets.load(Ordering::SeqCst) >= 2);
+    // The shortcut was told that the dictation is over (not by the press that stopped it, see the test of that), and nothing
+    // is left running.
+    assert_eq!(fx.resets.load(Ordering::SeqCst), 1);
     assert!(fx.jobs.cancel_all_and_wait(Duration::from_secs(2)));
 }
 
@@ -188,6 +191,46 @@ fn controller_no_field_shows_card() {
 }
 
 #[test]
+fn controller_card_shows_the_text_as_heard_while_the_ai_and_the_api_work_on_it() {
+    // The AI edits: the card is up with what was heard, which it can't be typed in yet, and the result replaces it.
+    let fx = Fixture::new();
+    fx.platform.lookups.set([FieldLookup::NoField]);
+    let gate = Gate::closed();
+    *fx.backend.refine_gate.lock().unwrap() = Some(gate.clone());
+    fx.start_listening();
+    fx.talk(1);
+    fx.press();
+    fx.wait_for("the card to wait for the AI", || {
+        let card = fx.ui.last();
+        card.view == View::Card && card.phase == Phase::Refining
+    });
+    let waiting = fx.ui.last();
+    assert_eq!(waiting.text, "hello world");
+    assert_eq!(
+        waiting.working.as_ref().map(|w| w.kind),
+        Some(WorkKind::Editing)
+    );
+    gate.open();
+    fx.wait_for("the result", || fx.ui.last().text == "Hello, world.");
+    assert_eq!(fx.ui.last().phase, Phase::Review);
+
+    // The API hears the recording again: the same, with the local text in the card meanwhile.
+    let fx = Fixture::new();
+    fx.platform.lookups.set([FieldLookup::NoField]);
+    fx.uses_the_api(TranscribePreset::OpenAi);
+    *fx.backend.transcribe_gate.lock().unwrap() = Some(Gate::closed());
+    fx.start_listening();
+    fx.talk(1);
+    fx.press();
+    fx.wait_for("the card to wait for the API", || {
+        let card = fx.ui.last();
+        card.view == View::Card
+            && card.working.as_ref().map(|w| w.kind) == Some(WorkKind::Retranscribing)
+    });
+    assert_eq!(fx.ui.last().text, "hello world");
+}
+
+#[test]
 fn controller_password_field_never_pastes() {
     let fx = Fixture::new();
     // The platform layer answers `NoField` for a password field.
@@ -200,6 +243,90 @@ fn controller_password_field_never_pastes() {
         "send_paste was called"
     );
     assert!(fx.clipboard.writes.lock().unwrap().is_empty());
+}
+
+#[test]
+fn controller_the_field_is_looked_at_and_read_after_the_app_is_in_front_and_before_the_paste() {
+    let fx = Fixture::new();
+    fx.dictate_to_chip();
+    // The first thing that is asked of the system after the recording (the field was looked at when it began) is the app, to
+    // come forward; then the look at the field that is in front, the reading of its text, and the paste, whose own wait for
+    // the app finds it in front.
+    let calls = fx.log.all();
+    let forward = calls.iter().position(|c| *c == "forward").unwrap();
+    let delivery = &calls[forward..];
+    assert_eq!(delivery[..3], ["forward", "look", "snapshot"], "{calls:?}");
+    let paste = delivery.iter().position(|c| *c == "paste").unwrap();
+    assert!(paste > 2, "{calls:?}");
+}
+
+#[test]
+fn controller_a_password_field_is_found_in_the_target_app_after_the_person_switched_apps() {
+    let fx = Fixture::new();
+    // A field when the dictation begins; then the person goes to another app while the text is made, and the field that the
+    // target app has in front when it comes forward again is a password field.
+    fx.platform.lookups.set([a_field(), FieldLookup::NoField]);
+    fx.start_listening();
+    fx.talk(1);
+    fx.platform.set_front(Some(crate::platform::AppId {
+        id: "com.apple.Safari".into(),
+        pid: Some(77),
+    }));
+    fx.press();
+    fx.wait_for_view(View::Card);
+    fx.wait_for("the card", || fx.ui.last().phase == Phase::Review);
+
+    assert!(fx.keys.pastes.lock().unwrap().is_empty());
+    assert!(fx.clipboard.writes.lock().unwrap().is_empty());
+    assert_eq!(error_key(&fx.ui.last()), Some("dictation.not_written"));
+    assert_eq!(fx.ui.last().text, "Hello, world.");
+}
+
+#[test]
+fn controller_the_text_of_a_card_is_not_pasted_into_a_password_field_either() {
+    let fx = Fixture::new();
+    fx.dictate_to_chip();
+    fx.ctl.open_card(false);
+    fx.wait_for_view(View::Card);
+    // This app is in front while its card is up, and the field of the app behind it has become a password field.
+    fx.platform.set_front(Some(crate::platform::AppId {
+        id: "io.dictate".into(),
+        pid: Some(OWN_PID),
+    }));
+    fx.platform.lookups.set([FieldLookup::NoField]);
+
+    fx.ctl.card_text("Final words.");
+    fx.ctl.paste_card("Final words.");
+    fx.wait_for("the card again", || {
+        fx.ui.last().view == View::Card && error_key(&fx.ui.last()) == Some("dictation.not_written")
+    });
+    assert_eq!(
+        fx.keys.pastes.lock().unwrap().len(),
+        1,
+        "only the first paste was made"
+    );
+    assert_eq!(fx.ui.last().text, "Final words.");
+}
+
+#[test]
+fn controller_the_text_of_a_card_is_read_after_the_app_is_in_front_not_while_the_card_is() {
+    let fx = Fixture::new();
+    fx.dictate_to_chip();
+    fx.ctl.open_card(false);
+    fx.wait_for_view(View::Card);
+    fx.platform.set_front(Some(crate::platform::AppId {
+        id: "io.dictate".into(),
+        pid: Some(OWN_PID),
+    }));
+    let before = fx.log.all().len();
+
+    fx.ctl.paste_card("Final words.");
+    fx.run_until("the chip again", || {
+        fx.chip_is_up() && fx.ui.last().text == "Final words."
+    });
+    let calls = fx.log.all()[before..].to_vec();
+    assert_eq!(calls[..3], ["forward", "look", "snapshot"], "{calls:?}");
+    assert!(calls.contains(&"paste"), "{calls:?}");
 }
 
 #[test]
@@ -257,6 +384,40 @@ fn controller_hold_mode_ignores_the_press_while_recording_and_stops_on_release()
     fx.wait_for("the end of the recording", || {
         fx.ui.last().phase != Phase::Recording
     });
+}
+
+#[test]
+fn controller_the_press_that_stops_a_toggle_dictation_does_not_reset_the_shortcut() {
+    // The key is still down at that moment: the gate knows it, and a reset would make the repeats of a held key presses.
+    let fx = Fixture::new();
+    // The AI never answers, so that nothing else ends the dictation (and resets) meanwhile.
+    *fx.backend.refine_gate.lock().unwrap() = Some(Gate::closed());
+    fx.start_listening();
+    fx.talk(1);
+    assert_eq!(fx.resets.load(Ordering::SeqCst), 0);
+    fx.press();
+    fx.wait_for("the AI to be editing", || fx.ui.last().working.is_some());
+    assert_eq!(
+        fx.resets.load(Ordering::SeqCst),
+        0,
+        "the press that stops reset the shortcut"
+    );
+
+    // Every other way of ending a recording does: the Stop button and Return of the pill, a release in hold mode.
+    let fx = Fixture::new();
+    *fx.backend.refine_gate.lock().unwrap() = Some(Gate::closed());
+    fx.start_listening();
+    fx.talk(1);
+    fx.ctl.stop();
+    assert_eq!(fx.resets.load(Ordering::SeqCst), 1);
+
+    let fx = Fixture::new();
+    fx.change_settings(|s| s.push_to_talk = true);
+    *fx.backend.refine_gate.lock().unwrap() = Some(Gate::closed());
+    fx.start_listening();
+    fx.talk(1);
+    fx.release();
+    assert_eq!(fx.resets.load(Ordering::SeqCst), 1);
 }
 
 #[test]
@@ -381,6 +542,18 @@ fn controller_cancel_without_saving_leaves_no_audio_behind() {
         fx.files_in(&fx.temp_dir()).is_empty()
     });
     assert!(fx.saved_files().is_empty());
+}
+
+#[test]
+fn controller_a_dictation_that_is_not_saved_leaves_nothing_behind_not_even_its_text() {
+    let fx = Fixture::new();
+    fx.change_settings(|s| s.save_recordings = false);
+    fx.dictate_to_chip();
+    assert_eq!(fx.ui.last().text, "Hello, world.");
+
+    // The audio is a temporary file that is deleted, and the transcript is written nowhere.
+    assert_eq!(fx.files_in(&fx.temp_dir()), Vec::<String>::new());
+    assert_eq!(fx.saved_files(), Vec::<String>::new());
 }
 
 #[test]
@@ -572,6 +745,28 @@ fn controller_silence_is_a_notice_and_the_recording_goes_on() {
     fx.press();
     fx.run_until("the chip", || fx.chip_is_up());
     assert_eq!(fx.ui.last().text, "Hello, world.");
+}
+
+#[test]
+fn controller_the_silence_notice_goes_when_the_microphone_is_heard_again() {
+    let fx = Fixture::new();
+    fx.stt.say("");
+    fx.start_listening();
+    fx.mic.send(CaptureEvent::Error(CaptureError::Silent));
+    fx.wait_for("the notice", || {
+        error_key(&fx.ui.last()) == Some("audio.silent")
+    });
+
+    // The person allowed the microphone, or unmuted it: sound comes in.
+    fx.say(0.5);
+    fx.wait_for("the notice to go", || fx.ui.last().error.is_none());
+    assert_eq!(fx.ui.last().phase, Phase::Recording);
+
+    // A take that was silent only at the start is not "silent" when it ends with nothing heard.
+    fx.press();
+    fx.run_until("the chip", || fx.chip_is_up());
+    assert_eq!(fx.ui.last().notice, notice(NoticeKey::NothingHeard));
+    assert_eq!(fx.ui.last().error, None);
 }
 
 #[test]
@@ -844,7 +1039,14 @@ fn controller_rewrite_pastes_fresh_text() {
     );
     assert!(fx.monitor.running.load(Ordering::SeqCst));
     // The app of the field was brought forward again.
-    assert_eq!(fx.keys.forwarded.lock().unwrap().len(), 2);
+    assert!(fx
+        .keys
+        .forwarded
+        .lock()
+        .unwrap()
+        .iter()
+        .all(|app| *app == text_edit()));
+    assert!(fx.keys.forwarded.lock().unwrap().len() >= 2);
     // While the new text was made, the bubble said what was going on.
     assert!(fx.ui.history().iter().any(|s| {
         s.phase == Phase::Working
@@ -1439,4 +1641,28 @@ fn controller_local_speech_recognition_that_fails_says_so_instead_of_nothing_hea
     assert!(fx.keys.pastes.lock().unwrap().is_empty());
     // What was said is still kept.
     assert!(fx.saved_files().iter().any(|n| n.ends_with(".wav")));
+}
+
+#[test]
+fn controller_a_bug_while_the_shortcut_is_handled_ends_that_dictation_and_the_shortcut_goes_on_working(
+) {
+    let fx = Fixture::new();
+    // Showing the panels fails once, in the middle of the handling of the press that starts a dictation.
+    fx.ui.panic_next.store(true, Ordering::SeqCst);
+    fx.press();
+
+    assert_eq!(fx.ui.last().view, View::Hidden);
+    assert_eq!(fx.ui.last().phase, Phase::Hidden);
+    assert!(
+        fx.jobs.cancel_all_and_wait(Duration::from_secs(2)),
+        "a dictation was left running"
+    );
+    assert_eq!(fx.mic.starts.load(Ordering::SeqCst), 0);
+
+    // The next press starts a dictation as if nothing had happened.
+    fx.start_listening();
+    fx.talk(1);
+    fx.press();
+    fx.run_until("the chip", || fx.chip_is_up());
+    assert_eq!(fx.ui.last().text, "Hello, world.");
 }

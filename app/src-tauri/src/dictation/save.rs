@@ -8,9 +8,8 @@ use std::path::{Path, PathBuf};
 use chrono::NaiveDateTime;
 use dictate_services::audio::wav;
 
-/// The prefix and the extension of the temporary audio files.
+/// The prefix of the temporary files of a dictation that isn't saved: `dictate-<stamp>.wav`.
 const TEMP_PREFIX: &str = "dictate-";
-const TEMP_EXTENSION: &str = "wav";
 
 /// The two folders a dictation writes to.
 #[derive(Debug, Clone)]
@@ -46,12 +45,12 @@ pub fn stamp(now: NaiveDateTime) -> String {
 }
 
 /// Writes the 16 kHz audio of a dictation: into the saved folder when `save`, else (or when that fails) into the
-/// temporary one. `id` tells the temporary files of one run apart. A file that could not be written whole is deleted.
+/// temporary one as `dictate-<stamp>.wav`. A second one in the same second gets `-2` after the stamp. A file that could not be
+/// written whole is deleted.
 pub fn write_take(
     paths: &SavePaths,
     save: bool,
     now: NaiveDateTime,
-    id: u64,
     samples_16k: &[f32],
 ) -> io::Result<Take> {
     if save {
@@ -64,12 +63,31 @@ pub fn write_take(
         }
     }
     fs::create_dir_all(&paths.temp)?;
-    let wav = paths.temp.join(format!(
-        "{TEMP_PREFIX}{}-{id}.{TEMP_EXTENSION}",
-        std::process::id()
-    ));
+    let wav = temp_path(&paths.temp, &format!("{TEMP_PREFIX}{}", stamp(now)))?;
     write_checked(&wav, samples_16k, wav::write_16k_mono)?;
     Ok(Take { wav, saved: false })
+}
+
+/// A file `name.wav` in `dir` that is not there yet, or `name-2.wav`, `name-3.wav`; the name is taken by making the file, so that
+/// two dictations never share one.
+fn temp_path(dir: &Path, name: &str) -> io::Result<PathBuf> {
+    for n in 1.. {
+        let wav = if n == 1 {
+            dir.join(format!("{name}.wav"))
+        } else {
+            dir.join(format!("{name}-{n}.wav"))
+        };
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&wav)
+        {
+            Ok(_) => return Ok(wav),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e),
+        }
+    }
+    unreachable!("the numbers do not run out")
 }
 
 /// The file for a saved dictation with the base name `stamp`, in `dir` (made when it is missing). A second one in the
@@ -100,9 +118,10 @@ fn write_checked(
     })
 }
 
-/// Writes the text of a saved dictation next to its audio, as UTF-8, when there is any.
+/// Writes the text of a saved dictation next to its audio, as UTF-8, when there is any. A dictation that isn't saved has no text
+/// file: it would be a transcript left in the temporary folder.
 pub fn write_text(take: &Take, text: &str) -> io::Result<()> {
-    if text.trim().is_empty() {
+    if !take.saved || text.trim().is_empty() {
         return Ok(());
     }
     fs::write(text_path(&take.wav), text)
@@ -113,35 +132,45 @@ pub fn text_path(wav: &Path) -> PathBuf {
     wav.with_extension("txt")
 }
 
-/// Deletes the audio of a dictation that isn't saved. A saved one stays.
+/// Deletes the audio of a dictation that isn't saved, and any text beside it. A saved one stays.
 pub fn discard_if_temporary(take: &Take) {
     if take.saved {
         return;
     }
-    if let Err(e) = fs::remove_file(&take.wav) {
-        if e.kind() != io::ErrorKind::NotFound {
-            log::warn!("Could not delete the temporary recording: {e}");
+    for file in [&take.wav, &text_path(&take.wav)] {
+        if let Err(e) = fs::remove_file(file) {
+            if e.kind() != io::ErrorKind::NotFound {
+                log::warn!("Could not delete a temporary file of a dictation: {e}");
+            }
         }
     }
 }
 
-/// Deletes the temporary audio files that an earlier run left behind. How many there were.
+/// Deletes the temporary files (audio and text) that an earlier run left behind. How many there were.
 pub fn sweep_temp(temp: &Path) -> usize {
     let Ok(entries) = fs::read_dir(temp) else {
         return 0;
     };
     entries
         .flatten()
-        .filter(|entry| is_temporary_audio(&entry.file_name().to_string_lossy()))
+        .filter(|entry| is_temporary_file(&entry.file_name().to_string_lossy()))
         .filter(|entry| fs::remove_file(entry.path()).is_ok())
         .count()
 }
 
-/// Whether the name is one of a temporary recording: `dictate-` and the rest, ending in `.wav`.
-fn is_temporary_audio(name: &str) -> bool {
-    name.strip_prefix(TEMP_PREFIX)
-        .and_then(|rest| rest.strip_suffix(TEMP_EXTENSION))
-        .is_some_and(|rest| rest.ends_with('.'))
+/// Whether the name is one of a dictation's temporary files: `dictate-`, then only digits and dashes (the stamp, and a number
+/// after it), ending in `.wav` or `.txt`. Nothing else of the shared temporary folder is touched.
+fn is_temporary_file(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix(TEMP_PREFIX) else {
+        return false;
+    };
+    let Some(base) = rest
+        .strip_suffix(".wav")
+        .or_else(|| rest.strip_suffix(".txt"))
+    else {
+        return false;
+    };
+    !base.is_empty() && base.chars().all(|c| c.is_ascii_digit() || c == '-')
 }
 
 #[cfg(test)]
@@ -179,7 +208,7 @@ mod tests {
         fs::create_dir_all(&paths.temp).unwrap();
 
         // Saved: the audio and the text have one base name in the folder of the dictations, which is made on the way.
-        let take = write_take(&paths, true, at(10, 15, 30), 1, &tone()).unwrap();
+        let take = write_take(&paths, true, at(10, 15, 30), &tone()).unwrap();
         assert_eq!(
             take,
             Take {
@@ -193,7 +222,7 @@ mod tests {
             "héllo wörld"
         );
         // The second one in the same second doesn't write over the first.
-        let second = write_take(&paths, true, at(10, 15, 30), 2, &tone()).unwrap();
+        let second = write_take(&paths, true, at(10, 15, 30), &tone()).unwrap();
         assert_eq!(second.wav, paths.dir.join("20261109-101530-2.wav"));
         write_text(&second, "again").unwrap();
         assert!(paths.dir.join("20261109-101530-2.txt").is_file());
@@ -202,29 +231,47 @@ mod tests {
             "héllo wörld"
         );
 
-        // Not saved: a temporary file, which goes after use. A saved one stays.
-        let temporary = write_take(&paths, false, at(10, 15, 31), 3, &tone()).unwrap();
+        // Not saved: a temporary file named by the time, which goes after use. A saved one stays.
+        let temporary = write_take(&paths, false, at(10, 15, 31), &tone()).unwrap();
         assert!(!temporary.saved);
-        assert_eq!(temporary.wav.parent().unwrap(), paths.temp);
-        let name = temporary.wav.file_name().unwrap().to_string_lossy();
-        assert!(
-            name.starts_with("dictate-") && name.ends_with(".wav"),
-            "{name}"
+        assert_eq!(
+            temporary.wav,
+            paths.temp.join("dictate-20261109-101531.wav")
         );
         assert!(temporary.wav.is_file());
+        // Two in the same second don't write over each other.
+        let twin = write_take(&paths, false, at(10, 15, 31), &tone()).unwrap();
+        assert_eq!(twin.wav, paths.temp.join("dictate-20261109-101531-2.wav"));
+        // The text of a dictation that isn't saved is not written anywhere: it would be a transcript left in the temporary folder.
+        write_text(&temporary, "private words").unwrap();
+        assert_eq!(
+            fs::read_dir(&paths.temp).unwrap().count(),
+            2,
+            "a text file was written for a recording that is not saved"
+        );
+        // Whatever text a temporary recording has beside it goes with it.
+        fs::write(text_path(&temporary.wav), "stray").unwrap();
         discard_if_temporary(&temporary);
         assert!(!temporary.wav.exists());
+        assert!(!text_path(&temporary.wav).exists());
+        discard_if_temporary(&twin);
         discard_if_temporary(&take);
         assert!(take.wav.is_file(), "a saved dictation is kept");
+        assert!(paths.dir.join("20261109-101530.txt").is_file());
 
-        // The sweep takes the leftovers of an earlier run, and nothing else.
+        // The sweep takes the leftovers of an earlier run, audio and text, and nothing else.
+        fs::write(paths.temp.join("dictate-20261109-101532.wav"), b"x").unwrap();
+        fs::write(paths.temp.join("dictate-20261109-101532.txt"), b"x").unwrap();
+        fs::write(paths.temp.join("dictate-20261109-101532-2.wav"), b"x").unwrap();
         fs::write(paths.temp.join("dictate-1234-1.wav"), b"x").unwrap();
         fs::write(paths.temp.join("dictate-old.wav"), b"x").unwrap();
         fs::write(paths.temp.join("dictate-notes.txt"), b"x").unwrap();
         fs::write(paths.temp.join("other.wav"), b"x").unwrap();
-        assert_eq!(sweep_temp(&paths.temp), 2);
+        assert_eq!(sweep_temp(&paths.temp), 4);
+        assert!(!paths.temp.join("dictate-20261109-101532.wav").exists());
+        assert!(!paths.temp.join("dictate-20261109-101532.txt").exists());
         assert!(!paths.temp.join("dictate-1234-1.wav").exists());
-        assert!(!paths.temp.join("dictate-old.wav").exists());
+        assert!(paths.temp.join("dictate-old.wav").exists());
         assert!(paths.temp.join("dictate-notes.txt").exists());
         assert!(paths.temp.join("other.wav").exists());
         // A folder that isn't there has nothing to sweep.
@@ -235,7 +282,7 @@ mod tests {
     fn an_empty_text_is_not_written() {
         let root = tempfile::tempdir().unwrap();
         let paths = paths(root.path());
-        let take = write_take(&paths, true, at(9, 0, 0), 1, &tone()).unwrap();
+        let take = write_take(&paths, true, at(9, 0, 0), &tone()).unwrap();
         write_text(&take, "  \n").unwrap();
         assert!(!text_path(&take.wav).exists());
     }
@@ -243,7 +290,7 @@ mod tests {
     #[test]
     fn the_audio_is_a_16_khz_wav() {
         let root = tempfile::tempdir().unwrap();
-        let take = write_take(&paths(root.path()), true, at(9, 0, 0), 1, &tone()).unwrap();
+        let take = write_take(&paths(root.path()), true, at(9, 0, 0), &tone()).unwrap();
         // The header of a WAV file: channels at byte 22, the sample rate at byte 24.
         let bytes = fs::read(&take.wav).unwrap();
         assert_eq!(&bytes[..4], b"RIFF");
@@ -274,7 +321,7 @@ mod tests {
         fs::create_dir_all(root.path().join("temp")).unwrap();
         // A file where the folder of the dictations should be.
         fs::write(root.path().join("saved"), b"in the way").unwrap();
-        let take = write_take(&paths(root.path()), true, at(9, 0, 0), 7, &tone()).unwrap();
+        let take = write_take(&paths(root.path()), true, at(9, 0, 0), &tone()).unwrap();
         assert!(!take.saved, "{take:?}");
         assert!(take.wav.starts_with(root.path().join("temp")));
         assert!(take.wav.is_file());
@@ -286,7 +333,7 @@ mod tests {
         // Neither folder can be written to: the temporary one is a file.
         fs::write(root.path().join("temp"), b"in the way").unwrap();
         fs::write(root.path().join("saved"), b"in the way").unwrap();
-        assert!(write_take(&paths(root.path()), true, at(9, 0, 0), 1, &tone()).is_err());
-        assert!(write_take(&paths(root.path()), false, at(9, 0, 0), 1, &tone()).is_err());
+        assert!(write_take(&paths(root.path()), true, at(9, 0, 0), &tone()).is_err());
+        assert!(write_take(&paths(root.path()), false, at(9, 0, 0), &tone()).is_err());
     }
 }

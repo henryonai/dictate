@@ -232,7 +232,7 @@ pub fn start(
     app: AppHandle,
     state: AppState,
     handle: DictationHandle,
-    mut events: UnboundedReceiver<HotkeyEvent>,
+    events: UnboundedReceiver<HotkeyEvent>,
 ) {
     tauri::async_runtime::spawn_blocking(move || {
         // The first call asks the key store, which may wait for the person; the controller reads only the flags.
@@ -246,12 +246,26 @@ pub fn start(
         };
         handle.set(controller.clone());
         log::info!("Dictation is ready");
-        tauri::async_runtime::spawn(async move {
-            while let Some(event) = events.recv().await {
+        if let Err(e) = listen_for_the_shortcut(controller, events) {
+            log::error!("Could not start listening for the shortcut: {e}");
+        }
+    });
+}
+
+/// Hands what the shortcut, the tray and `dictate --toggle` say to the controller, one at a time, until the channel is closed.
+/// It has a thread of its own: handling a press shows windows, which asks the main thread and may wait for it, and that is not
+/// work for a thread that the rest of the app's async work shares.
+fn listen_for_the_shortcut(
+    controller: Arc<Controller>,
+    mut events: UnboundedReceiver<HotkeyEvent>,
+) -> std::io::Result<thread::JoinHandle<()>> {
+    thread::Builder::new()
+        .name("dictation-shortcut".into())
+        .spawn(move || {
+            while let Some(event) = events.blocking_recv() {
                 controller.on_hotkey(event);
             }
-        });
-    });
+        })
 }
 
 #[cfg(test)]
@@ -275,6 +289,29 @@ mod tests {
             (local - wall).num_seconds().abs() < 5,
             "{wall} against {local}"
         );
+    }
+
+    #[test]
+    fn the_shortcut_is_heard_on_a_thread_of_its_own_and_goes_on_after_a_bug() {
+        use std::sync::atomic::Ordering;
+        use tokio::sync::mpsc::unbounded_channel;
+
+        let fixture = Fixture::new();
+        let (tx, rx) = unbounded_channel();
+        let listening = listen_for_the_shortcut(fixture.ctl.clone(), rx).unwrap();
+
+        // The first press meets a bug; the one after it is heard all the same.
+        fixture.ui.panic_next.store(true, Ordering::SeqCst);
+        tx.send(HotkeyEvent::Pressed).unwrap();
+        tx.send(HotkeyEvent::Released).unwrap();
+        tx.send(HotkeyEvent::Pressed).unwrap();
+        fixture.wait_for("a recording", || {
+            fixture.mic.starts.load(Ordering::SeqCst) == 1
+        });
+
+        // The thread ends with the channel.
+        drop(tx);
+        listening.join().unwrap();
     }
 
     #[test]

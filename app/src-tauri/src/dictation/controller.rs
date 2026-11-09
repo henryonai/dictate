@@ -122,6 +122,8 @@ const LANDING_SECOND: Duration = Duration::from_millis(400);
 /// The shortest recording that is transcribed or kept: a fifth of a second at 16 kHz. Whisper takes nothing shorter, and a
 /// recording that short is a tap of the shortcut, not speech.
 const MIN_TAKE_SAMPLES: usize = 3_200;
+/// The key of the error that the microphone gives only silence.
+const SILENT: &str = "audio.silent";
 /// How long an app is given to come forward again, in real time: how often it is asked, and how many times.
 const FOCUS_POLL: Duration = Duration::from_millis(25);
 const FOCUS_POLLS: u32 = 20;
@@ -330,8 +332,33 @@ impl Controller {
 
     // ---- the hotkey ---------------------------------------------------------------------------------------------------
 
-    /// What the shortcut, the tray or `dictate --toggle` says.
+    /// What the shortcut, the tray or `dictate --toggle` says. A bug in the handling ends the dictation that is current, and no
+    /// more: the shortcut works for the next event.
     pub fn on_hotkey(&self, event: HotkeyEvent) {
+        if catch_unwind(AssertUnwindSafe(|| self.handle_hotkey(event))).is_err() {
+            log::error!("The shortcut was handled with a bug: ending the dictation");
+            self.end_whatever_is_going_on();
+        }
+    }
+
+    /// Everything is dropped and the panels hide: the way out of a state that can't be trusted. It may fail on its own, which
+    /// must not take the thread down either.
+    fn end_whatever_is_going_on(&self) {
+        let ended = catch_unwind(AssertUnwindSafe(|| {
+            {
+                let mut inner = self.inner();
+                self.drop_everything(&mut inner);
+            }
+            self.deps.monitor.stop();
+            self.publish();
+            (self.deps.hotkey_reset)();
+        }));
+        if ended.is_err() {
+            log::error!("Could not end the dictation after a bug");
+        }
+    }
+
+    fn handle_hotkey(&self, event: HotkeyEvent) {
         let hold_mode = self.deps.settings.get().push_to_talk;
         let action = {
             let inner = self.inner();
@@ -350,7 +377,9 @@ impl Controller {
         log::debug!("The shortcut says {event:?}: {action:?}");
         match action {
             Action::Start => self.start(),
-            Action::Stop => self.stop(),
+            // The press that stops a toggle dictation: the key is still down, the gate of the shortcut knows it, and telling it
+            // otherwise would make the repeats of a held key presses.
+            Action::Stop => self.stop_recording(event != HotkeyEvent::Pressed),
             Action::WriteNow => self.write_now(),
             Action::Ignore => {}
         }
@@ -418,8 +447,13 @@ impl Controller {
         (id, guard)
     }
 
-    /// The Stop button of the pill and Return, and the shortcut in toggle mode: stops the recording and writes.
+    /// The Stop button of the pill and Return: stops the recording and writes.
     pub fn stop(&self) {
+        self.stop_recording(true);
+    }
+
+    /// Stops the recording. `reset_shortcut` tells the gate of the shortcut that its key is up (see `Hotkeys::reset`).
+    fn stop_recording(&self, reset_shortcut: bool) {
         {
             let mut inner = self.inner();
             if inner.panel.phase != Phase::Recording {
@@ -431,7 +465,9 @@ impl Controller {
             run.stop = true;
             inner.panel.phase = Phase::Finishing;
         }
-        (self.deps.hotkey_reset)();
+        if reset_shortcut {
+            (self.deps.hotkey_reset)();
+        }
         self.publish();
     }
 
@@ -657,7 +693,7 @@ impl Controller {
             Err(CaptureError::Stream(detail)) => {
                 return self.fail(id, PanelError::with_detail("audio.start_failed", detail));
             }
-            Err(CaptureError::Silent) => return self.fail(id, PanelError::new("audio.silent")),
+            Err(CaptureError::Silent) => return self.fail(id, PanelError::new(SILENT)),
         };
         let live = Arc::new(Mutex::new(LiveText::new()));
         let recording = self.record(id, token, capture, &rx, &live, local);
@@ -742,12 +778,14 @@ impl Controller {
             match rx.recv_timeout(POLL) {
                 Ok(CaptureEvent::Samples(buffer)) => {
                     let now = self.deps.clock.now();
-                    self.meter(id, level::level(&buffer), now, started);
+                    if self.meter(id, level::level(&buffer), now, started) {
+                        silent = false;
+                    }
                     raw.extend_from_slice(&buffer);
                 }
                 Ok(CaptureEvent::Error(CaptureError::Silent)) => {
                     silent = true;
-                    self.set_error(id, Some(PanelError::new("audio.silent")));
+                    self.set_error(id, Some(PanelError::new(SILENT)));
                 }
                 Ok(CaptureEvent::Error(error)) => {
                     broken = Some(match error {
@@ -822,24 +860,31 @@ impl Controller {
         self.publish();
     }
 
-    /// The level and the time of the recording go to the panels, not more than 20 times a second.
-    fn meter(&self, id: u64, level: f32, now: Instant, started: Instant) {
+    /// The level and the time of the recording go to the panels, not more than 20 times a second. A sound above the level of
+    /// silence takes the notice that the microphone hears only silence away, at once; whether it did is the answer.
+    fn meter(&self, id: u64, level: f32, now: Instant, started: Instant) -> bool {
+        let mut heard_again = false;
         {
             let mut inner = self.inner();
             if !inner.is_current(id) || inner.panel.phase != Phase::Recording {
-                return;
+                return false;
             }
             inner.panel.level = level;
             inner.panel.duration_s = now.saturating_duration_since(started).as_secs_f64();
+            if level > 0.0 && inner.panel.error.as_ref().is_some_and(|e| e.key == SILENT) {
+                inner.panel.error = None;
+                heard_again = true;
+            }
             let due = inner
                 .last_meter
                 .is_none_or(|last| now.saturating_duration_since(last) >= METER_EVERY);
-            if !due {
-                return;
+            if !due && !heard_again {
+                return false;
             }
             inner.last_meter = Some(now);
         }
         self.publish();
+        heard_again
     }
 
     fn set_error(&self, id: u64, error: Option<PanelError>) {
@@ -930,7 +975,7 @@ impl Controller {
         let take = if samples.is_empty() {
             None
         } else {
-            self.write_audio(id, &settings, &samples)
+            self.write_audio(&settings, &samples)
         };
         if recording.end == End::Gone || self.flow(id, token) == Flow::Gone {
             return self.abandon(take);
@@ -1025,7 +1070,7 @@ impl Controller {
         let audio_error = if let Some(detail) = recording.broken {
             Some(PanelError::with_detail("audio.stream", detail))
         } else if recording.silent && outcome.text.trim().is_empty() {
-            Some(PanelError::new("audio.silent"))
+            Some(PanelError::new(SILENT))
         } else {
             None
         };
@@ -1050,12 +1095,11 @@ impl Controller {
     }
 
     /// Writes the audio of the take where `save_recordings` says. The recording is lost only if no folder can be written to.
-    fn write_audio(&self, id: u64, settings: &Settings, samples: &[f32]) -> Option<Take> {
+    fn write_audio(&self, settings: &Settings, samples: &[f32]) -> Option<Take> {
         match save::write_take(
             &self.deps.files,
             settings.save_recordings,
             self.deps.clock.wall(),
-            id,
             samples,
         ) {
             Ok(take) => Some(take),
@@ -1111,17 +1155,18 @@ impl Controller {
         self.publish();
     }
 
-    /// The pipeline begins. In a text field the bubble goes on to show the text as it is heard; with no field the pill stays
-    /// until the card comes.
+    /// The pipeline begins, and the text as it was heard is what the panel holds: the bubble shows it as it goes on, and the card
+    /// (which comes up when the AI or the API starts on the text, see `progress`) shows it until the result replaces it. With no
+    /// field the pill stays until then.
     fn show_working(&self, id: u64, lookup: &Lookup, text: &str) {
         {
             let mut inner = self.inner();
             if !inner.is_current(id) {
                 return;
             }
+            inner.panel.text = text.to_owned();
             if lookup.target.is_inline() {
                 inner.panel.phase = Phase::Working;
-                inner.panel.text = text.to_owned();
                 inner.panel.working = Some(Working {
                     kind: WorkKind::Writing,
                     style: None,
@@ -1250,8 +1295,10 @@ impl Controller {
         );
     }
 
-    /// Pastes the text into the field, and checks that the field took it. The panels are out of the way, and the field is
-    /// looked at once more first: it may have become a password field since the dictation began.
+    /// Pastes the text into the field, and checks that the field took it. The panels are out of the way first. Then the app comes
+    /// forward and its field is looked at: it may have become a password field since the dictation began, and the person may
+    /// have gone to another app, so what is looked at must be the app that takes the paste, once it is in front. An app that
+    /// will not come forward is left to [`Controller::paste`], which says so.
     fn write_into_field(
         &self,
         id: u64,
@@ -1259,10 +1306,6 @@ impl Controller {
         app: &AppId,
         terminal: bool,
     ) -> Result<(), PanelError> {
-        if let Some(reason) = self.field_turned_away(app) {
-            log::info!("Not pasting: the field is {reason:?} now");
-            return Err(PanelError::new("dictation.not_written"));
-        }
         {
             let mut inner = self.inner();
             if !inner.is_current(id) {
@@ -1279,21 +1322,21 @@ impl Controller {
             });
         }
         self.publish();
-        let result = self.paste(text, app, terminal);
+        let in_front = self.deps.paster.bring_forward(app, &*self.deps.keys);
+        let result = match in_front.then(|| self.field_turned_away()).flatten() {
+            Some(reason) => {
+                log::info!("Not pasting: the field is {reason:?} now");
+                Err(PanelError::new("dictation.not_written"))
+            }
+            None => self.paste(text, app, terminal),
+        };
         self.inner().writing = false;
         result
     }
 
-    /// Why the text must not be pasted into the field after all, if it must not: what is in focus in the app is not a field
-    /// that takes text. Looks at the app only when the person is still in it.
-    fn field_turned_away(&self, app: &AppId) -> Option<CardReason> {
-        let front = self.deps.platform.frontmost_app();
-        if front
-            .as_ref()
-            .is_some_and(|front| !crate::platform::paste::is_app(front, app))
-        {
-            return None;
-        }
+    /// Why the text must not be pasted into the field after all, if it must not: what is in focus in the app that is in front
+    /// is not a field that takes text (or the system can't say, where it is asked to).
+    fn field_turned_away(&self) -> Option<CardReason> {
         match self.deps.platform.focused_field() {
             FieldLookup::Field(_) => None,
             FieldLookup::NoField => Some(CardReason::NoField),

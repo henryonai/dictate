@@ -33,6 +33,20 @@ use crate::state::{lock, Jobs, KeyFlags};
 
 pub const OWN_PID: u32 = 4242;
 
+/// The order in which the system was touched: what a paste does is to be told by what came before it.
+#[derive(Default)]
+pub struct CallLog(Mutex<Vec<&'static str>>);
+
+impl CallLog {
+    pub fn add(&self, what: &'static str) {
+        lock(&self.0).push(what);
+    }
+
+    pub fn all(&self) -> Vec<&'static str> {
+        lock(&self.0).clone()
+    }
+}
+
 // ---- time ------------------------------------------------------------------------------------------------------------
 
 /// A clock that stands still until the test moves it. A thread that sleeps on it wakes when the time it waits for has come.
@@ -220,12 +234,13 @@ pub struct FakePlatform {
     /// While it is closed, looking for the field doesn't finish.
     pub lookup_gate: Mutex<Option<Arc<Gate>>>,
     pub field_lookups: AtomicUsize,
+    log: Arc<CallLog>,
     pub accessibility_requests: AtomicUsize,
     pub mic_requests: AtomicUsize,
 }
 
 impl FakePlatform {
-    fn new(os: Os) -> Arc<FakePlatform> {
+    fn new(os: Os, log: Arc<CallLog>) -> Arc<FakePlatform> {
         Arc::new(FakePlatform {
             front: Mutex::new(Some(text_edit())),
             lookups: Script::new(a_field()),
@@ -247,6 +262,7 @@ impl FakePlatform {
             pending_prompt: Mutex::new(None),
             lookup_gate: Mutex::new(None),
             field_lookups: AtomicUsize::new(0),
+            log,
             accessibility_requests: AtomicUsize::new(0),
             mic_requests: AtomicUsize::new(0),
         })
@@ -270,6 +286,7 @@ impl Platform for FakePlatform {
     }
 
     fn focused_field(&self) -> FieldLookup {
+        self.log.add("look");
         self.field_lookups.fetch_add(1, Ordering::SeqCst);
         let gate = lock(&self.lookup_gate).clone();
         if let Some(gate) = gate {
@@ -279,6 +296,7 @@ impl Platform for FakePlatform {
     }
 
     fn field_snapshot(&self) -> Option<FieldSnapshot> {
+        self.log.add("snapshot");
         if let Some(script) = lock(&self.snapshots).as_ref() {
             return script.next();
         }
@@ -368,6 +386,7 @@ pub struct FakeKeys {
     clock: Arc<FakeClock>,
     monitor: Arc<FakeMonitor>,
     platform: Arc<FakePlatform>,
+    log: Arc<CallLog>,
     /// The apps that were asked to come forward, in order.
     pub forwarded: Mutex<Vec<AppId>>,
     /// One for each paste: whether it was for a terminal, and whether the monitor of the keyboard was running while it
@@ -380,6 +399,7 @@ pub struct FakeKeys {
 
 impl KeySender for FakeKeys {
     fn bring_forward(&self, app: &AppId) -> bool {
+        self.log.add("forward");
         lock(&self.forwarded).push(app.clone());
         let comes = self.forward_ok.load(Ordering::SeqCst);
         if comes {
@@ -396,6 +416,7 @@ impl KeySender for FakeKeys {
         if let Some(error) = lock(&self.paste_error).clone() {
             return Err(error);
         }
+        self.log.add("paste");
         lock(&self.pastes).push((terminal, self.monitor.running.load(Ordering::SeqCst)));
         *lock(&self.last_post) = Some(self.clock.now());
         Ok(())
@@ -662,6 +683,8 @@ impl Backend for FakeBackend {
 
 #[derive(Default)]
 pub struct FakeUi {
+    /// The next state that is shown panics, as a bug in showing a window might.
+    pub panic_next: AtomicBool,
     pub states: Mutex<Vec<PanelState>>,
     pub anchors: Mutex<Vec<Option<Rect>>>,
     pub settings_opened: AtomicUsize,
@@ -682,6 +705,9 @@ impl FakeUi {
 
 impl PanelSink for FakeUi {
     fn show(&self, state: &PanelState) {
+        if self.panic_next.swap(false, Ordering::SeqCst) {
+            panic!("a bug in showing the panels");
+        }
         lock(&self.states).push(state.clone());
     }
 
@@ -711,6 +737,7 @@ pub struct Fixture {
     pub ui: Arc<FakeUi>,
     pub clock: Arc<FakeClock>,
     pub resets: Arc<AtomicUsize>,
+    pub log: Arc<CallLog>,
     pub dir: tempfile::TempDir,
 }
 
@@ -741,13 +768,15 @@ impl Fixture {
         assert_eq!(settings.get().ai_provider, AiProvider::Anthropic);
 
         let clock = FakeClock::new();
-        let platform = FakePlatform::new(os);
+        let log = Arc::new(CallLog::default());
+        let platform = FakePlatform::new(os, log.clone());
         let clipboard = Arc::new(FakeClipboard::default());
         let monitor = Arc::new(FakeMonitor::default());
         let keys = Arc::new(FakeKeys {
             clock: clock.clone(),
             monitor: monitor.clone(),
             platform: platform.clone(),
+            log: log.clone(),
             forwarded: Mutex::default(),
             pastes: Mutex::default(),
             last_post: Mutex::new(None),
@@ -822,6 +851,7 @@ impl Fixture {
             ui,
             clock,
             resets,
+            log,
             dir,
         }
     }

@@ -265,8 +265,10 @@ impl Paster {
     }
 
     /// Asks `target` to come forward and waits until it is: the app that is in front already takes the paste at
-    /// once, one that had to be asked gets a moment to hand the focus to its window. False when it never comes.
-    fn bring_forward(&self, target: &AppId, keys: &dyn KeySender) -> bool {
+    /// once, one that had to be asked gets a moment to hand the focus to its window. False when it never comes. [`Paster::paste`]
+    /// does it too (an app that is in front is asked nothing), so that a caller that must look at the app's field before the
+    /// paste can bring it forward first.
+    pub fn bring_forward(&self, target: &AppId, keys: &dyn KeySender) -> bool {
         if keys.bring_forward(target) {
             return true;
         }
