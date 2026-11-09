@@ -8,7 +8,7 @@
 
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use dictate_core::meetings::library::MeetingLibrary;
@@ -130,11 +130,52 @@ pub struct PermissionsView {
 
 impl PermissionsView {
     /// Whether the person has something to do about the permissions, which is when Settings opens by itself at the
-    /// start: a microphone nobody asked about yet, or Accessibility missing. A microphone that was refused is the
-    /// person's answer, and Settings doesn't open at every start for it.
-    pub fn needs_a_guide(&self) -> bool {
-        self.microphone == Permission::NotDetermined || self.accessibility == Permission::Denied
+    /// start. A microphone nobody asked about yet: until it is answered. Accessibility missing: once (`shown_before`
+    /// is the guide's mark), and only when text is written into fields (`auto_write`): with the card alone nothing
+    /// needs it, and a person who skipped it is not sent to Settings at every login. A microphone that was refused is
+    /// the person's answer, and Settings doesn't open at every start for it.
+    pub fn needs_a_guide(&self, auto_write: bool, shown_before: bool) -> bool {
+        self.microphone == Permission::NotDetermined
+            || (auto_write && !shown_before && self.accessibility == Permission::Denied)
     }
+}
+
+/// The mark that Settings was opened by itself, at a start, for the permissions. A file beside the settings: the
+/// settings are the window's to write whole, and this is not something it should know of.
+pub struct GuideMark(PathBuf);
+
+impl GuideMark {
+    /// The mark that goes with the settings file `settings`.
+    pub fn beside(settings: &Path) -> GuideMark {
+        GuideMark(settings.with_file_name("permission-guide-shown"))
+    }
+
+    /// Whether the guide was shown before.
+    pub fn shown(&self) -> bool {
+        self.0.exists()
+    }
+
+    /// Remembers that the guide was shown. If that can't be written the guide is shown again at the next start, which
+    /// is a nuisance and nothing worse.
+    pub fn set(&self) {
+        let written = self
+            .0
+            .parent()
+            .map_or(Ok(()), fs::create_dir_all)
+            .and_then(|()| fs::write(&self.0, b""));
+        if let Err(e) = written {
+            log::warn!("Could not remember that the permissions guide was shown: {e}");
+        }
+    }
+}
+
+/// Whether Settings opens by itself at this start, for the permissions; when it does, that is remembered.
+pub fn open_guide_at_start(view: &PermissionsView, auto_write: bool, mark: &GuideMark) -> bool {
+    if !view.needs_a_guide(auto_write, mark.shown()) {
+        return false;
+    }
+    mark.set();
+    true
 }
 
 /// Asks the system for both permissions.
@@ -1821,26 +1862,84 @@ mod tests {
     }
 
     #[test]
-    fn the_guide_is_for_a_microphone_not_asked_about_or_a_missing_accessibility_and_for_nothing_else(
-    ) {
+    fn the_guide_is_for_a_microphone_not_asked_about_and_once_for_a_missing_accessibility() {
         use Permission::{Denied, Granted, NotDetermined, NotNeeded};
-        let guide = |microphone, accessibility| {
+        let guide = |microphone, accessibility, auto_write, shown_before| {
             PermissionsView {
                 microphone,
                 accessibility,
             }
-            .needs_a_guide()
+            .needs_a_guide(auto_write, shown_before)
         };
-        assert!(guide(NotDetermined, Granted));
-        assert!(guide(NotDetermined, Denied));
-        assert!(guide(Granted, Denied));
-        assert!(guide(Denied, Denied));
+        // A microphone nobody asked about yet: the guide is there until the person answers, shown before or not.
+        assert!(guide(NotDetermined, Granted, true, false));
+        assert!(guide(NotDetermined, Denied, true, true));
+        assert!(guide(NotDetermined, Denied, false, true));
+        // Accessibility is missing and the text is written into fields: the guide opens once, and not at every start after.
+        assert!(guide(Granted, Denied, true, false));
+        assert!(guide(Denied, Denied, true, false));
+        assert!(!guide(Granted, Denied, true, true));
+        assert!(!guide(Denied, Denied, true, true));
+        // Without the setting that writes into fields nothing needs Accessibility: the card is the whole of it.
+        assert!(!guide(Granted, Denied, false, false));
+        assert!(!guide(Denied, Denied, false, false));
         // Everything is granted: the app starts in the tray, as every time after the first.
-        assert!(!guide(Granted, Granted));
+        assert!(!guide(Granted, Granted, true, false));
         // A microphone that was refused is the person's answer: Settings doesn't open at every start for it.
-        assert!(!guide(Denied, Granted));
+        assert!(!guide(Denied, Granted, true, false));
         // Windows and Linux have nothing to grant.
-        assert!(!guide(NotNeeded, NotNeeded));
+        assert!(!guide(NotNeeded, NotNeeded, true, false));
+    }
+
+    #[test]
+    fn the_guide_opens_at_a_start_and_is_remembered_so_that_a_missing_accessibility_asks_once() {
+        use Permission::{Denied, Granted, NotDetermined};
+        let dir = tempfile::tempdir().unwrap();
+        let mark = GuideMark::beside(&dir.path().join("settings.json"));
+        let view = |microphone, accessibility| PermissionsView {
+            microphone,
+            accessibility,
+        };
+
+        // Accessibility is missing: the first start that finds it opens Settings, and the ones after it don't.
+        assert!(open_guide_at_start(&view(Granted, Denied), true, &mark));
+        assert!(mark.shown());
+        assert!(!open_guide_at_start(&view(Granted, Denied), true, &mark));
+        assert!(!open_guide_at_start(&view(Granted, Denied), true, &mark));
+        // A microphone that is still not answered opens it again.
+        assert!(open_guide_at_start(
+            &view(NotDetermined, Denied),
+            true,
+            &mark
+        ));
+        // The person who keeps no text in fields is never sent to Settings for Accessibility.
+        let card_only = GuideMark::beside(&dir.path().join("other").join("settings.json"));
+        assert!(!open_guide_at_start(
+            &view(Granted, Denied),
+            false,
+            &card_only
+        ));
+        assert!(!card_only.shown());
+    }
+
+    #[test]
+    fn the_guide_is_remembered_beside_the_settings_and_not_before_it_was_shown() {
+        let dir = tempfile::tempdir().unwrap();
+        // The folder of the settings is not there at the first start.
+        let settings = dir.path().join("Dictate").join("settings.json");
+        let mark = GuideMark::beside(&settings);
+        assert!(!mark.shown());
+
+        mark.set();
+
+        assert!(mark.shown());
+        // A later start reads it again from the disk.
+        assert!(GuideMark::beside(&settings).shown());
+        // Setting it twice is no trouble.
+        mark.set();
+        assert!(mark.shown());
+        // It is not the settings file, which the window writes whole.
+        assert!(!settings.exists());
     }
 
     #[test]

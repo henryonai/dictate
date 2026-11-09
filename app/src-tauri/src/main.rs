@@ -169,6 +169,7 @@ fn setup(
         SettingsStore::default_path().ok_or("the system has no folder for the app's settings")?;
     // Without a settings file this is the first start: Settings opens so that a new user sees where to begin.
     let first_launch = !settings_path.exists();
+    let guide_mark = commands::GuideMark::beside(&settings_path);
     let (store, warning) = SettingsStore::open(settings_path);
     if let Some(warning) = &warning {
         log::warn!("{warning}");
@@ -177,6 +178,7 @@ fn setup(
         state::models_base_dir().ok_or("the system has no folder for the app's data")?;
     let models = state::open_model_dir(&models_base)?;
     let initial = store.get();
+    let auto_write = initial.auto_write;
     let lang = tray::language_for(&initial);
     let hotkey = tray::hotkey_label(&initial);
     let accel = initial.hotkey;
@@ -214,10 +216,13 @@ fn setup(
 
     if first_launch {
         log::info!("First launch: showing Settings");
+        // This is the guide too: a missing Accessibility is not offered again at the next start.
+        guide_mark.set();
         tray::show_settings(app.handle());
-    } else if permissions.needs_a_guide() {
-        // The General page has the Permissions section: where to turn on what dictation needs. Once the microphone has
-        // been answered and Accessibility is on, the app starts in the tray again.
+    } else if commands::open_guide_at_start(&permissions, auto_write, &guide_mark) {
+        // The General page has the Permissions section: where to turn on what dictation needs. It opens until the
+        // microphone has been answered, and once for a missing Accessibility (only when text is written into fields):
+        // someone who works with the card alone is not sent there at every login.
         log::info!("A permission is missing: showing Settings");
         tray::show_settings(app.handle());
     }
