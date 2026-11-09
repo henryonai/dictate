@@ -16,6 +16,8 @@ dictate-core = { path = "../dictate-core" }
 dirs = "7.0.0"
 hound = "3.5.1"
 keyring = "3.6.3"
+# Opus audio (webm, mkv, ogg), which symphonia has no decoder for. Pure Rust.
+opus-decoder = "=0.1.1"
 # Kills a whole process tree on cancel (yt-dlp starts ffmpeg): a process group on Unix, a job object on Windows.
 # 9.x and 10.x need Rust 1.87: stay on 8.2 until the minimum Rust version moves up.
 process-wrap = { version = "=8.2.2", default-features = false, features = ["tokio1", "job-object", "process-group", "creation-flags", "kill-on-drop"] }
@@ -24,6 +26,8 @@ reqwest = { version = "0.12.28", default-features = false, features = ["json", "
 rubato = "4.0.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+# Reading the audio of imported files (wav, mp3, m4a, mp4, mkv, webm, ogg, flac, caf, aiff). Pure Rust.
+symphonia = { version = "=0.6.1", default-features = false, features = ["opt-simd", "aac", "isomp4", "mp3", "mkv", "ogg", "wav", "aiff", "flac", "pcm", "vorbis", "alac", "caf"] }
 # Only the memory figures: the default features pull in disks, networks, users and components too.
 sysinfo = { version = "0.36.1", default-features = false, features = ["system"] }
 tokio = { version = "1.54.1", features = ["fs", "io-util", "macros", "process", "rt", "time"] }

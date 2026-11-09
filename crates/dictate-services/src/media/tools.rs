@@ -2,7 +2,8 @@
 //!
 //! `run` starts a program for the pipeline: it puts every line the program prints (stdout and stderr together,
 //! and a progress line ended by `\r` too) into a callback, and on cancel kills the program and everything it
-//! started. The setup every child process gets (the search path, no console window) is in `base_command`.
+//! started. `command` is for a program that is read or written as bytes (ffmpeg decoding or encoding audio) instead.
+//! The setup every child process gets (the search path, no console window) is in `base_command`.
 
 use std::collections::VecDeque;
 use std::ffi::{OsStr, OsString};
@@ -229,6 +230,15 @@ fn base_command(program: &Path, path: &OsStr) -> std::process::Command {
         command.creation_flags(CREATE_NO_WINDOW.0);
     }
     command
+}
+
+/// A command for a program that is read or written as bytes (ffmpeg decoding to PCM, or encoding from it), which
+/// `run` cannot do: it reads lines. The program gets what every child process gets (see `base_command`): the
+/// search path of `search_path()`, Python's output unbuffered, and on Windows no console window. Its input and output
+/// are left as `std::process::Command` has them, to be set by the caller; the caller also has to end the program
+/// (kill it and wait for it) if it is not read to its end.
+pub fn command(program: &Path) -> std::process::Command {
+    base_command(program, &search_path())
 }
 
 /// Cuts a stream of bytes into lines, ending a line at `\n` or `\r` (ffmpeg and yt-dlp redraw their progress
@@ -753,6 +763,38 @@ mod tests {
 
         assert_eq!(
             lines,
+            [
+                "PYTHONUNBUFFERED=1".to_string(),
+                format!("PATH={}", search_path().to_string_lossy())
+            ]
+        );
+    }
+
+    #[test]
+    fn command_gives_the_program_the_search_path_and_unbuffered_python() {
+        // The same program as in `run_gives_the_program_the_search_path_and_unbuffered_python`, started by hand: a
+        // byte-stream child (ffmpeg writing PCM) is not run through `run`, which reads lines.
+        #[cfg(windows)]
+        let (program, args): (PathBuf, Vec<OsString>) = (
+            system32(r"WindowsPowerShell\v1.0\powershell.exe"),
+            vec![
+                "-NoProfile".into(),
+                "-NonInteractive".into(),
+                "-Command".into(),
+                "'PYTHONUNBUFFERED=' + $env:PYTHONUNBUFFERED; 'PATH=' + $env:PATH".into(),
+            ],
+        );
+        #[cfg(not(windows))]
+        let (program, args) = shell(
+            r#"echo "PYTHONUNBUFFERED=$PYTHONUNBUFFERED"; echo "PATH=$PATH""#,
+            "",
+        );
+
+        let output = command(&program).args(args).output().unwrap();
+
+        let text = String::from_utf8_lossy(&output.stdout).into_owned();
+        assert_eq!(
+            text.lines().collect::<Vec<_>>(),
             [
                 "PYTHONUNBUFFERED=1".to_string(),
                 format!("PATH={}", search_path().to_string_lossy())

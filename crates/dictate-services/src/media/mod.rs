@@ -1,5 +1,7 @@
-//! Media files and the programs that handle them: finding ffmpeg and yt-dlp, running them, and downloading a link.
+//! Media files and the programs that handle them: finding ffmpeg and yt-dlp, running them, downloading a link, and
+//! decoding an imported file.
 
+pub mod decode;
 pub mod tools;
 pub mod ytdlp;
 

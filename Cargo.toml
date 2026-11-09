@@ -7,3 +7,10 @@ members = ["crates/*", "app/src-tauri"]
 edition = "2021"
 rust-version = "1.85"
 license = "MIT"
+
+# opus-decoder 0.1.1 sets bit `i` of a u8 mask for up to 16 short blocks of a transient frame (celt/vq.rs), as libopus
+# does in an unsigned char that drops the bits above the 8th. Where overflow checks are on (debug builds and tests)
+# that shift panics on a frame an ordinary encoder makes; where they are off (release) it is the same code without the
+# panic. Debug and tests run the way release does.
+[profile.dev.package.opus-decoder]
+overflow-checks = false
