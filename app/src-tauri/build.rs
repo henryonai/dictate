@@ -1,6 +1,7 @@
 /// Every command the app registers, with a permission made for each (`allow-get-settings`, ...). With this list the
 /// app has an ACL of its own: a window may call a command only when its capability file names the permission. The
-/// Settings window has the commands of `default.json`, the floating dictation windows those of `panel.json`.
+/// Settings window has the commands of `default.json`, the floating dictation windows those of `panel.json` and the
+/// meetings window those of `meetings.json`.
 /// `main.rs` registers the same names, and a test there checks that the two agree and that the files scope them.
 const COMMANDS: &[&str] = &[
     // Settings.
@@ -27,6 +28,30 @@ const COMMANDS: &[&str] = &[
     "permissions_status",
     "request_permission",
     "open_permission_settings",
+    // Which tools of the system are installed. Settings asks it too: the one command it shares with the meetings window.
+    "media_tools",
+    // The meetings window.
+    "meetings_list",
+    "meeting_detail",
+    "meetings_pick_files",
+    "meetings_import_files",
+    "meetings_import_link",
+    "meeting_cancel",
+    "meeting_rerun",
+    "meeting_resummarize",
+    "meeting_retry",
+    "meeting_set_task",
+    "meeting_rename_speakers",
+    "meeting_ask",
+    "meeting_markdown",
+    "meeting_export",
+    "meeting_log",
+    "meeting_open_folder",
+    "meeting_open_media",
+    "meeting_delete",
+    "copy_text",
+    "meetings_open_settings",
+    "meetings_readiness",
     // The bubble, the chip and the card.
     "dictation_languages",
     "dictation_stop",

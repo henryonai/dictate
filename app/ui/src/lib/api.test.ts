@@ -44,6 +44,7 @@ describe("each wrapper calls its command with the argument names the Rust side e
     ["editPresets", "edit_presets", undefined, () => api.editPresets()],
     ["transcribePresets", "transcribe_presets", undefined, () => api.transcribePresets()],
     ["openMeetingsFolder", "open_meetings_folder", undefined, () => api.openMeetingsFolder()],
+    ["mediaTools", "media_tools", undefined, () => api.mediaTools()],
     ["dictationLanguages", "dictation_languages", undefined, () => api.dictationLanguages()],
     ["dictationStop", "dictation_stop", undefined, () => api.dictationStop()],
     ["dictationCancel", "dictation_cancel", undefined, () => api.dictationCancel()],
@@ -121,6 +122,19 @@ test("the settings-changed event brings the settings that changed, until it is r
 
   stop();
   await emit("settings-changed", { dictation_language: "en-US" });
+  expect(heard).toHaveLength(1);
+});
+
+test("the settings-tab event brings the page that Settings is asked to show, until it is removed", async () => {
+  recordCalls();
+  const heard: unknown[] = [];
+  const stop = await api.onSettingsTab((tab) => heard.push(tab));
+
+  await emit("settings-tab", "accounts");
+  expect(heard).toEqual(["accounts"]);
+
+  stop();
+  await emit("settings-tab", "speech");
   expect(heard).toHaveLength(1);
 });
 

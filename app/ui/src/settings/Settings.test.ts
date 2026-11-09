@@ -215,3 +215,46 @@ test.each(["en", "vi"] as const)("no text on screen is a key that has no transla
   const leaked = new RegExp(`(?:${[...namespaces].join("|")})\\.[\\w-]+`);
   expect(document.body.textContent).not.toMatch(leaked);
 });
+
+test("shows the page it is asked to show, as when the meetings window sends someone to the API keys", async () => {
+  const { emitTab } = stubApi();
+  render(Settings);
+  await screen.findAllByRole("tab");
+  await vi.waitFor(() => expect(api.onSettingsTab).toHaveBeenCalled());
+  expect(screen.getByRole("tab", { name: "General" })).toHaveAttribute("aria-selected", "true");
+
+  emitTab("accounts");
+
+  await vi.waitFor(() =>
+    expect(screen.getByRole("tab", { name: "Accounts & API keys" })).toHaveAttribute("aria-selected", "true"),
+  );
+  expect(screen.getByRole("tabpanel", { name: "Accounts & API keys" })).toBeVisible();
+
+  emitTab("speech");
+  await vi.waitFor(() =>
+    expect(screen.getByRole("tab", { name: "Speech recognition" })).toHaveAttribute("aria-selected", "true"),
+  );
+});
+
+test("a page that does not exist is not shown", async () => {
+  const { emitTab } = stubApi();
+  render(Settings);
+  await screen.findAllByRole("tab");
+  await vi.waitFor(() => expect(api.onSettingsTab).toHaveBeenCalled());
+
+  emitTab("meetings" as never);
+
+  expect(screen.getByRole("tab", { name: "General" })).toHaveAttribute("aria-selected", "true");
+});
+
+test("stops following the requests for a page when the window goes", async () => {
+  const stop = vi.fn();
+  vi.mocked(api.onSettingsTab).mockResolvedValue(stop);
+  const { unmount } = render(Settings);
+  await screen.findAllByRole("tab");
+  await vi.waitFor(() => expect(api.onSettingsTab).toHaveBeenCalled());
+
+  unmount();
+
+  await vi.waitFor(() => expect(stop).toHaveBeenCalledTimes(1));
+});

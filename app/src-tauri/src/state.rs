@@ -187,8 +187,6 @@ impl<T> ModelCache<T> {
     /// A model that something still holds is in use however long ago it was asked for (a transcription of hours
     /// asks once and holds it): it stays, and counts as used now, so that it is not let go the moment the job ends
     /// and the next one has to load it again.
-    // Nothing calls it until the app's timer does.
-    #[allow(dead_code)]
     pub fn unload_idle(&self, idle: Duration) {
         let mut slot = lock(&self.slot);
         let now = (self.clock)();
@@ -315,9 +313,6 @@ pub fn open_model_dir(base_dir: &Path) -> io::Result<ModelDir> {
 /// The folder of the speaker separation models (`dictate_services::diarize::DIARIZE_MODELS`) below `base_dir`, created
 /// when it is missing. It is a folder of its own, not the Whisper models': neither list of files may take the other's
 /// for its own.
-///
-/// Nothing opens it yet: the speaker separation step of the meetings pipeline will, and the `allow` goes with that.
-#[allow(dead_code)]
 pub fn open_diarize_dir(base_dir: &Path) -> io::Result<PathBuf> {
     let root = base_dir.join("Dictate").join("diarization-models");
     fs::create_dir_all(&root)?;

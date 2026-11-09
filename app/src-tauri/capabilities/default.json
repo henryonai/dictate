@@ -28,6 +28,7 @@
     "allow-permissions-status",
     "allow-request-permission",
     "allow-open-permission-settings",
+    "allow-media-tools",
     {
       "identifier": "opener:allow-open-url",
       "allow": [{ "url": "https://*" }]

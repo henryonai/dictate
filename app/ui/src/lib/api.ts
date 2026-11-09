@@ -12,6 +12,8 @@ export type AiProvider = "anthropic" | "openai";
 export type TranscribePreset = "openrouter" | "openai" | "groq" | "custom";
 /** Which key a command is about. */
 export type Account = "ai" | "transcribe";
+/** The pages of Settings: what the Rust side may ask it to show (`settings-tab`). */
+export type SettingsTab = "general" | "speech" | "ai" | "accounts";
 
 /** The settings file. */
 export interface Settings {
@@ -108,6 +110,12 @@ export interface DictationLanguages {
   others: string[];
 }
 
+/** Which tools of the system are installed, with the version each says it is; `null` for one that is not. */
+export interface ToolsView {
+  ffmpeg: string | null;
+  ytDlp: string | null;
+}
+
 export interface TranscribePresetView {
   id: TranscribePreset;
   models: string[];
@@ -148,6 +156,8 @@ export const api = {
   editPresets: () => invoke<EditPresetView[]>("edit_presets"),
   transcribePresets: () => invoke<TranscribePresetView[]>("transcribe_presets"),
   openMeetingsFolder: () => invoke<void>("open_meetings_folder"),
+  /** ffmpeg and yt-dlp as the system has them (versions as they say them): what a link or a file that symphonia can't read needs. */
+  mediaTools: () => invoke<ToolsView>("media_tools"),
   /** The microphone and Accessibility permissions as the system has them now (macOS; elsewhere both are `not_needed`). */
   permissionsStatus: () => invoke<PermissionsView>("permissions_status"),
   /** Shows the system's prompt for a permission. It doesn't wait for the answer: the status shows it. */
@@ -204,6 +214,9 @@ export const api = {
   /** Settings that the Rust side changed without the window (the language menu of the dictation chip): only the ones that changed. */
   onSettingsChanged: (handler: (patch: Partial<Settings>) => void) =>
     listen<Partial<Settings>>("settings-changed", (event) => handler(event.payload)),
+  /** The meetings window sends someone to a page of Settings (`meetings_open_settings`): show it. Resolves with the function that stops listening. */
+  onSettingsTab: (handler: (tab: SettingsTab) => void) =>
+    listen<SettingsTab>("settings-tab", (event) => handler(event.payload)),
   /** Both panel windows hear every state. Resolves with the function that stops listening. */
   onPanelState: (handler: (state: PanelState) => void) =>
     listen<PanelState>("panel-state", (event) => handler(event.payload)),

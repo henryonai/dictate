@@ -1,7 +1,7 @@
 // Shared by the tests only: settings as the Rust side sends them, and the api with every call stubbed.
 import { vi } from "vitest";
 import { api } from "./lib/api";
-import type { DownloadEvent, HotkeyStatus, Settings, SettingsView } from "./lib/api";
+import type { DownloadEvent, HotkeyStatus, Settings, SettingsTab, SettingsView } from "./lib/api";
 import { SettingsStore } from "./lib/settings-store.svelte";
 import type { PanelState } from "./panel/state";
 
@@ -62,6 +62,7 @@ export function stubApi() {
   let listener: ((event: DownloadEvent) => void) | undefined;
   let hotkeyListener: ((status: HotkeyStatus) => void) | undefined;
   let settingsListener: ((patch: Partial<Settings>) => void) | undefined;
+  let tabListener: ((tab: SettingsTab) => void) | undefined;
 
   vi.spyOn(api, "getSettings").mockResolvedValue(fakeView());
   vi.spyOn(api, "saveSettings").mockImplementation(async (settings) => fakeView(settings));
@@ -90,6 +91,7 @@ export function stubApi() {
     { id: "custom", models: [], key_url: null },
   ]);
   vi.spyOn(api, "openMeetingsFolder").mockResolvedValue();
+  vi.spyOn(api, "mediaTools").mockResolvedValue({ ffmpeg: null, ytDlp: null });
   // Not a Mac: no permissions, so no section.
   vi.spyOn(api, "permissionsStatus").mockResolvedValue({ microphone: "not_needed", accessibility: "not_needed" });
   vi.spyOn(api, "requestPermission").mockResolvedValue();
@@ -116,10 +118,18 @@ export function stubApi() {
     };
   });
 
+  vi.spyOn(api, "onSettingsTab").mockImplementation(async (handler) => {
+    tabListener = handler;
+    return () => {
+      tabListener = undefined;
+    };
+  });
+
   return {
     emitDownload: (event: DownloadEvent) => listener?.(event),
     emitHotkey: (status: HotkeyStatus) => hotkeyListener?.(status),
     emitSettings: (patch: Partial<Settings>) => settingsListener?.(patch),
+    emitTab: (tab: SettingsTab) => tabListener?.(tab),
   };
 }
 

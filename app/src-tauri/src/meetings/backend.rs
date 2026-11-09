@@ -849,7 +849,7 @@ mod tests {
     // ---- what the settings and the saved keys allow
 
     struct Parts {
-        dir: tempfile::TempDir,
+        _dir: tempfile::TempDir,
         secrets: Arc<CountingStore>,
         state: AppState,
         backend: AppBackend,
@@ -872,7 +872,7 @@ mod tests {
             yt_dlp: None,
         });
         Parts {
-            dir,
+            _dir: dir,
             secrets,
             state,
             backend,
