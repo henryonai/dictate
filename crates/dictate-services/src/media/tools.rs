@@ -23,17 +23,38 @@ use windows::Win32::System::Threading::CREATE_NO_WINDOW;
 /// How many of the last lines of a program `Exit` keeps.
 const LAST_LINES: usize = 2;
 
-/// The folders to look for programs in: the app's own PATH first, then the places each system puts what the user
-/// installs. The PATH a desktop app gets is short (on a Mac it is `/usr/bin:/bin:/usr/sbin:/sbin`, with no
-/// Homebrew), and a Linux launcher often leaves out `~/.local/bin`.
+/// The folders to look for programs in: the system's own folders (on Windows), then the app's own PATH, then the
+/// places each system puts what the user installs. The PATH a desktop app gets is short (on a Mac it is
+/// `/usr/bin:/bin:/usr/sbin:/sbin`, with no Homebrew), and a Linux launcher often leaves out `~/.local/bin`.
 ///
 /// Child processes get this as their PATH too: yt-dlp looks for ffmpeg there.
 pub fn search_path() -> OsString {
     search_path_from(
+        system_folders(),
         std::env::var_os("PATH"),
         dirs::home_dir(),
         dirs::data_local_dir(),
     )
+}
+
+/// The folders of the system's own programs, which go before everything else in the search path. Only Windows has
+/// any: `%SystemRoot%\System32` and `%SystemRoot%`.
+///
+/// cmd.exe reads only the first 8191 characters of an environment variable, and a PATH can be longer (a test
+/// run by `cargo test` on Windows has one of 15000, with System32 at the end). Whatever is past the 8191st
+/// character is lost to a program that cmd starts, and a `.cmd` shim of a tool is one: without System32 it cannot
+/// find `where`, `ping` or the other programs of the system.
+fn system_folders() -> Vec<PathBuf> {
+    #[cfg(windows)]
+    return match std::env::var_os("SystemRoot") {
+        Some(root) if !root.is_empty() => {
+            let root = PathBuf::from(root);
+            vec![root.join("System32"), root]
+        }
+        _ => Vec::new(),
+    };
+    #[cfg(not(windows))]
+    return Vec::new();
 }
 
 /// What separates the folders in a PATH on this system.
@@ -42,13 +63,23 @@ const PATH_SEPARATOR: &str = ";";
 #[cfg(not(windows))]
 const PATH_SEPARATOR: &str = ":";
 
-/// `search_path` for a given PATH, home folder and local app data folder (the last is only used on Windows).
+/// Adds one entry to a PATH being written, after the separator when it is not empty.
+fn push_entry(path: &mut OsString, entry: &OsStr) {
+    if !path.is_empty() {
+        path.push(PATH_SEPARATOR);
+    }
+    path.push(entry);
+}
+
+/// `search_path` for given system folders, PATH, home folder and local app data folder (the last is only used on
+/// Windows). The order is the `front` folders, the PATH, then the folders of the tools.
 ///
-/// The PATH is kept as it is, and the folders are added after it: splitting a PATH and joining it again is not
-/// always the same PATH (Windows reads quote marks in it, and a stray one makes the folders after it one), and the
-/// PATH of the user is what finds the system's own programs.
+/// The PATH is kept as it is: splitting a PATH and joining it again is not always the same PATH (Windows reads
+/// quote marks in it, and a stray one makes the folders after it one), and the PATH of the user is what finds
+/// their programs.
 #[cfg_attr(not(windows), allow(unused_variables))]
 fn search_path_from(
+    front: Vec<PathBuf>,
     path_var: Option<OsString>,
     home: Option<PathBuf>,
     local_data: Option<PathBuf>,
@@ -76,20 +107,24 @@ fn search_path_from(
         extra.push(home.join("bin"));
     }
 
-    let mut joined = path_var.unwrap_or_default();
+    // A folder with the separator in its name is quoted, and one that cannot be is left out.
+    let mut joined = OsString::new();
+    for dir in front {
+        if let Ok(entry) = std::env::join_paths([&dir]) {
+            push_entry(&mut joined, &entry);
+        }
+    }
+    if let Some(path_var) = path_var.filter(|p| !p.is_empty()) {
+        push_entry(&mut joined, &path_var);
+    }
     for dir in extra {
         if known.contains(&dir) {
             continue;
         }
-        // A folder with the separator in its name is quoted, and one that cannot be is left out.
-        let Ok(entry) = std::env::join_paths([&dir]) else {
-            continue;
-        };
-        if !joined.is_empty() {
-            joined.push(PATH_SEPARATOR);
+        if let Ok(entry) = std::env::join_paths([&dir]) {
+            push_entry(&mut joined, &entry);
+            known.push(dir);
         }
-        joined.push(entry);
-        known.push(dir);
     }
     joined
 }
@@ -405,13 +440,32 @@ mod tests {
         }
     }
 
+    /// A program of the Windows System32 folder, by its full path.
+    #[cfg(windows)]
+    fn system32(file: &str) -> PathBuf {
+        let root = std::env::var("SystemRoot").expect("Windows always sets SystemRoot");
+        Path::new(&root).join("System32").join(file)
+    }
+
     #[test]
     fn search_path_contains_path_and_os_dirs() {
         let own = std::env::var_os("PATH").unwrap_or_default();
         let own = own.to_string_lossy();
         let all = search_path().to_string_lossy().into_owned();
 
-        assert!(all.starts_with(&*own), "the PATH comes first: {all}");
+        // On Windows the system folders go before the PATH (see `search_path_from`).
+        #[cfg(windows)]
+        let before = {
+            let root = std::env::var("SystemRoot").expect("Windows always sets SystemRoot");
+            format!(r"{root}\System32;{root};")
+        };
+        #[cfg(not(windows))]
+        let before = String::new();
+        assert!(all.starts_with(&before), "{all}");
+        assert!(
+            all[before.len()..].starts_with(&*own),
+            "the PATH comes next: {all}"
+        );
         #[cfg(target_os = "macos")]
         assert!(all.contains("/opt/homebrew/bin"), "{all}");
         #[cfg(target_os = "linux")]
@@ -421,9 +475,52 @@ mod tests {
     }
 
     #[test]
+    fn search_path_puts_the_system_folders_first_then_the_path_then_the_user_folders() {
+        // cmd.exe reads only the first 8191 characters of a variable, and `cargo test` gives a Windows test
+        // process a PATH of 15000: a folder at the end of it is lost to a program that cmd starts. So the
+        // folders that the system's own programs live in go first, and a long PATH after them is cut instead.
+        let long_path = vec!["/some/long/folder/name"; 1000].join(&SEP.to_string());
+
+        let joined = search_path_from(
+            vec![PathBuf::from("/sys/System32"), PathBuf::from("/sys")],
+            Some(OsString::from(&long_path)),
+            Some(PathBuf::from("/home/me")),
+            None,
+        );
+
+        let joined = joined.to_string_lossy().into_owned();
+        let front = format!("/sys/System32{SEP}/sys{SEP}");
+        assert!(joined.starts_with(&front), "{}", &joined[..80]);
+        let rest = &joined[front.len()..];
+        assert!(rest.starts_with(&long_path), "the PATH is not kept whole");
+        let after_the_path = &rest[long_path.len()..];
+        assert!(after_the_path.starts_with(SEP), "{after_the_path}");
+        assert!(after_the_path.contains("/home/me/bin"), "{after_the_path}");
+    }
+
+    #[test]
+    fn search_path_without_a_path_is_the_system_folders_and_the_user_folders() {
+        let joined = search_path_from(
+            vec![PathBuf::from("/sys")],
+            None,
+            Some(PathBuf::from("/home/me")),
+            None,
+        );
+        let all: Vec<PathBuf> = std::env::split_paths(&joined).collect();
+
+        assert_eq!(all[0], PathBuf::from("/sys"));
+        assert!(all.contains(&PathBuf::from("/home/me").join("bin")));
+    }
+
+    #[test]
     fn search_path_adds_the_folders_of_the_user_without_repeating_any() {
         let path_var = std::env::join_paths(["/first", "/usr/local/bin"]).unwrap();
-        let joined = search_path_from(Some(path_var), Some(PathBuf::from("/home/me")), None);
+        let joined = search_path_from(
+            Vec::new(),
+            Some(path_var),
+            Some(PathBuf::from("/home/me")),
+            None,
+        );
         let all: Vec<PathBuf> = std::env::split_paths(&joined).collect();
 
         assert_eq!(all[0], PathBuf::from("/first"));
@@ -443,7 +540,7 @@ mod tests {
     #[test]
     fn search_path_without_a_home_is_still_the_path() {
         let path_var = std::env::join_paths(["/first"]).unwrap();
-        let joined = search_path_from(Some(path_var), None, None);
+        let joined = search_path_from(Vec::new(), Some(path_var), None, None);
         let all: Vec<PathBuf> = std::env::split_paths(&joined).collect();
 
         assert_eq!(all[0], PathBuf::from("/first"));
@@ -459,6 +556,7 @@ mod tests {
         let path_var = format!("/first{SEP}{SEP}/odd\"dir{SEP}/last");
 
         let joined = search_path_from(
+            Vec::new(),
             Some(OsString::from(&path_var)),
             Some(PathBuf::from("/home/me")),
             None,
@@ -476,6 +574,7 @@ mod tests {
     fn search_path_leaves_out_a_folder_that_cannot_be_in_a_path_and_adds_the_rest() {
         // The home folder has the separator in its name, so the folders under it cannot be written into the PATH.
         let joined = search_path_from(
+            Vec::new(),
             Some(OsString::from("/first")),
             Some(PathBuf::from("/home/a:b")),
             None,
@@ -615,10 +714,22 @@ mod tests {
 
     #[tokio::test]
     async fn run_gives_the_program_the_search_path_and_unbuffered_python() {
-        // `set PATH` prints `Path=...` (and `PATHEXT=...`): the name keeps the case it has in the environment.
+        // On Windows PowerShell reads the variables: cmd.exe cannot show a PATH longer than 8191 characters, and
+        // the one a `cargo test` process has is 15000.
+        #[cfg(windows)]
+        let (program, args): (PathBuf, Vec<OsString>) = (
+            system32(r"WindowsPowerShell\v1.0\powershell.exe"),
+            vec![
+                "-NoProfile".into(),
+                "-NonInteractive".into(),
+                "-Command".into(),
+                "'PYTHONUNBUFFERED=' + $env:PYTHONUNBUFFERED; 'PATH=' + $env:PATH".into(),
+            ],
+        );
+        #[cfg(not(windows))]
         let (program, args) = shell(
-            r#"echo "$PYTHONUNBUFFERED"; echo "PATH=$PATH""#,
-            "echo %PYTHONUNBUFFERED%&set PATH",
+            r#"echo "PYTHONUNBUFFERED=$PYTHONUNBUFFERED"; echo "PATH=$PATH""#,
+            "",
         );
         let mut lines = Vec::new();
 
@@ -628,16 +739,13 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(lines[0], "1");
-        let path = lines
-            .iter()
-            .find_map(|l| {
-                l.get(..5)
-                    .filter(|n| n.eq_ignore_ascii_case("path="))
-                    .map(|_| &l[5..])
-            })
-            .expect("the program printed no PATH");
-        assert_eq!(path, search_path().to_string_lossy());
+        assert_eq!(
+            lines,
+            [
+                "PYTHONUNBUFFERED=1".to_string(),
+                format!("PATH={}", search_path().to_string_lossy())
+            ]
+        );
     }
 
     #[tokio::test]
@@ -717,10 +825,10 @@ mod tests {
     async fn run_cancel_kills_the_tree() {
         // The shell starts a child that sleeps and says its id, then waits for it.
         // On Windows the sleeper is ping.exe, by its full path: finding programs in the PATH is tested apart.
-        let ping = format!(
-            r"{}\System32\ping.exe -n 30 127.0.0.1 >nul",
-            std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into())
-        );
+        #[cfg(windows)]
+        let ping = format!("{} -n 30 127.0.0.1 >nul", system32("ping.exe").display());
+        #[cfg(not(windows))]
+        let ping = String::new();
         let (program, args) = shell("sleep 30 & echo $!; wait", &ping);
         let cancel = CancellationToken::new();
         let pid = Arc::new(Mutex::new(None::<u32>));
