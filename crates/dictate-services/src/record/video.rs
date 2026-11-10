@@ -589,7 +589,10 @@ fn encoding_arguments(size: (u32, u32), spec: &QualitySpec, codec: &VideoCodec) 
         args.extend(words(&["-realtime", "1", "-allow_sw", "1"]));
     }
     if codec.encoder == "libvpx-vp9" {
-        // The speed of the capture too: the encoder is not given the time that its best quality takes.
+        // The speed of the capture too: the encoder is not given the time that its best quality takes. And no
+        // lookahead: libvpx keeps about 25 frames before it writes any of them (it uses them for nothing in realtime
+        // mode: the bitstream is the same), so with the default the first fragment of the file would come 25 frames
+        // late, and a recording that stopped for any reason would lose them, on top of the 2 s up to the next keyframe.
         args.extend(words(&[
             "-deadline",
             "realtime",
@@ -597,6 +600,8 @@ fn encoding_arguments(size: (u32, u32), spec: &QualitySpec, codec: &VideoCodec) 
             "8",
             "-row-mt",
             "1",
+            "-lag-in-frames",
+            "0",
         ]));
     }
     args
@@ -1144,7 +1149,7 @@ mod tests {
         let args = fs::read_to_string(format!("{}.args", fake.display())).unwrap();
         assert!(
             args.lines().collect::<Vec<_>>().join(" ").ends_with(
-                "-c:v libvpx-vp9 -b:v 1000000 -g 20 -deadline realtime -cpu-used 8 -row-mt 1 -f null -"
+                "-c:v libvpx-vp9 -b:v 1000000 -g 20 -deadline realtime -cpu-used 8 -row-mt 1 -lag-in-frames 0 -f null -"
             ),
             "{args}"
         );
@@ -1248,7 +1253,7 @@ mod tests {
                     container: Container::WebM,
                 },
                 "video.webm",
-                "-deadline realtime -cpu-used 8 -row-mt 1 -flush_packets 1 -f webm",
+                "-deadline realtime -cpu-used 8 -row-mt 1 -lag-in-frames 0 -flush_packets 1 -f webm",
             ),
         ];
         for (codec, file, tail) in cases {
@@ -1724,6 +1729,54 @@ mod tests {
         };
 
         mux_puts_the_audio_under(&codec, &ffmpeg);
+    }
+
+    /// What an encoder has written of `folder`'s video so far (the `.part`), in seconds, by what ffmpeg can read of it.
+    fn readable_seconds(folder: &Path, ffmpeg: &Path) -> Option<f64> {
+        parts(folder)
+            .first()
+            .and_then(|part| probe_seconds(part, ffmpeg))
+    }
+
+    #[test]
+    fn a_vp9_video_is_written_as_the_frames_come_and_not_after_the_ones_that_follow() {
+        let Some(ffmpeg) = real_ffmpeg() else { return };
+        let listing = tools::command(&ffmpeg)
+            .args(["-hide_banner", "-encoders"])
+            .output()
+            .unwrap();
+        if !String::from_utf8_lossy(&listing.stdout).contains("libvpx-vp9") {
+            eprintln!("skipped: this ffmpeg has no libvpx-vp9");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let codec = VideoCodec {
+            encoder: "libvpx-vp9",
+            container: Container::WebM,
+        };
+        let spec = Quality::Standard.spec();
+        let mut encoder = VideoEncoder::start(dir.path(), SIZE, &spec, &codec, &ffmpeg).unwrap();
+
+        // Three seconds of frames, and the recording goes on (the pipe stays open). libvpx holds back about 25 frames
+        // for its lookahead unless it is told not to, and writes nothing past the header until they are there: a
+        // recording that stopped now would have no video, and not the 2 s that are over.
+        for n in 0..45 {
+            encoder.push(&moving_frame(SIZE.0, SIZE.1, n)).unwrap();
+        }
+
+        let give_up = Instant::now() + Duration::from_secs(15);
+        loop {
+            if readable_seconds(dir.path(), &ffmpeg).is_some_and(|seconds| seconds >= 1.9) {
+                break;
+            }
+            assert!(
+                Instant::now() < give_up,
+                "no 2 s of video was written for 3 s of frames: {:?} s",
+                readable_seconds(dir.path(), &ffmpeg)
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        drop(encoder);
     }
 
     #[test]

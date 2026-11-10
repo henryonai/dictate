@@ -192,17 +192,19 @@ pub(crate) mod test_support {
         encoder.finish().unwrap()
     }
 
-    /// The `video.<ext>.<nonce>.part` that an encoder leaves when the program stops: 45 frames at 15 fps are pushed, and
-    /// ffmpeg is waited for until the first fragment is in the file (a fragment ends where the next keyframe is, every
-    /// 2 s: so the first 2 s of the 3 that were pushed are in it, and the last 1 s is not). Returns the part.
+    /// The `video.<ext>.<nonce>.part` that an encoder leaves when the program stops, and how many seconds of it can be
+    /// read: 90 frames at 15 fps (6 s) are pushed, with the pipe left open, and ffmpeg is waited for until the first
+    /// fragment is in the file. A fragment ends where the next keyframe is (every 2 s), and an encoder may hold some
+    /// frames back before it writes any (the more it holds, the less is in the file), so the part holds 2 s or more of
+    /// the 6 and never all of them: how much is measured, on the part that is left, and not assumed.
     ///
     /// What is waited for is what recovery needs, the part being readable for 2 s, and not a pause in the growth of the
     /// file: on a machine that is busy ffmpeg can take longer than any pause to write the first fragment.
-    pub fn cut_off_video(folder: &Path, ffmpeg: &Path) -> PathBuf {
+    pub fn cut_off_video(folder: &Path, ffmpeg: &Path) -> (PathBuf, f64) {
         let spec = Quality::Standard.spec();
         let codec = codec_of(ffmpeg);
         let mut encoder = VideoEncoder::start(folder, SIZE, &spec, &codec, ffmpeg).unwrap();
-        for n in 0..45u8 {
+        for n in 0..90u8 {
             let shade = 100 + n;
             let frame = [shade, 255 - shade, shade / 2, 255].repeat((SIZE.0 * SIZE.1) as usize);
             encoder.push(&frame).unwrap();
@@ -217,15 +219,14 @@ pub(crate) mod test_support {
                 })
                 .collect()
         };
-        let give_up = std::time::Instant::now() + Duration::from_secs(60);
-        loop {
-            let readable = parts()
+        let readable = || {
+            parts()
                 .first()
                 .and_then(|part| probe_seconds(part, ffmpeg))
-                .is_some_and(|seconds| seconds >= 1.9);
-            if readable {
-                break;
-            }
+                .unwrap_or(0.0)
+        };
+        let give_up = std::time::Instant::now() + Duration::from_secs(60);
+        while readable() < 1.9 {
             assert!(
                 std::time::Instant::now() < give_up,
                 "ffmpeg did not write the first fragment"
@@ -235,7 +236,8 @@ pub(crate) mod test_support {
         drop(encoder);
         let mut parts = parts();
         assert_eq!(parts.len(), 1, "a dropped encoder leaves its .part");
-        parts.remove(0)
+        // The encoder is gone: what is in the part now is all there will be.
+        (parts.remove(0), readable())
     }
 
     /// A stem of a tone, `seconds` long, finished.

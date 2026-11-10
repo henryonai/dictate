@@ -488,7 +488,8 @@ mod tests {
     fn a_video_part_that_was_left_is_published_and_noted() {
         let Some(ffmpeg) = real_ffmpeg() else { return };
         let dir = tempfile::tempdir().unwrap();
-        let part = cut_off_video(dir.path(), &ffmpeg);
+        let (part, readable) = cut_off_video(dir.path(), &ffmpeg);
+        assert!(readable >= 1.9, "{readable} s of the cut off video");
         tone_stem(dir.path(), "mic.wav", 440.0, 2.0);
 
         let finished = finalize(dir.path(), Some(&ffmpeg)).unwrap();
@@ -505,14 +506,18 @@ mod tests {
             "{:?}",
             finished.notes
         );
-        // The video is two seconds long, and so is the sound: what the file holds is what the video has.
+        // The video is as long as what could be read of it, and the sound is made as long as the longer of the two: a
+        // video that is cut off is not lengthened, and a sound that is shorter than it is.
         assert!(
-            (finished.duration - 2.0).abs() < 0.3,
-            "{}",
+            (finished.duration - readable.max(2.0)).abs() < 0.3,
+            "{} s for {readable} s of video and 2 s of sound",
             finished.duration
         );
         let video = video_seconds(&finished.media, &ffmpeg);
-        assert!((video - 2.0).abs() < 0.3, "{video} s of video");
+        assert!(
+            (video - readable).abs() < 0.3,
+            "{video} s of video, {readable} s were readable"
+        );
     }
 
     #[test]

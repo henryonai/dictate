@@ -933,9 +933,17 @@ fn recover_finishes_a_recording_left_by_a_crash() {
     std::fs::copy(&live, dir.path().join("mic.wav")).unwrap();
     drop(stem);
     std::fs::remove_file(&live).unwrap();
-    // A video part as it is left: the first 2 s of 3 that were pushed.
-    let part = cut_off_video(dir.path(), &ffmpeg);
+    // What the crash left of the stem is what its header says: it is that long, and no more than the 2.4 s.
+    let stem_seconds = f64::from(
+        hound::WavReader::open(dir.path().join("mic.wav"))
+            .unwrap()
+            .duration(),
+    ) / 48_000.0;
+    assert!((2.0..=2.4).contains(&stem_seconds), "{stem_seconds} s");
+    // A video part as it is left: the first 2 s of the 6 that were pushed, or more where the encoder is quick.
+    let (part, readable) = cut_off_video(dir.path(), &ffmpeg);
     assert!(part.exists());
+    assert!(readable >= 1.9, "{readable} s of the cut off video");
 
     let finished = recover(dir.path(), Some(&ffmpeg))
         .expect("a marker")
@@ -943,14 +951,20 @@ fn recover_finishes_a_recording_left_by_a_crash() {
 
     let name = name_of(&finished.media);
     assert!(is_recording(&name), "{name}");
+    // The recording is as long as the longer of what the stem and the video kept, which is what there is to recover.
+    let expected = stem_seconds.max(readable);
     assert!(
-        (finished.duration - 2.0).abs() < 0.3,
-        "{} s",
+        (finished.duration - expected).abs() < 0.3,
+        "{} s for {stem_seconds} s of sound and {readable} s of video",
         finished.duration
     );
     let video = video_seconds(&finished.media, &ffmpeg);
-    assert!((video - 2.0).abs() < 0.3, "{video} s of video");
-    assert!((audio_seconds(&finished.media, &ffmpeg) - 2.0).abs() < 0.3);
+    assert!(
+        (video - readable).abs() < 0.3,
+        "{video} s of video, {readable} s were readable"
+    );
+    let sound = audio_seconds(&finished.media, &ffmpeg);
+    assert!((sound - expected).abs() < 0.3, "{sound} s of sound");
     // The marker, the stem and the part are gone; the sound and the recording are what is left.
     let left = names(dir.path());
     assert!(!left.contains(&MARKER.to_owned()), "{left:?}");
