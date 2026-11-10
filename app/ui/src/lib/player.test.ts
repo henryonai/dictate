@@ -1,0 +1,438 @@
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import type { MediaView } from "./api";
+import { FakeMedia, fakeMedia } from "../test-helpers";
+import { PlayerController, STALL_MS, TICK_MS } from "./player.svelte";
+import type { FetchMedia } from "./player.svelte";
+
+const ID = "2026-03-02 10-00-00";
+/** The address of the server as it was, and as it is after the app started it again: another port and another token. */
+const OLD = fakeMedia({ url: "http://127.0.0.1:41000/tok-a/1" });
+const NEW = fakeMedia({ url: "http://127.0.0.1:52000/tok-b/1" });
+
+let element: FakeMedia;
+let fetchMedia: ReturnType<typeof vi.fn<FetchMedia>>;
+
+/** A player on a recording whose address is `OLD`, with an element that is attached to it. `now` is the address the server gives from here on. */
+function setup(now: MediaView | null = OLD) {
+  fetchMedia = vi.fn<FetchMedia>(async () => now);
+  const player = new PlayerController(fetchMedia);
+  element = new FakeMedia();
+  player.bind(ID, OLD);
+  const detach = player.attach(element as unknown as HTMLMediaElement);
+  return { player, detach };
+}
+
+/** Lets the calls that are waited for finish, with the clock where it is. */
+const settle = () => vi.advanceTimersByTimeAsync(0);
+
+beforeEach(() => {
+  vi.useFakeTimers();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+describe("what the element plays", () => {
+  test("an element that is attached plays the address of the recording, and a recording with no media has no player", () => {
+    const { player } = setup();
+    expect(element.src).toBe(OLD.url);
+    expect(player.available).toBe(true);
+    expect(player.video).toBe(true);
+
+    player.bind("another", null);
+    expect(player.available).toBe(false);
+  });
+
+  test("the position is read every half second, and whether it plays", () => {
+    const { player } = setup();
+    expect(TICK_MS).toBe(500);
+    element.playAt(12.5);
+
+    vi.advanceTimersByTime(TICK_MS - 1);
+    expect(player.currentTime).toBe(0);
+    vi.advanceTimersByTime(1);
+    expect(player.currentTime).toBe(12.5);
+    expect(player.playing).toBe(true);
+
+    element.paused = true;
+    vi.advanceTimersByTime(TICK_MS);
+    expect(player.playing).toBe(false);
+  });
+
+  test("a detached element is no longer read", () => {
+    const { player, detach } = setup();
+    detach();
+    element.playAt(30);
+    vi.advanceTimersByTime(TICK_MS * 4);
+    expect(player.currentTime).toBe(0);
+  });
+
+  test("another recording starts from its beginning, with a clean state", () => {
+    const { player } = setup();
+    element.playAt(80);
+    vi.advanceTimersByTime(TICK_MS);
+    element.emit("error");
+
+    player.bind("another", fakeMedia({ url: "http://127.0.0.1:41000/tok-a/2" }));
+    expect(player.currentTime).toBe(0);
+    expect(player.failed).toBe(false);
+    expect(element.src).toBe("http://127.0.0.1:41000/tok-a/2");
+  });
+});
+
+describe("seek", () => {
+  test("stamp_click_seeks_player: a seek goes to the exact second and plays", async () => {
+    const { player } = setup();
+    element.playAt(5);
+
+    await player.seek(65);
+
+    expect(element.currentTime).toBe(65);
+    expect(player.currentTime).toBe(65);
+    expect(element.play).toHaveBeenCalled();
+    // The element was playing: no one asked the server for an address.
+    expect(fetchMedia).not.toHaveBeenCalled();
+  });
+
+  test("after a pause the address is read again first; when it is the same the seek goes on in place", async () => {
+    const { player } = setup();
+
+    await player.seek(65);
+
+    expect(fetchMedia).toHaveBeenCalledWith(ID);
+    expect(element.sources).toEqual([OLD.url]);
+    expect(element.currentTime).toBe(65);
+    expect(element.play).toHaveBeenCalledTimes(1);
+  });
+
+  test("after a pause a new port is swapped in, and the seek lands on the new address once it is ready", async () => {
+    const { player } = setup(NEW);
+
+    await player.seek(65);
+
+    expect(element.src).toBe(NEW.url);
+    // The new address is loading: the position and the play wait for it.
+    expect(element.play).not.toHaveBeenCalled();
+    element.emit("loadedmetadata");
+    expect(element.currentTime).toBe(65);
+    expect(element.play).toHaveBeenCalledTimes(1);
+    expect(player.failed).toBe(false);
+  });
+
+  test("a seek while a new address is loading waits for it, and the last seek is the one that counts", async () => {
+    const { player } = setup(NEW);
+    await player.seek(65);
+    expect(element.src).toBe(NEW.url);
+
+    // The new address has not loaded yet: the element is not asked for a position, which it would forget.
+    element.paused = true;
+    await player.seek(120);
+    expect(element.currentTime).toBe(0);
+    expect(element.play).not.toHaveBeenCalled();
+
+    element.emit("loadedmetadata");
+    expect(element.currentTime).toBe(120);
+    expect(player.currentTime).toBe(120);
+    expect(element.play).toHaveBeenCalledTimes(1);
+  });
+
+  test("a seek with no element does nothing", async () => {
+    const player = new PlayerController(async () => OLD);
+    player.bind(ID, OLD);
+    await player.seek(10);
+    expect(player.currentTime).toBe(0);
+  });
+
+  test("a seek whose server cannot be asked still seeks in place", async () => {
+    const { player } = setup();
+    fetchMedia.mockRejectedValue(new Error("gone"));
+
+    await player.seek(30);
+
+    expect(element.currentTime).toBe(30);
+    expect(element.play).toHaveBeenCalled();
+  });
+});
+
+describe("play with the controls after a pause", () => {
+  test("a new port is swapped in, at the same position, and it plays on", async () => {
+    setup(NEW);
+    element.currentTime = 42;
+
+    element.paused = false;
+    element.emit("play");
+    await settle();
+
+    expect(element.src).toBe(NEW.url);
+    element.emit("loadedmetadata");
+    expect(element.currentTime).toBe(42);
+    expect(element.play).toHaveBeenCalledTimes(1);
+  });
+
+  test("the same address is left alone, and it is read once for each pause, not for each play", async () => {
+    setup(OLD);
+
+    element.paused = false;
+    element.emit("play");
+    await settle();
+    element.emit("play");
+    await settle();
+    expect(fetchMedia).toHaveBeenCalledTimes(1);
+
+    element.paused = true;
+    element.emit("pause");
+    element.paused = false;
+    element.emit("play");
+    await settle();
+    expect(fetchMedia).toHaveBeenCalledTimes(2);
+    expect(element.sources).toEqual([OLD.url]);
+  });
+});
+
+describe("the element fails", () => {
+  test("an error reads the address again, plays from the new one and goes back to where it was", async () => {
+    const { player } = setup(NEW);
+    element.playAt(42.5);
+
+    element.emit("error");
+    await settle();
+
+    expect(fetchMedia).toHaveBeenCalledWith(ID);
+    expect(element.src).toBe(NEW.url);
+    expect(element.currentTime).toBe(0);
+    element.emit("loadedmetadata");
+    expect(element.currentTime).toBe(42.5);
+    // It played, so it plays on.
+    expect(element.play).toHaveBeenCalledTimes(1);
+    expect(player.failed).toBe(false);
+  });
+
+  test("a recording that was paused stays paused after it is mended", async () => {
+    setup(NEW);
+    element.currentTime = 10;
+
+    element.emit("error");
+    await settle();
+    element.emit("loadedmetadata");
+
+    expect(element.currentTime).toBe(10);
+    expect(element.play).not.toHaveBeenCalled();
+  });
+
+  test("an error with the same address is a file that cannot be played: the player says so and does not ask again", async () => {
+    const { player } = setup(OLD);
+
+    element.emit("error");
+    await settle();
+    expect(player.failed).toBe(true);
+    expect(player.available).toBe(false);
+    expect(fetchMedia).toHaveBeenCalledTimes(1);
+
+    element.emit("error");
+    await settle();
+    expect(fetchMedia).toHaveBeenCalledTimes(1);
+  });
+
+  test("an error when the server gave no address, or cannot be asked, is a failure too", async () => {
+    const first = setup(null);
+    element.emit("error");
+    await settle();
+    expect(first.player.failed).toBe(true);
+
+    const second = setup(OLD);
+    fetchMedia.mockRejectedValue("gone");
+    element.emit("error");
+    await settle();
+    expect(second.player.failed).toBe(true);
+  });
+
+  test("addresses that keep failing are not read for ever", async () => {
+    const { player } = setup();
+    let n = 0;
+    fetchMedia.mockImplementation(async () => fakeMedia({ url: `http://127.0.0.1:${50000 + ++n}/tok/1` }));
+
+    for (let i = 0; i < 10 && !player.failed; i += 1) {
+      element.emit("error");
+      await settle();
+    }
+
+    expect(player.failed).toBe(true);
+    expect(fetchMedia.mock.calls.length).toBeLessThanOrEqual(4);
+  });
+
+  test("an address that works again forgets the failures before it", async () => {
+    const { player } = setup();
+    let n = 0;
+    fetchMedia.mockImplementation(async () => fakeMedia({ url: `http://127.0.0.1:${50000 + ++n}/tok/1` }));
+
+    for (let i = 0; i < 8; i += 1) {
+      element.emit("error");
+      await settle();
+      element.emit("loadedmetadata");
+    }
+
+    expect(player.failed).toBe(false);
+  });
+
+  test("two errors at once make one read", async () => {
+    setup(NEW);
+    element.emit("error");
+    element.emit("error");
+    await settle();
+    expect(fetchMedia).toHaveBeenCalledTimes(1);
+  });
+
+  test("an element that waits for data for 8 s reads the address again", async () => {
+    setup(NEW);
+    element.playAt(20);
+    expect(STALL_MS).toBe(8000);
+
+    element.emit("waiting");
+    await vi.advanceTimersByTimeAsync(STALL_MS - 1);
+    expect(fetchMedia).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(fetchMedia).toHaveBeenCalledTimes(1);
+    expect(element.src).toBe(NEW.url);
+    element.emit("loadedmetadata");
+    expect(element.currentTime).toBe(20);
+    expect(element.play).toHaveBeenCalledTimes(1);
+  });
+
+  test("a stalled element is mended the same way", async () => {
+    setup(NEW);
+    element.emit("stalled");
+    await vi.advanceTimersByTimeAsync(STALL_MS);
+    expect(element.src).toBe(NEW.url);
+  });
+
+  test("an element that is back before 8 s is left alone", async () => {
+    setup(NEW);
+    element.playAt(20);
+    element.emit("waiting");
+    await vi.advanceTimersByTimeAsync(STALL_MS - 100);
+    element.emit("playing");
+    await vi.advanceTimersByTimeAsync(STALL_MS * 2);
+    expect(fetchMedia).not.toHaveBeenCalled();
+  });
+
+  test("a pause ends the wait: nobody watches a player that is not playing", async () => {
+    setup(NEW);
+    element.playAt(20);
+    element.emit("waiting");
+    element.pause();
+    await vi.advanceTimersByTimeAsync(STALL_MS * 2);
+    expect(fetchMedia).not.toHaveBeenCalled();
+  });
+
+  test("a wait of 8 s on an address that is still the right one changes nothing and is no failure", async () => {
+    const { player } = setup(OLD);
+    element.playAt(20);
+
+    element.emit("waiting");
+    await vi.advanceTimersByTimeAsync(STALL_MS);
+
+    expect(fetchMedia).toHaveBeenCalledTimes(1);
+    expect(element.sources).toEqual([OLD.url]);
+    expect(player.failed).toBe(false);
+  });
+});
+
+describe("the address of the recording changes under the player", () => {
+  test("the same recording with a new address plays from the new one, from where it was", () => {
+    const { player } = setup();
+    element.playAt(33);
+
+    player.bind(ID, NEW);
+
+    expect(element.src).toBe(NEW.url);
+    element.emit("loadedmetadata");
+    expect(element.currentTime).toBe(33);
+    expect(element.play).toHaveBeenCalledTimes(1);
+  });
+
+  test("the same address again changes nothing", () => {
+    const { player } = setup();
+    element.playAt(33);
+
+    player.bind(ID, { ...OLD });
+
+    expect(element.sources).toEqual([OLD.url]);
+  });
+});
+
+describe("release: what Windows needs before it moves a folder to the Trash", () => {
+  test("the player stops, lets go of its file and loads nothing, in that order", () => {
+    const { player } = setup();
+    element.playAt(33);
+
+    player.release();
+
+    expect(element.calls).toEqual(["pause", "removeAttribute(src)", "load"]);
+    expect(element.getAttribute("src")).toBeNull();
+    expect(player.available).toBe(false);
+  });
+
+  test("a released player does not read, mend or listen any more", async () => {
+    const { player } = setup(NEW);
+    element.playAt(33);
+    element.emit("waiting");
+
+    player.release();
+    element.emit("error");
+    await vi.advanceTimersByTimeAsync(STALL_MS * 2);
+
+    expect(fetchMedia).not.toHaveBeenCalled();
+    expect(player.failed).toBe(false);
+  });
+
+  test("what release gives back puts the player back as it was, at the position it had, paused", () => {
+    const { player, detach } = setup();
+    element.playAt(33);
+    vi.advanceTimersByTime(TICK_MS);
+
+    const restore = player.release();
+    detach();
+    expect(player.available).toBe(false);
+
+    restore();
+    expect(player.available).toBe(true);
+    const again = new FakeMedia();
+    player.attach(again as unknown as HTMLMediaElement);
+    expect(again.src).toBe(OLD.url);
+    again.emit("loadedmetadata");
+    expect(again.currentTime).toBe(33);
+    expect(again.play).not.toHaveBeenCalled();
+  });
+
+  test("a restore that comes after the player has moved on to another recording does nothing", () => {
+    const { player } = setup();
+    const restore = player.release();
+
+    player.bind("another", fakeMedia({ url: "http://127.0.0.1:41000/tok-a/2" }));
+    restore();
+
+    expect(player.url).toBe("http://127.0.0.1:41000/tok-a/2");
+  });
+
+  test("when the recording stays, its address brings the player back, at the position it had", () => {
+    const { player, detach } = setup();
+    element.playAt(33);
+    vi.advanceTimersByTime(TICK_MS);
+
+    player.release();
+    detach();
+    expect(player.available).toBe(false);
+
+    player.bind(ID, OLD);
+    expect(player.available).toBe(true);
+    const again = new FakeMedia();
+    player.attach(again as unknown as HTMLMediaElement);
+    expect(again.src).toBe(OLD.url);
+    again.emit("loadedmetadata");
+    expect(again.currentTime).toBe(33);
+    // It does not start on its own.
+    expect(again.play).not.toHaveBeenCalled();
+  });
+});

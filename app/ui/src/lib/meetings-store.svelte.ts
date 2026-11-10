@@ -46,6 +46,11 @@ export class MeetingsStore {
   /** The dialog of "Paste a link" is open. */
   linkDialogOpen = $state(false);
   sidebarOpen = $state(true);
+  /**
+   * The rename of speakers that was asked for: the speaker whose name was clicked, or null for the sheet as a whole. The sheet is
+   * Task 13's; it is open while this is set and clears it when it closes.
+   */
+  renameFor = $state<{ speaker: string | null } | null>(null);
   /** The questions asked of each recording, with the answers: in memory only, lost when the window closes. */
   asks = new SvelteMap<string, QA[]>();
 
@@ -152,6 +157,7 @@ export class MeetingsStore {
 
   async select(id: string | null): Promise<void> {
     this.selectedId = id;
+    this.renameFor = null;
     // The detail of the one before is not this one's.
     if (this.detail?.row.id !== id) this.detail = null;
     if (id === null) {
@@ -230,6 +236,100 @@ export class MeetingsStore {
     return this.restart(() => api.meetingRerun(id));
   }
 
+  /** Asks a question about the recording. It is kept with the answer (or why there is none); one is asked at a time for a recording. */
+  async ask(id: string, question: string): Promise<void> {
+    const text = question.trim();
+    if (text === "" || this.asking(id)) return;
+    const entry: QA = { question: text, answer: null, error: null };
+    this.asks.set(id, [...(this.asks.get(id) ?? []), entry]);
+    let result: QA;
+    try {
+      result = { ...entry, answer: await api.meetingAsk(id, text) };
+    } catch (e) {
+      result = { ...entry, error: asErrorView(e) };
+    }
+    // A recording that was deleted meanwhile has no questions to come back to.
+    const kept = this.asks.get(id);
+    if (kept) this.asks.set(id, kept.map((qa) => (qa === entry ? result : qa)));
+  }
+
+  /** A question of the recording is waiting for its answer. */
+  asking(id: string): boolean {
+    return (this.asks.get(id) ?? []).some((qa) => qa.answer === null && qa.error === null);
+  }
+
+  /** Ticks or unticks an action item (`index` is the one of its `ActionView`). False when it could not be written: the notice says why. */
+  async setTask(id: string, index: number, done: boolean): Promise<boolean> {
+    try {
+      await api.meetingSetTask(id, index, done);
+      return true;
+    } catch (e) {
+      this.notify(errorText(e));
+      return false;
+    }
+  }
+
+  async openFolder(id: string): Promise<void> {
+    try {
+      await api.meetingOpenFolder(id);
+    } catch (e) {
+      this.notify(errorText(e));
+    }
+  }
+
+  /** The video or audio in the program of the system for it. */
+  async openMedia(id: string): Promise<void> {
+    try {
+      await api.meetingOpenMedia(id);
+    } catch (e) {
+      this.notify(errorMessage(asErrorView(e)));
+    }
+  }
+
+  /** Saves the Markdown in a file the person chooses. False when the dialog was closed, and when it could not be written (the notice says why). */
+  async exportMarkdown(id: string): Promise<boolean> {
+    try {
+      return await api.meetingExport(id);
+    } catch (e) {
+      this.notify(errorMessage(asErrorView(e)));
+      return false;
+    }
+  }
+
+  /** Puts the whole Markdown of the recording (summary and transcript) on the clipboard. */
+  async copyMarkdown(id: string): Promise<boolean> {
+    let markdown: string;
+    try {
+      markdown = await api.meetingMarkdown(id);
+    } catch (e) {
+      this.notify(errorText(e));
+      return false;
+    }
+    return this.copy(markdown);
+  }
+
+  /**
+   * Moves the recording to the Trash. `release` is called first: the player lets go of the file, because Windows may refuse to move a
+   * folder that has a file open; it gives back what puts the player as it was. Then the first row of the list is selected. When it fails
+   * the notice says why, the recording stays, the player is put back and the recording is read again.
+   */
+  async remove(id: string, release?: () => (() => void) | void): Promise<boolean> {
+    const restore = release?.();
+    try {
+      await api.meetingDelete(id);
+    } catch (e) {
+      this.notify(errorMessage(asErrorView(e)));
+      restore?.();
+      await this.reloadDetail(true);
+      return false;
+    }
+    this.asks.delete(id);
+    await this.load();
+    // `load` has taken the first row of a whole list; the list of a search may still have the recording selected.
+    if (this.selectedId === id) await this.select(this.rows.find((row) => row.id !== id)?.id ?? null);
+    return true;
+  }
+
   async cancel(id: string): Promise<void> {
     try {
       await api.meetingCancel(id);
@@ -271,6 +371,15 @@ export class MeetingsStore {
 
   closeLog(): void {
     this.logFor = null;
+  }
+
+  /** Asks for the rename of the speakers (of one speaker, when it is named): Task 13's sheet answers it. */
+  openRename(speaker?: string): void {
+    this.renameFor = { speaker: speaker ?? null };
+  }
+
+  closeRename(): void {
+    this.renameFor = null;
   }
 
   openLinkDialog(): void {

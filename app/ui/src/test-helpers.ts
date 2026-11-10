@@ -7,12 +7,14 @@ import type {
   FileDropEvent,
   HotkeyStatus,
   JobView,
+  MediaView,
   MeetingDetail,
   MeetingRow,
   Readiness,
   Settings,
   SettingsTab,
   SettingsView,
+  SummaryView,
 } from "./lib/api";
 import { SettingsStore } from "./lib/settings-store.svelte";
 import type { PanelState } from "./panel/state";
@@ -288,6 +290,94 @@ export function fakeDetail(overrides: Partial<MeetingDetail> = {}): MeetingDetai
     mediaMissing: false,
     ...overrides,
   };
+}
+
+/** The summary a model wrote, in the shape the window gets it: a summary, a point, a decision, two action items, a question and two chapters. */
+export function fakeSummary(overrides: Partial<SummaryView> = {}): SummaryView {
+  return {
+    markdown: "# Weekly planning\n\n## Summary\nWe planned the quarter.",
+    title: "Weekly planning",
+    summary: "We planned the quarter.",
+    keyPoints: "- Budget is **fixed**\n- See [01:05] for the budget",
+    decisions: ["Ship in May"],
+    actions: [
+      { index: 0, owner: "An", text: "Send the budget", done: false },
+      { index: 1, owner: null, text: "Book the room", done: true },
+    ],
+    questions: ["Who owns the docs?"],
+    timeline: [
+      { seconds: 0, label: "00:00", text: "Kick-off" },
+      { seconds: 65, label: "01:05", text: "Budget" },
+    ],
+    other: [],
+    ...overrides,
+  };
+}
+
+/** Where a recording plays from: the address of the local media server, which differs from one launch to the next. */
+export function fakeMedia(overrides: Partial<MediaView> = {}): MediaView {
+  return { url: "http://127.0.0.1:41000/token/1", video: true, ...overrides };
+}
+
+/**
+ * A media element, as far as the player's logic looks at one: a position, whether it is paused, an address that resets the position
+ * when it is set (as the load of a new address does), the three calls and the events. A test sends the events itself.
+ */
+export class FakeMedia extends EventTarget {
+  paused = true;
+  ended = false;
+  currentTime = 0;
+  private attributes = new Map<string, string>();
+  /** Every address that was set, in order. */
+  readonly sources: string[] = [];
+  /** The calls that were made, in order: "play", "pause", "load". */
+  readonly calls: string[] = [];
+
+  get src(): string {
+    return this.attributes.get("src") ?? "";
+  }
+
+  set src(address: string) {
+    this.attributes.set("src", address);
+    this.sources.push(address);
+    this.currentTime = 0;
+  }
+
+  getAttribute(name: string): string | null {
+    return this.attributes.get(name) ?? null;
+  }
+
+  removeAttribute(name: string): void {
+    this.calls.push(`removeAttribute(${name})`);
+    this.attributes.delete(name);
+  }
+
+  play = vi.fn(async () => {
+    this.calls.push("play");
+    this.paused = false;
+    this.emit("play");
+  });
+
+  pause = vi.fn(() => {
+    this.calls.push("pause");
+    if (this.paused) return;
+    this.paused = true;
+    this.emit("pause");
+  });
+
+  load = vi.fn(() => {
+    this.calls.push("load");
+  });
+
+  emit(type: string): void {
+    this.dispatchEvent(new Event(type));
+  }
+
+  /** The element is playing, at this position. */
+  playAt(seconds: number): void {
+    this.currentTime = seconds;
+    this.paused = false;
+  }
 }
 
 /**

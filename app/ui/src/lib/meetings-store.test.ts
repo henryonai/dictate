@@ -626,3 +626,260 @@ describe("the questions asked", () => {
     expect(store.asks.get(OTHER)).toBeUndefined();
   });
 });
+
+describe("asking about a recording", () => {
+  test("ask_submits_once: the question is kept with a waiting answer, and the answer takes its place", async () => {
+    await started();
+    let answer: (text: string) => void = () => {};
+    vi.mocked(api.meetingAsk).mockImplementation(() => new Promise((resolve) => (answer = resolve)));
+
+    const done = store.ask(ID, "  Who owns the docs?  ");
+    expect(api.meetingAsk).toHaveBeenCalledWith(ID, "Who owns the docs?");
+    expect(store.asks.get(ID)).toEqual([{ question: "Who owns the docs?", answer: null, error: null }]);
+    expect(store.asking(ID)).toBe(true);
+    expect(store.asking(OTHER)).toBe(false);
+
+    answer("An does, see [01:05].");
+    await done;
+
+    expect(store.asks.get(ID)).toEqual([{ question: "Who owns the docs?", answer: "An does, see [01:05].", error: null }]);
+    expect(store.asking(ID)).toBe(false);
+  });
+
+  test("a question is asked once while its answer is awaited, and an empty one is not asked", async () => {
+    await started();
+    vi.mocked(api.meetingAsk).mockImplementation(() => new Promise(() => {}));
+
+    void store.ask(ID, "First?");
+    void store.ask(ID, "Second?");
+    void store.ask(OTHER, "   ");
+
+    expect(api.meetingAsk).toHaveBeenCalledTimes(1);
+    expect(store.asks.get(ID)?.map((qa) => qa.question)).toEqual(["First?"]);
+    expect(store.asks.has(OTHER)).toBe(false);
+  });
+
+  test("ask_error_shows_message: a refusal is kept with the question, as a view that the window words", async () => {
+    await started();
+    const refusal = fakeError({ kind: "Api", key: "meetings.error.no_ai", detail: null });
+    vi.mocked(api.meetingAsk).mockRejectedValue(refusal);
+
+    await store.ask(ID, "Who?");
+
+    expect(store.asks.get(ID)).toEqual([{ question: "Who?", answer: null, error: refusal }]);
+    expect(store.asking(ID)).toBe(false);
+  });
+
+  test("a rejection that is a sentence is kept as an error of no kind in particular", async () => {
+    await started();
+    vi.mocked(api.meetingAsk).mockRejectedValue("The IPC failed.");
+
+    await store.ask(ID, "Who?");
+
+    expect(store.asks.get(ID)?.[0].error).toEqual({
+      kind: "Other",
+      key: "meetings.error.other",
+      detail: "The IPC failed.",
+      command: null,
+    });
+  });
+
+  test("questions of a recording come one after the other, and another recording has its own", async () => {
+    await started();
+    vi.mocked(api.meetingAsk).mockResolvedValueOnce("One.").mockResolvedValueOnce("Two.").mockResolvedValueOnce("Three.");
+
+    await store.ask(ID, "a?");
+    await store.ask(ID, "b?");
+    await store.ask(OTHER, "c?");
+
+    expect(store.asks.get(ID)?.map((qa) => [qa.question, qa.answer])).toEqual([
+      ["a?", "One."],
+      ["b?", "Two."],
+    ]);
+    expect(store.asks.get(OTHER)?.map((qa) => qa.answer)).toEqual(["Three."]);
+  });
+});
+
+describe("what the detail's menus do", () => {
+  test("a task is ticked with the index of the action item, and a failure says why and gives false", async () => {
+    await started();
+    expect(await store.setTask(ID, 2, true)).toBe(true);
+    expect(api.meetingSetTask).toHaveBeenCalledWith(ID, 2, true);
+
+    vi.mocked(api.meetingSetTask).mockRejectedValue("Could not write tasks.json.");
+    expect(await store.setTask(ID, 2, false)).toBe(false);
+    expect(store.notice).toBe("Could not write tasks.json.");
+  });
+
+  test("the folder is opened, and a failure is a notice", async () => {
+    await started();
+    await store.openFolder(ID);
+    expect(api.meetingOpenFolder).toHaveBeenCalledWith(ID);
+
+    vi.mocked(api.meetingOpenFolder).mockRejectedValue("Could not open the folder.");
+    await store.openFolder(ID);
+    expect(store.notice).toBe("Could not open the folder.");
+  });
+
+  test("the media is opened in another app, and a view that says why not is worded", async () => {
+    await started();
+    await store.openMedia(ID);
+    expect(api.meetingOpenMedia).toHaveBeenCalledWith(ID);
+    expect(store.notice).toBe("");
+
+    vi.mocked(api.meetingOpenMedia).mockRejectedValue(fakeError({ kind: "NoMedia", key: "meetings.error.no_media", detail: null }));
+    await store.openMedia(ID);
+    expect(store.notice).toBe("No media file.");
+  });
+
+  test("export_menu_calls_commands: the file is saved with the command, and a closed dialog is no failure", async () => {
+    await started();
+    vi.mocked(api.meetingExport).mockResolvedValueOnce(false);
+    expect(await store.exportMarkdown(ID)).toBe(false);
+    expect(store.notice).toBe("");
+
+    expect(await store.exportMarkdown(ID)).toBe(true);
+    expect(api.meetingExport).toHaveBeenCalledWith(ID);
+  });
+
+  test("a failed export says why, in the words of the view", async () => {
+    await started();
+    vi.mocked(api.meetingExport).mockRejectedValue(fakeError({ detail: "Could not write the file: disk full" }));
+
+    expect(await store.exportMarkdown(ID)).toBe(false);
+
+    expect(store.notice).toBe("Could not write the file: disk full");
+  });
+
+  test("the whole Markdown is read and copied", async () => {
+    await started();
+    vi.mocked(api.meetingMarkdown).mockResolvedValue("# Weekly planning\n\n---\n\n## Transcript");
+
+    expect(await store.copyMarkdown(ID)).toBe(true);
+
+    expect(api.meetingMarkdown).toHaveBeenCalledWith(ID);
+    expect(api.copyText).toHaveBeenCalledWith("# Weekly planning\n\n---\n\n## Transcript");
+  });
+
+  test("a Markdown that can't be read is not copied, and says why", async () => {
+    await started();
+    vi.mocked(api.meetingMarkdown).mockRejectedValue("Recording not found.");
+
+    expect(await store.copyMarkdown(ID)).toBe(false);
+
+    expect(api.copyText).not.toHaveBeenCalled();
+    expect(store.notice).toBe("Recording not found.");
+  });
+
+  test("the rename of speakers is asked for, for one speaker or for all, and is forgotten when another recording is selected", async () => {
+    await started();
+    await store.select(ID);
+    expect(store.renameFor).toBeNull();
+
+    store.openRename("Speaker 2");
+    expect(store.renameFor).toEqual({ speaker: "Speaker 2" });
+    store.openRename();
+    expect(store.renameFor).toEqual({ speaker: null });
+
+    await store.select(OTHER);
+    expect(store.renameFor).toBeNull();
+
+    store.openRename();
+    store.closeRename();
+    expect(store.renameFor).toBeNull();
+  });
+});
+
+describe("delete", () => {
+  test("the player is released first, then the recording goes to the Trash, and the first row is selected", async () => {
+    await started();
+    await store.select(OTHER);
+    const order: string[] = [];
+    vi.mocked(api.meetingDelete).mockImplementation(async () => {
+      order.push("delete");
+    });
+    // The library as it is after the delete.
+    vi.mocked(api.meetingsList).mockResolvedValue([row]);
+
+    expect(
+      await store.remove(OTHER, () => {
+        order.push("release");
+      }),
+    ).toBe(true);
+
+    expect(order).toEqual(["release", "delete"]);
+    expect(api.meetingDelete).toHaveBeenCalledWith(OTHER);
+    expect(store.selectedId).toBe(ID);
+  });
+
+  test("the first row is selected when a search has left the deleted one in the list's place, too", async () => {
+    await started();
+    store.search("planning");
+    await vi.waitFor(() => expect(api.meetingsList).toHaveBeenCalledWith("planning"));
+    await store.select(ID);
+    // After the delete the search finds nothing but another one.
+    vi.mocked(api.meetingsList).mockResolvedValue([other]);
+
+    await store.remove(ID);
+
+    expect(store.selectedId).toBe(OTHER);
+  });
+
+  test("the last recording that goes leaves nothing selected", async () => {
+    await started([row]);
+    await store.select(ID);
+    vi.mocked(api.meetingsList).mockResolvedValue([]);
+
+    await store.remove(ID);
+
+    expect(store.selectedId).toBeNull();
+    expect(store.detail).toBeNull();
+  });
+
+  test("its questions are forgotten with it", async () => {
+    await started();
+    await store.ask(ID, "Who?");
+    vi.mocked(api.meetingsList).mockResolvedValue([other]);
+
+    await store.remove(ID);
+
+    expect(store.asks.has(ID)).toBe(false);
+  });
+
+  test("a failure shows the detail of the view, keeps the recording selected, gives the player back and reads the recording again", async () => {
+    await started();
+    await store.select(ID);
+    vi.mocked(api.meetingDelete).mockRejectedValue("Could not move the recording to the Trash: in use");
+    const before = store.detail;
+    const restore = vi.fn();
+
+    expect(await store.remove(ID, () => restore)).toBe(false);
+
+    expect(store.notice).toBe("Could not move the recording to the Trash: in use");
+    expect(store.selectedId).toBe(ID);
+    expect(restore).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(store.detail).not.toBe(before));
+    expect(store.detail?.row.id).toBe(ID);
+  });
+
+  test("a delete that works does not give the player back", async () => {
+    await started();
+    await store.select(ID);
+    const restore = vi.fn();
+    vi.mocked(api.meetingsList).mockResolvedValue([other]);
+
+    await store.remove(ID, () => restore);
+
+    expect(restore).not.toHaveBeenCalled();
+  });
+
+  test("a failure that is an error view is worded", async () => {
+    await started();
+    await store.select(ID);
+    vi.mocked(api.meetingDelete).mockRejectedValue(fakeError({ detail: "Trash is full" }));
+
+    await store.remove(ID);
+
+    expect(store.notice).toBe("Trash is full");
+  });
+});

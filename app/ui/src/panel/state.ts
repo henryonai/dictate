@@ -273,6 +273,11 @@ export function onMac(): boolean {
   return /mac|iphone|ipad/i.test(navigator.platform || navigator.userAgent);
 }
 
+/** Whether this is Linux (WebKitGTK): the one system where the web view may have no decoder for the audio of a recording. */
+export function onLinux(): boolean {
+  return /linux/i.test(navigator.platform || navigator.userAgent);
+}
+
 /**
  * What a key press means in the card: Cmd (Ctrl) and 1 to 5 run a style, with Alt and Z undo, with Return confirm; Esc
  * discards. Keys are told by `code` (the key on the keyboard): with Alt held the letter of the key is another one. On
