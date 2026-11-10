@@ -6,13 +6,15 @@
 //! Sink Writer on Windows) and ffmpeg everywhere else, or when Media Foundation is not there (the "N" editions of
 //! Windows leave it out unless the Media Feature Pack is installed).
 //!
-//! Every sink writes to `<out>.part` and renames it to `<out>` when it is finished, so that a quit or a crash never
-//! leaves a half-written `audio.m4a`; a sink that is dropped without being finished removes its `.part` file.
+//! Every sink writes to `<out>.<nonce>.part` (a name of its own) and renames it to `<out>` when it is finished, so that a
+//! quit or a crash never leaves a half-written `audio.m4a`; a sink that is dropped without being finished removes its
+//! `.part` file.
 
 use std::ffi::OsString;
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 mod ffmpeg;
 #[cfg(target_os = "macos")]
@@ -116,10 +118,19 @@ fn remove_part(part: &Path) {
     }
 }
 
-/// The file a sink writes to until it is finished: `audio.m4a` becomes `audio.m4a.part`.
+/// The file a sink writes to until it is finished: `audio.m4a` becomes `audio.m4a.<nonce>.part`, a name that no other sink
+/// has. A job that is cancelled while its encoder is still going ends late (the blocking work looks at the cancel between
+/// blocks), possibly after the job that replaced it has started on the same `audio.m4a`: each removes only its own file.
+/// The sweep at the start of the app removes every `*.part`, whatever the nonce.
 fn part_path(out: &Path) -> PathBuf {
+    static SINKS: AtomicU64 = AtomicU64::new(0);
+    let nonce = format!(
+        "{:x}-{:x}",
+        std::process::id(),
+        SINKS.fetch_add(1, Ordering::Relaxed)
+    );
     let mut part = OsString::from(out);
-    part.push(".part");
+    part.push(format!(".{nonce}.part"));
     PathBuf::from(part)
 }
 
@@ -176,7 +187,10 @@ pub(crate) mod checks {
         sink.finish().unwrap();
 
         assert!(out.exists());
-        assert!(!part_path(&out).exists(), "the .part file was left behind");
+        assert!(
+            part_files(&out).is_empty(),
+            "the .part file was left behind"
+        );
         let bytes = fs::read(&out).unwrap();
         assert_eq!(&bytes[4..8], b"ftyp", "not an MP4 file");
         let brand = &bytes[8..12];
@@ -214,7 +228,6 @@ pub(crate) mod checks {
         const BLOCK: usize = 4_800;
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("audio.m4a");
-        let part = part_path(&out);
         let mut sink = start(&out);
 
         for block in 0..600 {
@@ -222,7 +235,9 @@ pub(crate) mod checks {
             if block == 299 {
                 // 30 s of audio is about 360 KB of AAC: far more than an encoder's own buffers hold.
                 wait_for("the encoder to write to the file as it goes", || {
-                    fs::metadata(&part).is_ok_and(|m| m.len() > 100_000)
+                    part_files(&out)
+                        .iter()
+                        .any(|part| fs::metadata(part).is_ok_and(|m| m.len() > 100_000))
                 });
             }
         }
@@ -246,18 +261,66 @@ pub(crate) mod checks {
     pub fn leaves_no_file_when_dropped(start: Start) {
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("audio.m4a");
-        let part = part_path(&out);
         let mut sink = start(&out);
         sink.write(&tone(M4A_RATE as usize)).unwrap();
         // Given a moment, so that there is a file to remove when the encoder makes one early. It is not waited for:
         // an encoder that is another process makes its file when it likes (ffmpeg 6 only once it has read enough of
         // its input to start), and the drop has to leave nothing behind whether the file is there yet or not.
-        becomes_true_within(2, || part.exists());
+        becomes_true_within(2, || !part_files(&out).is_empty());
 
         drop(sink);
 
         assert!(!out.exists());
-        assert!(!part.exists());
+        assert!(part_files(&out).is_empty());
+    }
+
+    /// The `.part` files of `out` that are in its folder now (whatever the nonce in their names).
+    pub fn part_files(out: &Path) -> Vec<PathBuf> {
+        let name = out.file_name().unwrap().to_string_lossy().into_owned();
+        let Ok(entries) = fs::read_dir(out.parent().unwrap()) else {
+            return Vec::new();
+        };
+        entries
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                let found = entry.file_name().to_string_lossy().into_owned();
+                found.starts_with(&format!("{name}.")) && found.ends_with(".part")
+            })
+            .map(|entry| entry.path())
+            .collect()
+    }
+
+    /// A job that was cancelled while its encoder was still going ends late, after the job that replaced it has started
+    /// writing the same `audio.m4a`: what the old one removes is its own `.part` file, and the new one still finishes and
+    /// publishes its own audio.
+    pub fn an_old_sink_that_ends_late_leaves_the_new_one_alone(start: Start) {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("audio.m4a");
+        let mut old = start(&out);
+        old.write(&tone(M4A_RATE as usize)).unwrap();
+        let mut new = start(&out);
+        new.write(&tone(2 * M4A_RATE as usize)).unwrap();
+        // An encoder that is another process makes its file when it likes: both have theirs before the old one ends.
+        wait_for("the two sinks to have a file each", || {
+            part_files(&out).len() == 2
+        });
+
+        drop(old);
+
+        assert_eq!(
+            part_files(&out).len(),
+            1,
+            "the old sink took the new one's file"
+        );
+        new.finish().unwrap();
+        assert!(part_files(&out).is_empty(), "a .part file is left");
+        let mut decoder = MonoDecoder::open(&out, None).unwrap();
+        let samples = read_all(&mut decoder).len();
+        // The new sink's two seconds, not the old one's one.
+        assert!(
+            samples.abs_diff(2 * M4A_RATE as usize) <= 2 * M4A_RATE as usize * 5 / 100,
+            "{samples} samples"
+        );
     }
 
     /// A folder named in Vietnamese, with spaces and (where a file can have one) a colon in the name of the file.
@@ -324,6 +387,13 @@ mod tests {
     }
 
     #[test]
+    fn an_old_encode_that_ends_late_leaves_the_new_one_alone() {
+        let Some(start) = system_writer() else { return };
+
+        an_old_sink_that_ends_late_leaves_the_new_one_alone(&start);
+    }
+
+    #[test]
     fn encode_writes_into_a_folder_named_in_vietnamese() {
         let Some(start) = system_writer() else { return };
 
@@ -341,10 +411,20 @@ mod tests {
     }
 
     #[test]
-    fn the_part_file_is_the_name_with_part_added() {
-        assert_eq!(
-            part_path(Path::new("/a b/audio.m4a")),
-            Path::new("/a b/audio.m4a.part")
-        );
+    fn each_sink_has_a_part_file_of_its_own_next_to_the_audio() {
+        let out = Path::new("/a b/audio.m4a");
+
+        let first = part_path(out);
+        let second = part_path(out);
+
+        assert_ne!(first, second);
+        for part in [&first, &second] {
+            assert_eq!(part.parent(), Some(Path::new("/a b")));
+            let name = part.file_name().unwrap().to_string_lossy();
+            assert!(
+                name.starts_with("audio.m4a.") && name.ends_with(".part"),
+                "{name}"
+            );
+        }
     }
 }

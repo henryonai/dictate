@@ -1445,7 +1445,13 @@ mod tests {
             assert_eq!(prepared.m4a, Ok(()));
         }
         assert_eq!(out.is_file(), prepared.m4a.is_ok(), "{:?}", prepared.m4a);
-        assert!(!folder.join("audio.m4a.part").exists());
+        let leftovers: Vec<_> = fs::read_dir(&folder)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".part"))
+            .collect();
+        assert!(leftovers.is_empty(), "a .part file is left: {leftovers:?}");
         if prepared.m4a.is_ok() {
             assert!(fs::metadata(&out).unwrap().len() > 1_000);
         }

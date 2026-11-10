@@ -50,8 +50,8 @@ pub(super) fn create(out: &Path) -> Result<Box<dyn M4aSink>, EncodeError> {
         mReserved: 0,
     };
     let mut file: ExtAudioFileRef = ptr::null_mut();
-    // SAFETY: the pointers are to values that live through the call. `EraseFile` replaces a `.part` file left by an
-    // earlier run.
+    // SAFETY: the pointers are to values that live through the call. `EraseFile` makes sure that nothing of a file
+    // of the same name is kept.
     let status = unsafe {
         ExtAudioFileCreateWithURL(
             &url,

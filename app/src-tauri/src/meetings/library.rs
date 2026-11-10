@@ -1460,7 +1460,7 @@ mod tests {
         let f = Fixture::new();
         let stale = |id: &str, name: &str| fs::write(f.folder(id).join(name), b"x").unwrap();
         stale(SCREEN, "transcript.txt.123-0.tmp");
-        stale(SCREEN, "audio.m4a.part");
+        stale(SCREEN, "audio.m4a.4d2-0.part");
         stale(LINK, "source.m4a.part");
         stale(LINK, "api-slice-0.wav");
         stale(FILE, "meta.json.9-1.tmp");

@@ -250,6 +250,13 @@ mod tests {
     }
 
     #[test]
+    fn an_old_ffmpeg_that_ends_late_leaves_the_new_one_alone() {
+        let Some(start) = real_writer() else { return };
+
+        an_old_sink_that_ends_late_leaves_the_new_one_alone(&start);
+    }
+
+    #[test]
     fn ffmpeg_writes_into_a_folder_named_in_vietnamese() {
         let Some(start) = real_writer() else { return };
 
@@ -270,7 +277,7 @@ mod tests {
         sink.write(&tone(M4A_RATE as usize)).unwrap();
 
         wait_for("ffmpeg to start writing the file", || {
-            part_path(&out).exists()
+            !part_files(&out).is_empty()
         });
     }
 
@@ -300,9 +307,19 @@ mod tests {
             .collect();
         assert_eq!(sent, expected);
         let args = fs::read_to_string(format!("{}.args", fake.display())).unwrap();
-        let part = format!("file:{}.part", out.display());
+        let args: Vec<&str> = args.lines().collect();
+        // The last argument is the sink's own `.part` file, which has a nonce in its name.
+        let (&part, args) = args.split_last().unwrap();
+        let part = part.strip_prefix("file:").unwrap();
+        let part = Path::new(part);
+        assert_eq!(part.parent(), out.parent());
+        let name = part.file_name().unwrap().to_string_lossy();
+        assert!(
+            name.starts_with("audio.m4a.") && name.ends_with(".part"),
+            "{name}"
+        );
         assert_eq!(
-            args.lines().collect::<Vec<_>>(),
+            args,
             [
                 "-nostdin",
                 "-y",
@@ -327,12 +344,11 @@ mod tests {
                 "-movflags",
                 "+faststart",
                 "-f",
-                "ipod",
-                part.as_str()
+                "ipod"
             ]
         );
         assert!(out.exists(), "the .part file is not renamed");
-        assert!(!part_path(&out).exists());
+        assert!(part_files(&out).is_empty());
     }
 
     #[test]
@@ -354,7 +370,7 @@ mod tests {
         assert!(error.contains("Unknown encoder aac"), "{error}");
         assert!(error.contains('3'), "the exit code is missing: {error}");
         assert!(!out.exists());
-        assert!(!part_path(&out).exists());
+        assert!(part_files(&out).is_empty());
     }
 
     #[test]

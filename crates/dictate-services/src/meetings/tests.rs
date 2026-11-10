@@ -2170,6 +2170,9 @@ fn startup_sweep_removes_leftovers_directly_in_a_folder_and_nothing_else() {
         "source.m4a.part",
         "source.webm.part",
         "audio.m4a.part",
+        // The `.part` file of an encoder has a nonce in its name.
+        "audio.m4a.1a2b-0.part",
+        "audio.m4a.1a2b-1.part",
         "api-slice-0.wav",
         "api-slice-480.wav",
         "UPPER.TMP",
