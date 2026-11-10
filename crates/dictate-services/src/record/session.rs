@@ -28,7 +28,7 @@ mod ticker;
 
 use finalize::{finalize_with, Hints, STEMS};
 use gate::{lock, SharedGate};
-use pump::{Pump, PumpSetup, SharedMeters};
+use pump::{Pump, PumpSetup, SharedMeters, StemEnd};
 use ticker::{Ticker, VideoSetup};
 
 pub use finalize::{finalize, recover};
@@ -249,6 +249,11 @@ impl Session {
         let Some(thread) = self.thread.take() else {
             return Err(io::Error::other("the recording is over already"));
         };
+        // The recording ends now. The clock stops here, on the caller's thread as `pause` does, and not where the
+        // session's thread gets to the message: that thread may be busy (it reports the state, and the report may be
+        // slow) or not scheduled, and what it takes is then recorded, by the stems and the video that go on until the
+        // clock stops.
+        lock(&self.gate).close(Instant::now());
         let _ = self.control.send(Control::Stop);
         match thread.join() {
             Ok(Ok(Some(finished))) => Ok(finished),
@@ -278,6 +283,8 @@ impl Session {
 impl Drop for Session {
     fn drop(&mut self) {
         if let Some(thread) = self.thread.take() {
+            // As `stop` does: the recording ends now, and not when the session's thread hears of it.
+            lock(&self.gate).close(Instant::now());
             let _ = self.control.send(Control::Abandon);
             let _ = thread.join();
         }
@@ -502,29 +509,7 @@ impl Worker {
                 hints.video_seconds = Some(end.frames as f64 / fps);
             }
         }
-        // Every stem as long as the recording: a source that went quiet at the end (a system that plays no sound
-        // sends no buffers) is shorter than the clock says.
-        let seconds = active.as_secs_f64();
-        for stem in stems {
-            let long_enough = match &stem.result {
-                Ok(length) => *length >= seconds,
-                Err(e) => {
-                    notes.push(format!(
-                        "{} could not be finished: {e}.",
-                        file_name(&stem.path)
-                    ));
-                    false
-                }
-            };
-            if !long_enough && stem.path.is_file() {
-                if let Err(e) = pad_to(&stem.path, seconds) {
-                    notes.push(format!(
-                        "{} could not be made as long as the recording: {e}.",
-                        file_name(&stem.path)
-                    ));
-                }
-            }
-        }
+        pad_stems(stems, active, &mut notes);
         let mut finished = finalize_with(&self.folder, self.ffmpeg.as_deref(), &hints)?;
         notes.append(&mut finished.notes);
         finished.notes = notes;
@@ -545,17 +530,44 @@ impl Worker {
         Ok(None)
     }
 
-    /// Stops everything and leaves the files for `recover`.
+    /// Stops everything and leaves the files for `recover`: the stems as long as the recording ran, and the video as it
+    /// is.
     fn abandon(mut self) -> Outcome {
-        self.freeze();
+        let active = self.freeze();
         self.stop_sources();
         if let Some(ticker) = self.ticker.take() {
             ticker.abort();
         }
         if let Some(pump) = self.pump.take() {
-            pump.finish();
+            pad_stems(pump.finish(), active, &mut Vec::new());
         }
         Ok(None)
+    }
+}
+
+/// Makes every stem as long as the recording (`active`): a source that went quiet at the end (a system that plays no
+/// sound sends no buffers) is shorter than the clock says. What goes wrong is told in `notes`.
+fn pad_stems(stems: Vec<StemEnd>, active: Duration, notes: &mut Vec<String>) {
+    let seconds = active.as_secs_f64();
+    for stem in stems {
+        let long_enough = match &stem.result {
+            Ok(length) => *length >= seconds,
+            Err(e) => {
+                notes.push(format!(
+                    "{} could not be finished: {e}.",
+                    file_name(&stem.path)
+                ));
+                false
+            }
+        };
+        if !long_enough && stem.path.is_file() {
+            if let Err(e) = pad_to(&stem.path, seconds) {
+                notes.push(format!(
+                    "{} could not be made as long as the recording: {e}.",
+                    file_name(&stem.path)
+                ));
+            }
+        }
     }
 }
 

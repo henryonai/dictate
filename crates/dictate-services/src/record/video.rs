@@ -1359,9 +1359,13 @@ mod tests {
         let mut encoder =
             VideoEncoder::start(dir.path(), (4, 2), &Quality::Small.spec(), &codec, &fake).unwrap();
 
-        // The pipe is closed once the script has ended: it takes a moment, and then every push fails the same way.
+        // The pipe is closed once the script has ended: it takes a moment, and then every push fails the same way. A
+        // push fails only when nothing holds the reading end of the pipe, and on macOS a program that another test
+        // started while this pipe was being made can (std makes a pipe there in two steps, and the second is what
+        // keeps it from going to a program that is started meanwhile): until that program ends, which is seconds when
+        // the tests run together. So it is waited for, up to a minute, and not for as long as an idle machine needs.
         let mut error = None;
-        for _ in 0..200 {
+        for _ in 0..6000 {
             if let Err(e) = encoder.push(&[0; 32]) {
                 error = Some(e);
                 break;
@@ -1764,7 +1768,7 @@ mod tests {
             encoder.push(&moving_frame(SIZE.0, SIZE.1, n)).unwrap();
         }
 
-        let give_up = Instant::now() + Duration::from_secs(15);
+        let give_up = Instant::now() + Duration::from_secs(60);
         loop {
             if readable_seconds(dir.path(), &ffmpeg).is_some_and(|seconds| seconds >= 1.9) {
                 break;

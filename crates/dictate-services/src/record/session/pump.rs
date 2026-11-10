@@ -302,25 +302,35 @@ mod tests {
     fn a_long_silence_to_fill_does_not_hold_up_the_frames() {
         let rig = rig();
         rig.events.send(audio(rig.base, 0, Track::Mic)).unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        let began = Instant::now();
         // The next sound is twenty minutes on: 58 million samples of silence to write before it, which takes a moment.
         rig.events.send(audio(rig.base, 1200, Track::Mic)).unwrap();
-        std::thread::sleep(Duration::from_millis(50));
-
         rig.events.send(frame()).unwrap();
 
-        let give_up = Instant::now() + Duration::from_millis(250);
-        while rig.frames.latest().is_none() {
-            assert!(
-                Instant::now() < give_up,
-                "the frame waited for the silence to be written"
-            );
-            std::thread::sleep(Duration::from_millis(2));
+        let mut frame_came = None;
+        while frame_came.is_none() {
+            assert!(began.elapsed() < Duration::from_secs(60), "no frame came");
+            if rig.frames.latest().is_some() {
+                frame_came = Some(began.elapsed());
+            } else {
+                std::thread::sleep(Duration::from_millis(1));
+            }
         }
-        // And all of it is written in the end.
+        // And all of it is written in the end, which is when the silence is.
         let ends = rig.pump.finish();
+        let written = began.elapsed();
         assert_eq!(ends.len(), 1);
         let seconds = ends[0].result.as_ref().unwrap();
         assert!((seconds - 1200.01).abs() < 0.01, "{seconds} s");
+        // The frame came while the silence was being written, and not after: well before it was all written (it would
+        // be at the same time, if the one thread did both). How long either takes depends on the machine, and the
+        // two are compared with each other.
+        let frame_came = frame_came.unwrap();
+        assert!(
+            frame_came * 2 < written,
+            "the frame came after {frame_came:?} and the silence was written after {written:?}"
+        );
     }
 
     #[test]

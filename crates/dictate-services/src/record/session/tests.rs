@@ -95,6 +95,149 @@ fn has_ended(states: &States) -> bool {
         .any(|(_, state)| matches!(state, SessionState::Ended(_)))
 }
 
+/// How far this machine's scheduler is from the clock right now: how much later than asked the sleeps of a test have
+/// ended, the worst of them. A test cannot tell the moment it asked for something from the moment it was done (it may be
+/// put aside between two statements), so what it asserts about time is bounded by this and not by a figure that suits
+/// an idle machine: on a busy one the figure goes up with the load, which is what makes a loaded runner no reason for
+/// a test to fail.
+struct Slack(std::cell::Cell<Duration>);
+
+impl Slack {
+    /// The slack as it is now: a few short sleeps.
+    fn measure() -> Slack {
+        let slack = Slack(std::cell::Cell::new(Duration::ZERO));
+        for _ in 0..10 {
+            slack.sleep(5);
+        }
+        slack
+    }
+
+    /// Sleeps `milliseconds` and notes how late it ended.
+    fn sleep(&self, milliseconds: u64) {
+        let asked = Duration::from_millis(milliseconds);
+        let begun = Instant::now();
+        std::thread::sleep(asked);
+        let late = begun.elapsed().saturating_sub(asked);
+        self.0.set(self.0.get().max(late));
+    }
+
+    /// What a statement of the test may be off by, in seconds: 30 ms, and three times the worst sleep that was late.
+    fn tolerance(&self) -> f64 {
+        0.03 + 3.0 * self.0.get().as_secs_f64()
+    }
+}
+
+/// How the test's `Instant`s and the session's time go together: the first report of the session says how much of
+/// the recording had gone by when the test saw it, and from then on the recording runs as the test's clock does
+/// (less the pauses, which the test counts).
+struct Reference {
+    seen: Instant,
+    active: f64,
+}
+
+impl Reference {
+    /// Waits for the first report.
+    fn of(states: &States) -> Reference {
+        wait_until("the first report", || !states.lock().unwrap().is_empty());
+        let reports = states.lock().unwrap();
+        let (seen, SessionState::Recording { active, .. }) = &reports[0] else {
+            panic!("the first report is not of a recording: {:?}", reports[0].1)
+        };
+        Reference {
+            seen: *seen,
+            active: active.as_secs_f64(),
+        }
+    }
+
+    /// How much of the recording would have gone by at `at`, in seconds, had it not been paused.
+    fn active_at(&self, at: Instant) -> f64 {
+        if at >= self.seen {
+            self.active + (at - self.seen).as_secs_f64()
+        } else {
+            self.active - (self.seen - at).as_secs_f64()
+        }
+    }
+}
+
+/// How long one buffer of a live tone is: a stem can be this much longer than the recording, by the buffer that was
+/// being taken as the recording ended.
+const CHUNK_SECONDS: f64 = 0.02;
+
+/// How long a frame of the Standard quality is. The video of a recording is a whole number of frames, and the sound is made
+/// as long as the video: a recording with video can be this much longer than the clock says.
+const FRAME_SECONDS: f64 = 1.0 / 15.0;
+
+/// The instants just before and just after a call: what it did was done between them.
+fn bracket<R>(call: impl FnOnce() -> R) -> (Instant, Instant) {
+    let before = Instant::now();
+    call();
+    (before, Instant::now())
+}
+
+/// That a recording lasted as long as it ran: `lo` to `hi` seconds by the clock (the bounds of when it was stopped, from the
+/// test's own instants), and no more than `longer_by` over (the buffer that was being taken as it ended, or the frame that
+/// the video is rounded up to). What the machine did to the time between the test's statements is `slack`.
+fn assert_lasted(duration: f64, lo: f64, hi: f64, longer_by: f64, slack: &Slack) {
+    let tolerance = slack.tolerance();
+    assert!(
+        duration >= lo - tolerance && duration <= hi + tolerance + longer_by,
+        "the recording was {duration} s, and ran {lo} s to {hi} s (to within {tolerance} s, and {longer_by} s over)"
+    );
+}
+
+/// That the sound of `media` is as long as the recording said it was. The AAC of an m4a has priming at the start (2 112
+/// samples with the encoder of macOS, 1 024 with ffmpeg's) and the last frame is filled to its end (up to 1 024 samples
+/// more): 66 ms at the most at 48 kHz, so that is no more than 0.1 s off.
+fn assert_decodes_as_long(media: &Path, ffmpeg: &Path, duration: f64) {
+    let decoded = audio_seconds(media, ffmpeg);
+    assert!(
+        (decoded - duration).abs() < 0.1,
+        "{decoded} s of sound for a recording of {duration} s"
+    );
+}
+
+/// That the video of `media` is as long as the recording said it was. The ticker gives every frame that is due when the
+/// clock stops, so the video is up to a frame (1/15 s) longer, and the last time of the decoder is a frame one way or the
+/// other.
+fn assert_video_as_long(media: &Path, ffmpeg: &Path, duration: f64) {
+    let video = video_seconds(media, ffmpeg);
+    assert!(
+        (video - duration).abs() < 0.2,
+        "{video} s of video for a recording of {duration} s"
+    );
+}
+
+/// The levels that were reported of `track` so far, in order.
+fn levels_of(states: &States, track: Track) -> Vec<Option<f32>> {
+    states
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|(_, state)| match state {
+            SessionState::Recording { levels, .. } | SessionState::Paused { levels, .. } => {
+                Some(if track == Track::Mic {
+                    levels.mic
+                } else {
+                    levels.system
+                })
+            }
+            SessionState::Ended(_) => None,
+        })
+        .collect()
+}
+
+/// Waits until the session has taken the buffers that were sent to it before this call, which it says by the meter: a
+/// buffer of a level of its own (constant 0.01: a third of the meter) is sent as `track` and waited for. What is taken
+/// is taken in order, so the ones before it are on their way to the stem by then.
+fn settle(fake: &FakeCapturer, states: &States, track: Track, at: Instant) {
+    fake.send_audio(track, at, 48_000, vec![0.01; 480]);
+    wait_until("the session to take what was sent", || {
+        levels_of(states, track)
+            .iter()
+            .any(|level| level.is_some_and(|level| (0.30..0.37).contains(&level)))
+    });
+}
+
 fn audio_of(path: &Path, ffmpeg: &Path) -> (Vec<f32>, u32) {
     let mut decoder = MonoDecoder::open(path, Some(ffmpeg)).unwrap();
     let samples = read_all(&mut decoder);
@@ -242,26 +385,29 @@ fn audio_only_makes_an_m4a_of_the_active_time() {
             .tone(Track::Mic, 440.0)
             .tone(Track::System, 880.0),
     );
-    let (session, _states) = start(
+    let (session, states) = start(
         options(Mode::Audio, true, true),
         dir.path(),
         &fake,
         Some(&ffmpeg),
     )
     .unwrap();
+    let reference = Reference::of(&states);
+    let slack = Slack::measure();
 
-    sleep(2000);
+    slack.sleep(2000);
+    let asked = Instant::now();
     let finished = session.stop().unwrap();
 
     let name = name_of(&finished.media);
     assert!(is_sound_file(&name), "{name}");
     assert_eq!(finished.media.parent(), Some(dir.path()));
-    assert!(
-        (finished.duration - 2.0).abs() < 0.1,
-        "{} s",
-        finished.duration
-    );
-    assert!((audio_seconds(&finished.media, &ffmpeg) - 2.0).abs() < 0.1);
+    // It is as long as it ran, which is no less than the 2 s that were slept (a sleep is never short), and as much
+    // more as the machine took in getting back to the test.
+    let ran = reference.active_at(asked);
+    assert!(ran >= 2.0 - slack.tolerance(), "{ran} s ran");
+    assert_lasted(finished.duration, ran, ran, CHUNK_SECONDS, &slack);
+    assert_decodes_as_long(&finished.media, &ffmpeg, finished.duration);
     assert!(finished.notes.is_empty(), "{:?}", finished.notes);
     // Nothing is left but the sound: no stems, no marker.
     assert_eq!(names(dir.path()), [name]);
@@ -269,14 +415,75 @@ fn audio_only_makes_an_m4a_of_the_active_time() {
 }
 
 #[test]
+fn the_recording_ends_when_stop_is_called_and_not_when_the_session_gets_to_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = Arc::new(FakeCapturer::new().tone(Track::Mic, 440.0));
+    let states: States = Arc::default();
+    let sink = states.clone();
+    // The session's thread is held in the report of its own state (a slow interface does that) until the test lets it go.
+    let (held, is_held) = std::sync::mpsc::channel();
+    let (go, held_until) = std::sync::mpsc::channel::<()>();
+    let held_until = Mutex::new(held_until);
+    let on_state = move |state| {
+        let mut reports = sink.lock().unwrap();
+        reports.push((Instant::now(), state));
+        // About 1.5 s into the recording: past the second that a recording is made to be at least.
+        if reports.len() == 30 {
+            drop(reports);
+            let _ = held.send(());
+            let _ = held_until.lock().unwrap().recv();
+        }
+    };
+    let session = Session::start_with(
+        options(Mode::Audio, true, false),
+        dir.path(),
+        fake.clone(),
+        None,
+        Box::new(on_state),
+        Timing::default(),
+    )
+    .map_err(|e| format!("{e:?}"))
+    .unwrap();
+    let reference = Reference::of(&states);
+    is_held.recv_timeout(Duration::from_secs(20)).expect("held");
+    let slack = Slack::measure();
+
+    let stopping = std::thread::spawn(move || {
+        let asked = Instant::now();
+        (asked, session.stop())
+    });
+    // The recording is stopped, and the session's thread does not hear of it for most of a second.
+    slack.sleep(700);
+    go.send(()).unwrap();
+    let (asked, finished) = stopping.join().unwrap();
+    let finished = finished.unwrap();
+
+    // What was recorded is what there was when stop was called, and not the 0.7 s more of the sources that went on
+    // delivering while the session's thread was not looking.
+    let active = reference.active_at(asked);
+    assert!(
+        finished.duration >= active - slack.tolerance(),
+        "{} s for {active} s",
+        finished.duration
+    );
+    assert!(
+        finished.duration <= active + slack.tolerance() + CHUNK_SECONDS,
+        "{} s for {active} s: the time it took the session to hear of the stop was recorded",
+        finished.duration
+    );
+}
+
+#[test]
 fn system_audio_that_stops_and_starts_stays_in_place() {
     let Some(ffmpeg) = real_ffmpeg() else { return };
 
-    // The system plays a second, nothing for two, and a second again; the mic goes on for the four.
+    // The system plays a second, nothing for two, and a second again; the mic goes on for the four. It is all sent at
+    // once, stamped with the times it would have come at, and the session is let take it before it is stopped: what
+    // is recorded is then what was sent, whatever the machine is doing.
     let record = |with_system: bool| -> (Vec<f32>, u32, f64) {
         let dir = tempfile::tempdir().unwrap();
         let fake = Arc::new(FakeCapturer::new());
-        let (session, _states) = start(
+        let (session, states) = start(
             options(Mode::Audio, true, true),
             dir.path(),
             &fake,
@@ -292,8 +499,8 @@ fn system_audio_that_stops_and_starts_stays_in_place() {
                 fake.send_audio(Track::System, at, 48_000, sine(880.0, 48_000, first, 960));
             }
         }
-        // What was sent is taken (it is a few ms of work; the session does not wait for it).
-        sleep(600);
+        // Ten milliseconds more of the mic, to know when it is all taken: 4.01 s in all.
+        settle(&fake, &states, Track::Mic, base + Duration::from_secs(4));
         let finished = session.stop().unwrap();
         let (samples, rate) = audio_of(&finished.media, &ffmpeg);
         (samples, rate, finished.duration)
@@ -302,8 +509,9 @@ fn system_audio_that_stops_and_starts_stays_in_place() {
     let (with, rate, duration) = record(true);
     let (without, _, _) = record(false);
 
-    assert!((duration - 4.0).abs() < 0.1, "{duration} s");
-    assert!((with.len() as f64 / f64::from(rate) - 4.0).abs() < 0.1);
+    // The stems are laid out by the stamps of what was sent, and the clock is not in it: the length is that of the longest.
+    assert!((duration - 4.01).abs() < 0.001, "{duration} s");
+    assert!((with.len() as f64 / f64::from(rate) - duration).abs() < 0.1);
     // The system's tone is there at 3.5 s (the mic alone is 0.35 RMS, the two together 0.5), and not at 2 s.
     let (late_with, late_without) = (rms(&with, rate, 3.2, 3.8), rms(&without, rate, 3.2, 3.8));
     assert!(
@@ -321,27 +529,22 @@ fn levels_are_reported_for_enabled_tracks_only() {
     let (session, states) =
         start(options(Mode::Audio, false, true), dir.path(), &fake, None).unwrap();
 
-    sleep(600);
+    // A tone at half of full scale is loud on the meter.
+    wait_until("the meter to show the tone", || {
+        levels_of(&states, Track::System)
+            .iter()
+            .any(|l| l.is_some_and(|s| s > 0.9))
+    });
     session.discard();
 
-    let levels: Vec<Levels> = states
-        .lock()
-        .unwrap()
+    // Whatever was reported, the microphone, which is off, has no level in any of it.
+    let mic = levels_of(&states, Track::Mic);
+    assert!(mic.len() >= 2, "{} reports", mic.len());
+    assert!(mic.iter().all(Option::is_none), "{mic:?}");
+    // And the system, which is on, always has one.
+    assert!(levels_of(&states, Track::System)
         .iter()
-        .filter_map(|(_, state)| match state {
-            SessionState::Recording { levels, .. } | SessionState::Paused { levels, .. } => {
-                Some(levels.clone())
-            }
-            SessionState::Ended(_) => None,
-        })
-        .collect();
-    assert!(levels.len() >= 3, "{} reports", levels.len());
-    assert!(levels.iter().all(|l| l.mic.is_none()), "{levels:?}");
-    // A tone at half of full scale is loud on the meter.
-    assert!(
-        levels.iter().any(|l| l.system.is_some_and(|s| s > 0.9)),
-        "{levels:?}"
-    );
+        .all(Option::is_some));
 }
 
 #[test]
@@ -357,21 +560,14 @@ fn a_meter_whose_source_went_quiet_falls_back_to_zero() {
         sine(440.0, 48_000, 0, 960),
     );
 
-    // A source that delivers nothing for a while (a system that plays no sound) is not still loud.
-    sleep(900);
+    // A source that delivers nothing for a while (a system that plays no sound) is not still loud: the meter shows
+    // the buffer, and some time later (half a second) it shows nothing.
+    wait_until("the meter to fall back", || {
+        let mic = levels_of(&states, Track::Mic);
+        let loud = mic.iter().position(|l| l.is_some_and(|l| l > 0.9));
+        loud.is_some_and(|at| mic[at..].contains(&Some(0.0)))
+    });
     session.discard();
-
-    let mic: Vec<Option<f32>> = states
-        .lock()
-        .unwrap()
-        .iter()
-        .filter_map(|(_, state)| match state {
-            SessionState::Recording { levels, .. } => Some(levels.mic),
-            _ => None,
-        })
-        .collect();
-    assert!(mic.iter().any(|l| l.is_some_and(|l| l > 0.9)), "{mic:?}");
-    assert_eq!(mic.last(), Some(&Some(0.0)), "{mic:?}");
 }
 
 #[test]
@@ -382,11 +578,13 @@ fn the_state_is_reported_at_most_every_50_ms() {
     let (session, states) =
         start(options(Mode::Audio, true, false), dir.path(), &fake, None).unwrap();
 
-    sleep(1000);
+    // It is reported, and often (a second of 20 chunks of 50 ms is what it comes to on an idle machine, eight of
+    // them is as much as is asked)...
+    wait_until("eight reports", || states.lock().unwrap().len() >= 8);
     session.discard();
 
+    // ...but no two of them are less than 50 ms apart (a sleep is never short, so 45 ms is only for the clock).
     let times: Vec<Instant> = states.lock().unwrap().iter().map(|(at, _)| *at).collect();
-    assert!(times.len() >= 8, "{} reports in a second", times.len());
     for pair in times.windows(2) {
         let gap = pair[1] - pair[0];
         assert!(
@@ -401,35 +599,48 @@ fn a_recording_stopped_at_once_is_a_second_of_silence() {
     let Some(ffmpeg) = real_ffmpeg() else { return };
     let dir = tempfile::tempdir().unwrap();
     let fake = Arc::new(FakeCapturer::new());
-    let (session, _states) = start(
+    let (session, states) = start(
         options(Mode::Audio, true, false),
         dir.path(),
         &fake,
         Some(&ffmpeg),
     )
     .unwrap();
-    // The one buffer that was captured before the stop: 10 ms.
+    let reference = Reference::of(&states);
+    let slack = Slack::measure();
+    // The one buffer that was captured before the stop: 10 ms, which the session is let take.
     fake.send_audio(
         Track::Mic,
         Instant::now(),
         48_000,
         sine(440.0, 48_000, 0, 480),
     );
-    sleep(100);
+    wait_until("the buffer to be taken", || {
+        levels_of(&states, Track::Mic)
+            .iter()
+            .any(|l| l.is_some_and(|l| l > 0.9))
+    });
 
+    let asked = Instant::now();
     let finished = session.stop().unwrap();
 
-    assert!(
-        (finished.duration - 1.0).abs() < 0.1,
-        "{} s",
-        finished.duration
+    // A second, unless the machine took longer than that to get to the stop (then it is as long as it ran).
+    let ran = reference.active_at(asked);
+    assert_lasted(
+        finished.duration,
+        ran.max(1.0),
+        ran.max(1.0),
+        CHUNK_SECONDS,
+        &slack,
     );
-    assert!((audio_seconds(&finished.media, &ffmpeg) - 1.0).abs() < 0.1);
-    assert!(
-        finished.notes.iter().any(|note| note.contains("silence")),
-        "{:?}",
-        finished.notes
-    );
+    assert_decodes_as_long(&finished.media, &ffmpeg, finished.duration);
+    if ran + slack.tolerance() < 1.0 {
+        assert!(
+            finished.notes.iter().any(|note| note.contains("silence")),
+            "{:?}",
+            finished.notes
+        );
+    }
 }
 
 #[test]
@@ -437,13 +648,15 @@ fn a_source_that_went_quiet_does_not_make_the_recording_shorter() {
     let Some(ffmpeg) = real_ffmpeg() else { return };
     let dir = tempfile::tempdir().unwrap();
     let fake = Arc::new(FakeCapturer::new());
-    let (session, _states) = start(
+    let (session, states) = start(
         options(Mode::Audio, false, true),
         dir.path(),
         &fake,
         Some(&ffmpeg),
     )
     .unwrap();
+    let reference = Reference::of(&states);
+    let slack = Slack::measure();
     // The system plays a tenth of a second of sound and then nothing (a system that plays no sound sends no buffers).
     fake.send_audio(
         Track::System,
@@ -451,17 +664,21 @@ fn a_source_that_went_quiet_does_not_make_the_recording_shorter() {
         48_000,
         sine(880.0, 48_000, 0, 4_800),
     );
+    wait_until("the sound to be taken", || {
+        levels_of(&states, Track::System)
+            .iter()
+            .any(|l| l.is_some_and(|l| l > 0.9))
+    });
 
-    sleep(2000);
+    slack.sleep(2000);
+    let asked = Instant::now();
     let finished = session.stop().unwrap();
 
-    // The recording was 2 s long, and so is what it made.
-    assert!(
-        (finished.duration - 2.0).abs() < 0.1,
-        "{} s",
-        finished.duration
-    );
-    assert!((audio_seconds(&finished.media, &ffmpeg) - 2.0).abs() < 0.1);
+    // The recording was as long as it ran, and so is what it made, though its only stem was 0.1 s long.
+    let ran = reference.active_at(asked);
+    assert!(ran >= 2.0 - slack.tolerance(), "{ran} s ran");
+    assert_lasted(finished.duration, ran, ran, CHUNK_SECONDS, &slack);
+    assert_decodes_as_long(&finished.media, &ffmpeg, finished.duration);
 }
 
 #[test]
@@ -505,26 +722,46 @@ fn pausing_removes_the_paused_time_from_every_track() {
         Some(&ffmpeg),
     )
     .unwrap();
+    let reference = Reference::of(&states);
+    let slack = Slack::measure();
 
-    sleep(2000);
-    session.pause();
-    sleep(2000);
-    session.resume();
-    sleep(2000);
+    slack.sleep(2000);
+    let (paused_from, paused_after) = bracket(|| session.pause());
+    slack.sleep(2000);
+    let (resumed_from, resumed_after) = bracket(|| session.resume());
+    slack.sleep(2000);
+    let asked = Instant::now();
     let finished = session.stop().unwrap();
 
+    // It ran from the start to the stop, less the time it was paused: which is at least the 2 s that were slept, and
+    // is between the instants of the two calls (each was made somewhere between the instants around it).
+    let paused_least = (resumed_from - paused_after).as_secs_f64();
+    let paused_most = (resumed_after - paused_from).as_secs_f64();
     assert!(
-        (finished.duration - 4.0).abs() < 0.2,
-        "{} s",
+        paused_least >= 2.0 - slack.tolerance(),
+        "{paused_least} s paused"
+    );
+    let ran = reference.active_at(asked);
+    assert_lasted(
+        finished.duration,
+        ran - paused_most,
+        ran - paused_least,
+        FRAME_SECONDS,
+        &slack,
+    );
+    // And none of it is what was delivered while it was paused: the recording is shorter than the time it took by
+    // what was slept in the pause.
+    assert!(
+        finished.duration < ran - 2.0 + slack.tolerance() + FRAME_SECONDS,
+        "{} s of {ran} s",
         finished.duration
     );
     let name = name_of(&finished.media);
     assert!(is_recording(&name), "{name}");
-    let video = video_seconds(&finished.media, &ffmpeg);
-    assert!((video - 4.0).abs() < 0.3, "{video} s of video");
-    let sound = audio_seconds(&finished.media, &ffmpeg);
-    assert!((sound - 4.0).abs() < 0.3, "{sound} s of sound");
-    // While it was paused the time stood still at 2 s, and the state said so.
+    assert_video_as_long(&finished.media, &ffmpeg, finished.duration);
+    assert_decodes_as_long(&finished.media, &ffmpeg, finished.duration);
+    // While it was paused the time stood still, and the state said so: all the reports of it have the same time, and
+    // it is the time of the instant of the pause.
     let paused: Vec<Duration> = states
         .lock()
         .unwrap()
@@ -535,12 +772,16 @@ fn pausing_removes_the_paused_time_from_every_track() {
         })
         .collect();
     assert!(paused.len() >= 10, "{} reports while paused", paused.len());
-    let (least, most) = (paused.iter().min().unwrap(), paused.iter().max().unwrap());
     assert!(
-        *most - *least < Duration::from_millis(50),
-        "the time moved while paused: {paused:?}"
+        paused.windows(2).all(|pair| pair[0] == pair[1]),
+        "{paused:?}"
     );
-    assert!((1.9..2.5).contains(&least.as_secs_f64()), "{paused:?}");
+    let at_pause = paused[0].as_secs_f64();
+    assert!(
+        at_pause >= reference.active_at(paused_from) - slack.tolerance()
+            && at_pause <= reference.active_at(paused_after) + slack.tolerance(),
+        "{at_pause} s at the pause"
+    );
 }
 
 #[test]
@@ -559,32 +800,40 @@ fn an_ended_track_stops_and_keeps_what_was_recorded() {
         Some(&ffmpeg),
     )
     .unwrap();
+    let reference = Reference::of(&states);
+    let slack = Slack::measure();
 
     wait_until("the end", || has_ended(&states));
-
-    assert!(states
+    let told = states
         .lock()
         .unwrap()
         .iter()
-        .any(|(_, state)| matches!(state, SessionState::Ended(EndReason::WindowClosed))));
+        .find_map(|(at, state)| {
+            matches!(state, SessionState::Ended(EndReason::WindowClosed)).then_some(*at)
+        })
+        .expect("the state of the end");
+
     assert_eq!(session.wait_end(), Some(EndReason::WindowClosed));
     // Every source is stopped, not only the one that ended.
     wait_until("the sources to stop", || fake.stopped().len() == 2);
     // The recording does not go on after the end, whatever is asked of it.
-    sleep(700);
+    slack.sleep(700);
     session.resume();
-    sleep(300);
+    slack.sleep(300);
     let finished = session.stop().unwrap();
 
+    // It stopped between the instant the end was sent and the instant the session told of it.
+    let sent = fake.ended_at(Track::Screen).expect("when it ended");
+    assert_lasted(
+        finished.duration,
+        reference.active_at(sent),
+        reference.active_at(told),
+        FRAME_SECONDS,
+        &slack,
+    );
     let name = name_of(&finished.media);
     assert!(is_recording(&name), "{name}");
-    assert!(
-        (finished.duration - 2.0).abs() < 0.3,
-        "{} s",
-        finished.duration
-    );
-    let video = video_seconds(&finished.media, &ffmpeg);
-    assert!((video - 2.0).abs() < 0.3, "{video} s of video");
+    assert_video_as_long(&finished.media, &ffmpeg, finished.duration);
     let left = names(dir.path());
     assert!(
         !left.contains(&MARKER.to_owned()) && !left.contains(&"mic.wav".to_owned()),
@@ -599,24 +848,24 @@ fn a_screen_recording_that_never_got_a_frame_has_only_the_sound() {
     let dir = tempfile::tempdir().unwrap();
     // A window that is minimised gives no frame: the screen starts and says nothing.
     let fake = Arc::new(FakeCapturer::new().tone(Track::Mic, 440.0));
-    let (session, _states) = start(
+    let (session, states) = start(
         options(screen(), true, false),
         dir.path(),
         &fake,
         Some(&ffmpeg),
     )
     .unwrap();
+    let reference = Reference::of(&states);
+    let slack = Slack::measure();
 
-    sleep(1500);
+    slack.sleep(1500);
+    let asked = Instant::now();
     let finished = session.stop().unwrap();
 
     let name = name_of(&finished.media);
     assert!(is_sound_file(&name), "{name}");
-    assert!(
-        (finished.duration - 1.5).abs() < 0.15,
-        "{} s",
-        finished.duration
-    );
+    let ran = reference.active_at(asked);
+    assert_lasted(finished.duration, ran, ran, CHUNK_SECONDS, &slack);
     assert!(
         finished.notes.iter().any(|note| note.contains("no video")),
         "{:?}",
@@ -709,24 +958,26 @@ fn the_video_is_as_long_as_the_recording_when_the_encoder_is_late() {
     let ffmpeg = ffmpeg_that(tools.path(), &real, &tools.path().join("pids"), "sleep 1");
     let dir = tempfile::tempdir().unwrap();
     let fake = Arc::new(frames_of_screen().tone(Track::Mic, 440.0));
-    let (session, _states) = start(
+    let (session, states) = start(
         options(screen(), true, false),
         dir.path(),
         &fake,
         Some(&ffmpeg),
     )
     .unwrap();
+    let reference = Reference::of(&states);
+    let slack = Slack::measure();
 
-    sleep(3000);
+    slack.sleep(3000);
+    let asked = Instant::now();
     let finished = session.stop().unwrap();
 
-    let video = video_seconds(&finished.media, &real);
-    assert!((video - 3.0).abs() < 0.3, "{video} s of video for 3 s");
-    assert!(
-        (finished.duration - 3.0).abs() < 0.2,
-        "{} s",
-        finished.duration
-    );
+    // What was recorded is as long as it ran, and the video is as long as that, with the second that the encoder was
+    // late made up (without it, it is a second short, whatever the machine does).
+    let ran = reference.active_at(asked);
+    assert!(ran >= 3.0 - slack.tolerance(), "{ran} s ran");
+    assert_lasted(finished.duration, ran, ran, FRAME_SECONDS, &slack);
+    assert_video_as_long(&finished.media, &real, finished.duration);
 }
 
 #[cfg(unix)]
@@ -749,12 +1000,14 @@ fn discard_leaves_nothing_behind() {
         Some(&ffmpeg),
     )
     .unwrap();
-    sleep(2000);
     // The recording is under way: stems, a part of the video and the marker are in the folder.
-    let during = names(dir.path());
-    assert!(during.contains(&MARKER.to_owned()), "{during:?}");
-    assert!(during.contains(&"mic.wav".to_owned()), "{during:?}");
-    assert!(during.iter().any(|n| n.ends_with(".part")), "{during:?}");
+    wait_until("the stems and the part of the video", || {
+        let during = names(dir.path());
+        during.contains(&MARKER.to_owned())
+            && during.contains(&"mic.wav".to_owned())
+            && during.contains(&"system.wav".to_owned())
+            && during.iter().any(|n| n.ends_with(".part"))
+    });
 
     session.discard();
 
@@ -781,7 +1034,7 @@ fn stop_gives_up_on_an_encoder_that_is_stuck_and_keeps_the_sound() {
     let timing = Timing {
         video_finish_wait: Duration::from_millis(800),
     };
-    let (session, _states) = start_with(
+    let (session, states) = start_with(
         options(screen(), true, false),
         dir.path(),
         &fake,
@@ -789,7 +1042,9 @@ fn stop_gives_up_on_an_encoder_that_is_stuck_and_keeps_the_sound() {
         timing,
     )
     .unwrap();
-    sleep(1500);
+    let reference = Reference::of(&states);
+    let slack = Slack::measure();
+    slack.sleep(1500);
     let started = Instant::now();
 
     let finished = session.stop().unwrap();
@@ -801,11 +1056,10 @@ fn stop_gives_up_on_an_encoder_that_is_stuck_and_keeps_the_sound() {
     );
     let name = name_of(&finished.media);
     assert!(is_sound_file(&name), "{name}");
-    assert!(
-        (finished.duration - 1.5).abs() < 0.3,
-        "{} s",
-        finished.duration
-    );
+    // The recording is as long as it ran, as long as the stop was called (and not as long as the encoder was waited for).
+    let ran = reference.active_at(started);
+    assert!(ran >= 1.5 - slack.tolerance(), "{ran} s ran");
+    assert_lasted(finished.duration, ran, ran, CHUNK_SECONDS, &slack);
     // The note says what happened with the video, and not in the words of the audio encoder.
     assert!(
         finished.notes.iter().any(|note| note.contains("video")),
@@ -988,16 +1242,32 @@ fn recover_ignores_a_folder_without_a_marker() {
 fn dropping_a_session_leaves_the_recording_to_be_recovered() {
     let Some(ffmpeg) = real_ffmpeg() else { return };
     let dir = tempfile::tempdir().unwrap();
-    let fake = Arc::new(FakeCapturer::new().tone(Track::Mic, 440.0));
-    let (session, _states) = start(
+    // The microphone says 0.1 s and nothing more: what is recovered is as long as the recording ran, and not as long
+    // as what the stem holds.
+    let fake = Arc::new(FakeCapturer::new());
+    let (session, states) = start(
         options(Mode::Audio, true, false),
         dir.path(),
         &fake,
         Some(&ffmpeg),
     )
     .unwrap();
-    sleep(1500);
+    let reference = Reference::of(&states);
+    let slack = Slack::measure();
+    fake.send_audio(
+        Track::Mic,
+        Instant::now(),
+        48_000,
+        sine(440.0, 48_000, 0, 4_800),
+    );
+    wait_until("the sound to be taken", || {
+        levels_of(&states, Track::Mic)
+            .iter()
+            .any(|l| l.is_some_and(|l| l > 0.9))
+    });
+    slack.sleep(1500);
 
+    let asked = Instant::now();
     drop(session);
 
     assert_eq!(fake.stopped(), [Track::Mic]);
@@ -1009,11 +1279,9 @@ fn dropping_a_session_leaves_the_recording_to_be_recovered() {
     let finished = recover(dir.path(), Some(&ffmpeg))
         .expect("a marker")
         .unwrap();
-    assert!(
-        (finished.duration - 1.5).abs() < 0.15,
-        "{} s",
-        finished.duration
-    );
+    let ran = reference.active_at(asked);
+    assert!(ran >= 1.5 - slack.tolerance(), "{ran} s ran");
+    assert_lasted(finished.duration, ran, ran, CHUNK_SECONDS, &slack);
 }
 
 // --- A long recording ---

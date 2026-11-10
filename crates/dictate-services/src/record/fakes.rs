@@ -54,6 +54,7 @@ struct Log {
     started: Vec<Track>,
     stopped: Vec<Track>,
     senders: HashMap<Track, Sender<SourceEvent>>,
+    ended: HashMap<Track, Instant>,
 }
 
 /// The scripted capture: `FakeCapturer::new().tone(Track::Mic, 440.0).fails(Track::System, ..)`.
@@ -111,6 +112,12 @@ impl FakeCapturer {
         lock(&self.log).stopped.clone()
     }
 
+    /// When the end of `track` was sent (by `ends_after` or `send_ended`): noted just before it was, so that whoever
+    /// has been told of the end knows it was sent no later. `None` when it has not been.
+    pub fn ended_at(&self, track: Track) -> Option<Instant> {
+        lock(&self.log).ended.get(&track).copied()
+    }
+
     /// Sends a buffer of sound as `track`. Panics when the track has not been started.
     pub fn send_audio(&self, track: Track, at: Instant, rate: u32, mono: Vec<f32>) {
         self.send(
@@ -131,6 +138,7 @@ impl FakeCapturer {
 
     /// Ends `track` as if it had by itself. Panics when the track has not been started.
     pub fn send_ended(&self, track: Track, reason: EndReason) {
+        lock(&self.log).ended.insert(track, Instant::now());
         self.send(track, SourceEvent::Ended { track, reason });
     }
 
@@ -168,7 +176,10 @@ impl Capturer for FakeCapturer {
         let (stop, stopped) = mpsc::channel::<()>();
         let thread = std::thread::Builder::new()
             .name("fake source".into())
-            .spawn(move || deliver(track, plan, ends, tx, stopped))
+            .spawn({
+                let log = self.log.clone();
+                move || deliver(track, plan, ends, tx, stopped, &log)
+            })
             .map_err(|e| StartError::Source(e.to_string()))?;
         Ok(Box::new(FakeSource {
             track,
@@ -191,6 +202,7 @@ fn deliver(
     ends: Option<(Duration, EndReason)>,
     tx: Sender<SourceEvent>,
     stopped: Receiver<()>,
+    log: &Mutex<Log>,
 ) {
     let start = Instant::now();
     let period = match &plan {
@@ -213,6 +225,7 @@ fn deliver(
         let now = Instant::now();
         if let Some((after, reason)) = &ends {
             if now >= start + *after {
+                lock(log).ended.insert(track, Instant::now());
                 let _ = tx.send(SourceEvent::Ended {
                     track,
                     reason: reason.clone(),
@@ -326,7 +339,10 @@ mod tests {
             .collect();
         source.unwrap().stop();
 
-        for (i, chunk) in chunks.iter().enumerate() {
+        // Stamped with when its first sample was due, which is on the clock of the track and not of the machine: one
+        // chunk apart whatever the load, and the first no earlier than the start.
+        let mut stamps = Vec::new();
+        for chunk in &chunks {
             let SourceEvent::Audio {
                 track,
                 at,
@@ -337,9 +353,11 @@ mod tests {
                 panic!("not audio")
             };
             assert_eq!((*track, *rate, mono.len()), (Track::Mic, 48_000, 960));
-            // Stamped with when its first sample was due: 20 ms apart, the first no earlier than the start.
-            let due = before + CHUNK * i as u32;
-            assert!(*at >= due && *at < due + Duration::from_millis(200), "{i}");
+            stamps.push(*at);
+        }
+        assert!(stamps[0] >= before);
+        for pair in stamps.windows(2) {
+            assert_eq!(pair[1] - pair[0], CHUNK);
         }
         // The chunks are one continuous tone.
         let (SourceEvent::Audio { mono: first, .. }, SourceEvent::Audio { mono: second, .. }) =
@@ -354,9 +372,9 @@ mod tests {
     #[test]
     fn frames_come_at_their_rate_in_one_colour() {
         let fake = FakeCapturer::new().frames(8, 4, [1, 2, 3, 255], 50);
+        let started = Instant::now();
         let (source, rx) = start(&fake, Track::Screen);
 
-        let started = Instant::now();
         for _ in 0..5 {
             let SourceEvent::Frame(frame) =
                 rx.recv_timeout(Duration::from_secs(2)).expect("a frame")
@@ -369,9 +387,9 @@ mod tests {
         let took = started.elapsed();
         source.unwrap().stop();
 
-        // Five frames at 50 fps take about 100 ms (the first is due after one period).
-        assert!(took >= Duration::from_millis(60), "{took:?}");
-        assert!(took < Duration::from_millis(1000), "{took:?}");
+        // The fifth frame of 50 fps is due 100 ms after the start (the first is due after one period). How much later
+        // it comes depends on the machine, and is not what is asked.
+        assert!(took >= Duration::from_millis(100), "{took:?}");
     }
 
     #[test]
@@ -396,6 +414,34 @@ mod tests {
 
         assert_eq!(result.err(), Some(StartError::Source("no device".into())));
         assert!(fake.started().is_empty());
+    }
+
+    #[test]
+    fn the_time_a_track_ended_is_noted() {
+        let fake = FakeCapturer::new().ends_after(
+            Track::Screen,
+            Duration::from_millis(40),
+            EndReason::DisplayGone,
+        );
+        let before = Instant::now();
+        let (source, rx) = start(&fake, Track::Screen);
+        assert_eq!(fake.ended_at(Track::Screen), None);
+
+        rx.recv_timeout(Duration::from_secs(2)).expect("the end");
+
+        // Noted before the end was sent: whoever has been told of it knows it was sent no later than that.
+        let ended = fake.ended_at(Track::Screen).expect("when it ended");
+        assert!(
+            ended >= before + Duration::from_millis(40),
+            "{:?}",
+            ended - before
+        );
+        source.unwrap().stop();
+        // And for an end that the test sends.
+        let (_mic, _rx) = start(&fake, Track::Mic);
+        let sent = Instant::now();
+        fake.send_ended(Track::Mic, EndReason::DeviceLost("unplugged".into()));
+        assert!(fake.ended_at(Track::Mic).expect("when it ended") >= sent);
     }
 
     #[test]
