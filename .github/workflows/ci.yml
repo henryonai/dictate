@@ -216,6 +216,20 @@ jobs:
       - run: pnpm --dir app/ui test
       - run: pnpm --dir app/ui build
       - run: cargo build -p dictate-app --locked
+      # sherpa-onnx comes with espeak-ng, which is GPL-3.0 and which Dictate has no use for (it is for speech synthesis). A static
+      # link keeps out what the program does not refer to, so on macOS and Windows the program must not have any of it (on
+      # Windows its symbol names are in a separate file, so the script looks for the string that espeak-ng reads its data path from).
+      # scripts/check-no-espeak.sh says more.
+      - name: Check that no espeak-ng code is linked into the program (macOS, Windows)
+        if: runner.os != 'Linux'
+        shell: bash
+        run: bash scripts/check-no-espeak.sh "target/debug/dictate${{ runner.os == 'Windows' && '.exe' || '' }}"
+      # On Linux the library is a shared one, which has all of its code in it whether or not the program refers to it: the program
+      # is checked, and so are the libraries that come with it and that a package has to ship.
+      - name: Check that no espeak-ng code is in the program or its shared libraries (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash scripts/check-no-espeak.sh target/debug/dictate target/debug/*.so
       # The macOS bundle is where Info.plist and Entitlements.plist take effect. A debug bundle is the quick one to
       # build, and the identity "-" signs it ad hoc, which is what applies the entitlements: check that the reason for
       # the microphone and the right to use it ended up in it.

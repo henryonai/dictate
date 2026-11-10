@@ -71,3 +71,38 @@ describe("the speaker models of a folder that has a Vietnamese name", () => {
     expect(job("test")).toContain("windows-latest");
   });
 });
+
+describe("no espeak-ng (GPL-3.0) in what the app ships", () => {
+  const SCRIPT = "scripts/check-no-espeak.sh";
+
+  test("the app job checks the program on each system, and on Linux the shared libraries beside it", () => {
+    const checks = steps().filter((step) => step.includes(`run: bash ${SCRIPT}`));
+    expect(checks.length).toBeGreaterThanOrEqual(2);
+    for (const check of checks) expect(stepsOf("app")).toContain(check);
+
+    const linux = checks.find((step) => step.includes("runner.os == 'Linux'") && !step.includes("!="));
+    expect(linux, "a step for Linux").toBeDefined();
+    // The shared library has the code of espeak-ng in it whether or not the program refers to it: it is checked too.
+    expect(linux).toContain("target/debug/*.so");
+    expect(linux).toContain("target/debug/dictate");
+
+    const elsewhere = checks.find((step) => step.includes("runner.os != 'Linux'"));
+    expect(elsewhere, "a step for macOS and Windows").toBeDefined();
+    expect(elsewhere).toContain("target/debug/dictate");
+    expect(elsewhere).toContain(".exe");
+  });
+
+  test("the check runs after the program is built, and in bash, which every system has", () => {
+    const build = workflow.indexOf("cargo build -p dictate-app --locked");
+    const checks = steps().filter((step) => step.includes(`run: bash ${SCRIPT}`));
+    expect(checks.length).toBeGreaterThan(0);
+    for (const check of checks) {
+      expect(workflow.indexOf(check)).toBeGreaterThan(build);
+      expect(check).toContain("shell: bash");
+    }
+  });
+
+  test("the script is checked out with LF line ends on Windows too, or bash would choke on the CR", () => {
+    expect(read(".gitattributes")).toMatch(/^\*\.sh +text +eol=lf$/m);
+  });
+});

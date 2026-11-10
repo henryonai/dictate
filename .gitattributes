@@ -1,3 +1,5 @@
 tests/golden/** -text
 # Binary files that no checkout may change: an autocrlf Git on Windows would otherwise be free to rewrite a few bytes.
 crates/dictate-services/tests/fixtures/media/** binary
+# Shell scripts run in bash on every system, Git Bash on Windows included, where a CR at the end of a line is part of the command.
+*.sh text eol=lf
