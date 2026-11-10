@@ -1,4 +1,4 @@
-//! Resampling a finished recording to 16 kHz.
+//! Resampling audio: a finished recording to 16 kHz, and a long one block by block to any rate.
 
 use rubato::audioadapter_buffers::direct::InterleavedSlice;
 use rubato::{Fft, FixedSync, Resampler};
@@ -17,61 +17,174 @@ const FLUSH_SECONDS: usize = 2;
 ///
 /// Empty when there is nothing to resample, when `rate` is 0, or when no resampler can be built for the rate.
 pub fn to_16k(samples: &[f32], rate: u32) -> Vec<f32> {
-    if rate == TARGET_RATE {
-        return samples.to_vec();
-    }
-    if samples.is_empty() || rate == 0 {
-        return Vec::new();
-    }
-    resample(samples, rate).unwrap_or_default()
+    let mut resampler = StreamResampler::new(rate, TARGET_RATE);
+    let mut out = resampler.push(samples);
+    out.extend(resampler.finish());
+    out
 }
 
-/// Runs the whole clip through rubato's FFT resampler one chunk at a time.
+/// Resamples audio that arrives block by block, so that a long recording never has to be in memory at once: what
+/// goes in with `push` comes out (a little later) as it is, and `finish` brings out the rest.
 ///
-/// rubato's own `process_all` is not used: it cuts the filter's delay off the start in a way that leaves the first
-/// tens of milliseconds wrong. Here the delay is cut by hand: the clip is followed by silence until the resampler
-/// has put out its delay plus every sample that was asked for, and then the delay is dropped from the front.
-fn resample(samples: &[f32], rate: u32) -> Option<Vec<f32>> {
-    let mut resampler = Fft::<f32>::new(
-        rate as usize,
-        TARGET_RATE as usize,
-        CHUNK_FRAMES,
-        1,
-        FixedSync::Input,
-    )
-    .ok()?;
-    // Whole samples of 16 kHz audio that the clip makes, rounded up.
-    let wanted = (samples.len() as u64 * u64::from(TARGET_RATE)).div_ceil(u64::from(rate)) as usize;
-    let delay = resampler.output_delay();
+/// The filter is rubato's FFT resampler, run chunk by chunk over the audio. rubato's own `process_all` is not used:
+/// it cuts the filter's delay off the start in a way that leaves the first tens of milliseconds wrong. Here the
+/// delay is cut by hand: the clip is followed by silence until the resampler has put out its delay plus every
+/// sample that was asked for, and then the delay is dropped from the front. However the audio is cut into blocks,
+/// the output is the same.
+///
+/// A rate of 0, or one that no resampler can be built for, gives no audio at all (as `to_16k` does); the same
+/// rate in and out passes the audio on as it is.
+pub struct StreamResampler {
+    engine: Engine,
+}
 
-    let mut out: Vec<f32> = Vec::with_capacity(wanted + delay + resampler.output_frames_max());
-    let mut chunk = vec![0.0_f32; resampler.input_frames_max()];
-    let mut consumed = 0;
-    // The most rounds that are worth it: the clip, and then the silence that flushes the filter. Past that the resampler
-    // is not going to put out more, and a loop that never ends is worse than the audio that did come out.
-    let budget = (samples.len() + FLUSH_SECONDS * rate as usize).div_ceil(CHUNK_FRAMES) + 1;
-    for _ in 0..budget {
-        if out.len() >= wanted + delay {
-            break;
+enum Engine {
+    /// The same rate in and out.
+    Identity,
+    /// No resampler could be built, or it failed: nothing comes out.
+    Unusable,
+    Filter(Box<Filter>),
+}
+
+struct Filter {
+    resampler: Fft<f32>,
+    from: u32,
+    to: u32,
+    /// Input that is not yet a whole chunk, in front of the next block.
+    pending: Vec<f32>,
+    /// Frames pushed in all.
+    pushed: u64,
+    /// Frames of delay that are still to be cut off the front of the output.
+    delay_left: usize,
+    /// Frames handed to the caller so far.
+    handed_on: u64,
+    failed: bool,
+}
+
+impl StreamResampler {
+    /// A resampler from `from` Hz to `to` Hz, for mono audio.
+    pub fn new(from: u32, to: u32) -> StreamResampler {
+        let engine = if from == to {
+            Engine::Identity
+        } else {
+            Filter::new(from, to).map_or(Engine::Unusable, |f| Engine::Filter(Box::new(f)))
+        };
+        StreamResampler { engine }
+    }
+
+    /// Takes the next block of audio and returns the samples that are ready, which may be none.
+    pub fn push(&mut self, input: &[f32]) -> Vec<f32> {
+        match &mut self.engine {
+            Engine::Identity => input.to_vec(),
+            Engine::Unusable => Vec::new(),
+            Engine::Filter(filter) => filter.push(input),
         }
-        let frames = resampler.input_frames_next();
-        let from = consumed.min(samples.len());
-        let to = (consumed + frames).min(samples.len());
-        chunk[..to - from].copy_from_slice(&samples[from..to]);
-        chunk[to - from..frames].fill(0.0);
-        consumed += frames;
+    }
 
-        let input = InterleavedSlice::new(&chunk[..frames], 1, frames).ok()?;
-        // An empty block is not the end: the resampler is collecting the input of its first block.
-        let block = resampler.process(&input, None).ok()?.take_data();
-        out.extend_from_slice(&block);
+    /// The end of the audio: the samples that are still inside the filter.
+    pub fn finish(self) -> Vec<f32> {
+        match self.engine {
+            Engine::Identity | Engine::Unusable => Vec::new(),
+            Engine::Filter(filter) => filter.finish(),
+        }
     }
-    if out.len() <= delay {
-        return None;
+}
+
+impl Filter {
+    fn new(from: u32, to: u32) -> Option<Filter> {
+        if from == 0 || to == 0 {
+            return None;
+        }
+        let resampler = Fft::<f32>::new(
+            from as usize,
+            to as usize,
+            CHUNK_FRAMES,
+            1,
+            FixedSync::Input,
+        )
+        .ok()?;
+        Some(Filter {
+            delay_left: resampler.output_delay(),
+            resampler,
+            from,
+            to,
+            pending: Vec::new(),
+            pushed: 0,
+            handed_on: 0,
+            failed: false,
+        })
     }
-    out.drain(..delay);
-    out.truncate(wanted);
-    Some(out)
+
+    fn push(&mut self, mut input: &[f32]) -> Vec<f32> {
+        self.pushed += input.len() as u64;
+        let mut out = Vec::new();
+        let frames = self.resampler.input_frames_next();
+
+        // The rest of the last block first, topped up to a whole chunk.
+        if !self.pending.is_empty() {
+            let take = (frames - self.pending.len()).min(input.len());
+            self.pending.extend_from_slice(&input[..take]);
+            input = &input[take..];
+            if self.pending.len() < frames {
+                return out;
+            }
+            let chunk = std::mem::take(&mut self.pending);
+            self.run(&chunk, &mut out);
+        }
+        // Whole chunks straight from the block, without copying them.
+        while input.len() >= frames && !self.failed {
+            let (chunk, rest) = input.split_at(frames);
+            self.run(chunk, &mut out);
+            input = rest;
+        }
+        // What is left waits for the next block.
+        if !self.failed {
+            self.pending.extend_from_slice(input);
+        }
+        self.handed_on += out.len() as u64;
+        out
+    }
+
+    fn finish(mut self) -> Vec<f32> {
+        // Whole samples of audio that the clip makes at the new rate, rounded up.
+        let wanted = (self.pushed * u64::from(self.to)).div_ceil(u64::from(self.from));
+        let frames = self.resampler.input_frames_next();
+        let mut out = Vec::new();
+        // The most rounds that are worth it: what is left of the clip, and then the silence that flushes the filter.
+        // Past that the resampler is not going to put out more, and a loop that never ends is worse than the audio
+        // that did come out.
+        let budget =
+            (self.pending.len() + FLUSH_SECONDS * self.from as usize).div_ceil(CHUNK_FRAMES) + 1;
+        let mut tail = std::mem::take(&mut self.pending);
+        for _ in 0..budget {
+            if self.failed || self.handed_on + out.len() as u64 >= wanted {
+                break;
+            }
+            // The last of the clip is padded with silence to a whole chunk, and so is every chunk after it.
+            tail.resize(frames, 0.0);
+            self.run(&tail, &mut out);
+            tail.clear();
+        }
+        out.truncate(wanted.saturating_sub(self.handed_on) as usize);
+        out
+    }
+
+    /// Runs one whole chunk (`input_frames_next()` frames) through the filter and adds what comes out to `out`, minus
+    /// the filter's delay while that is still to be cut. A block that comes out empty is not the end: the resampler
+    /// is collecting the input of its first block.
+    fn run(&mut self, chunk: &[f32], out: &mut Vec<f32>) {
+        let block = InterleavedSlice::new(chunk, 1, chunk.len())
+            .ok()
+            .and_then(|input| self.resampler.process(&input, None).ok())
+            .map(|block| block.take_data());
+        let Some(block) = block else {
+            self.failed = true;
+            return;
+        };
+        let skip = self.delay_left.min(block.len());
+        self.delay_left -= skip;
+        out.extend_from_slice(&block[skip..]);
+    }
 }
 
 #[cfg(test)]
@@ -239,5 +352,112 @@ mod tests {
             out.iter().any(|s| s.abs() > 0.3),
             "the clip came out silent"
         );
+    }
+
+    /// `samples` pushed through a `StreamResampler` in blocks of the given sizes (the last block takes what is left),
+    /// then finished.
+    fn stream(samples: &[f32], from: u32, to: u32, block_sizes: &[usize]) -> Vec<f32> {
+        let mut resampler = StreamResampler::new(from, to);
+        let mut out = Vec::new();
+        let mut rest = samples;
+        for &size in block_sizes {
+            let (block, tail) = rest.split_at(size.min(rest.len()));
+            out.extend(resampler.push(block));
+            rest = tail;
+        }
+        out.extend(resampler.push(rest));
+        out.extend(resampler.finish());
+        out
+    }
+
+    #[test]
+    fn stream_resampler_matches_to_16k() {
+        // 7 blocks of uneven sizes, none a multiple of the 1024 frames the resampler takes at a time.
+        let input = exact_sine(440.0, 48_000, 1.0);
+        let blocks = [1, 1_000, 3_333, 10_000, 777, 12_345, 5_000];
+        assert_eq!(blocks.len(), 7);
+        let whole = to_16k(&input, 48_000);
+        let streamed = stream(&input, 48_000, 16_000, &blocks);
+
+        assert!(
+            streamed.len().abs_diff(whole.len()) <= 1,
+            "{} samples streamed, {} at once",
+            streamed.len(),
+            whole.len()
+        );
+        let worst = streamed
+            .iter()
+            .zip(&whole)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(worst < 1e-3, "the two differ by {worst}");
+    }
+
+    #[test]
+    fn stream_resampler_does_not_depend_on_where_the_blocks_are_cut() {
+        // Real speech is not a sine: noise that is the same at every rate and cut finds a filter state that is carried
+        // wrongly from one block to the next.
+        let mut seed = 12345_u32;
+        let input: Vec<f32> = (0..30_011)
+            .map(|_| {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (seed >> 8) as f32 / (1 << 24) as f32 - 0.5
+            })
+            .collect();
+        for rate in [44_100, 22_050, 47_952] {
+            let whole = stream(&input, rate, 16_000, &[]);
+            assert!(whole.len() > 10_000, "{rate} Hz: {} samples", whole.len());
+            for cut in [&[1][..], &[999, 1, 1025], &[4_096, 4_096, 4_096], &[30_010]] {
+                let pieces = stream(&input, rate, 16_000, cut);
+                assert_eq!(pieces, whole, "{rate} Hz cut at {cut:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn stream_resampler_identity() {
+        let input = exact_sine(300.0, 16_000, 0.25);
+        let mut resampler = StreamResampler::new(16_000, 16_000);
+        let mut out = resampler.push(&input[..1_000]);
+        out.extend(resampler.push(&input[1_000..]));
+        assert!(resampler.finish().is_empty());
+        assert_eq!(out, input);
+    }
+
+    #[test]
+    fn stream_resampler_goes_to_any_rate() {
+        // The same decoded blocks feed Whisper (16 kHz) and the audio.m4a encoder (48 kHz).
+        let input = exact_sine(440.0, 44_100, 1.0);
+        let blocks = [4_096; 11];
+        let out = stream(&input, 44_100, 48_000, &blocks);
+
+        assert_eq!(out.len(), 48_000, "1 s at 48 kHz");
+        let crossings = zero_crossings(&out);
+        assert!(
+            crossings.abs_diff(880) <= 10,
+            "got {crossings} zero crossings"
+        );
+    }
+
+    #[test]
+    fn stream_resampler_puts_out_samples_while_it_is_fed() {
+        // A 2-hour recording is not held in memory: what goes in comes out, block by block.
+        let mut resampler = StreamResampler::new(48_000, 16_000);
+        let block = exact_sine(440.0, 48_000, 0.5);
+        let mut out = Vec::new();
+        for _ in 0..4 {
+            out.extend(resampler.push(&block));
+        }
+        assert!(out.len() > 16_000, "only {} samples after 2 s", out.len());
+    }
+
+    #[test]
+    fn stream_resampler_of_nothing_is_nothing() {
+        let mut resampler = StreamResampler::new(48_000, 16_000);
+        assert!(resampler.push(&[]).is_empty());
+        assert!(resampler.finish().is_empty());
+        assert!(StreamResampler::new(0, 16_000).finish().is_empty());
+        let mut zero = StreamResampler::new(0, 16_000);
+        assert!(zero.push(&[0.1; 10]).is_empty());
     }
 }

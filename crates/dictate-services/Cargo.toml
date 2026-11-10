@@ -6,6 +6,12 @@ rust-version.workspace = true
 license.workspace = true
 description = "Services for the Dictate app: settings, secrets, AI and transcription clients"
 
+[features]
+# The scripted `MeetingBackend` of the meeting pipeline's tests (`meetings::fakes`), for the tests of the app, which
+# run the pipeline too (`dictate-services = { ..., features = ["test-support"] }` under its dev-dependencies). No normal
+# build has it: Cargo does not turn on the features of dev-dependencies for those.
+test-support = []
+
 [dependencies]
 # Lets the stop pipeline's Backend be used as a trait object: native async fn in traits is not dyn-compatible.
 async-trait = "0.1.92"
@@ -16,15 +22,32 @@ dictate-core = { path = "../dictate-core" }
 dirs = "7.0.0"
 hound = "3.5.1"
 keyring = "3.6.3"
+# Opus audio (webm, mkv, ogg), which symphonia has no decoder for. Pure Rust.
+opus-decoder = "=0.1.1"
+# Kills a whole process tree on cancel (yt-dlp starts ffmpeg): a process group on Unix, a job object on Windows.
+# 9.x and 10.x need Rust 1.87: stay on 8.2 until the minimum Rust version moves up.
+# "std" is for the encoder, which is a blocking process (ffmpeg writing audio.m4a from a pipe) that must be killed with
+# everything it started when the recording is dropped; "tokio1" is for the ones that are awaited. 8.2.2's job object
+# for "std" does not build without "tracing" (it calls `debug!` where the macro is only imported with that feature):
+# tracing is already in Cargo.lock, and it does nothing here without a subscriber.
+process-wrap = { version = "=8.2.2", default-features = false, features = ["std", "tokio1", "tracing", "job-object", "process-group", "creation-flags", "kill-on-drop"] }
 reqwest = { version = "0.12.28", default-features = false, features = ["json", "multipart", "rustls-tls", "stream"] }
 # Resampling the microphone to 16 kHz. 5.x needs Rust 1.87: stay on 4.0 until the minimum Rust version moves up.
 rubato = "4.0.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+# Checking that a downloaded model is the file that was published: a corrupt model of the right size stops the whole
+# program inside sherpa-onnx. Already in Cargo.lock (tauri-codegen uses it), so no new crate; pinned to the version that is locked.
+sha2 = "=0.10.9"
+# Reading the audio of imported files (wav, mp3, m4a, mp4, mkv, webm, ogg, flac, caf, aiff). Pure Rust.
+symphonia = { version = "=0.6.1", default-features = false, features = ["opt-simd", "aac", "isomp4", "mp3", "mkv", "ogg", "wav", "aiff", "flac", "pcm", "vorbis", "alac", "caf"] }
 # Only the memory figures: the default features pull in disks, networks, users and components too.
 sysinfo = { version = "0.36.1", default-features = false, features = ["system"] }
-tokio = { version = "1.54.1", features = ["fs", "io-util", "macros", "time"] }
+# "sync" is for the meeting pipeline's lock on local transcription (a fair, first come first served mutex).
+tokio = { version = "1.54.1", features = ["fs", "io-util", "macros", "process", "rt", "sync", "time"] }
 tokio-util = { version = "0.7.20", default-features = false }
+# Finding ffmpeg and yt-dlp in a search path built by hand (a GUI app's own PATH is too short).
+which = "=8.0.6"
 # whisper-rs 0.16 needs Rust 1.88: stay on 0.15 until the minimum Rust version moves up.
 # log_backend sends whisper.cpp's logging to the `log` crate instead of stderr.
 whisper-rs = { version = "0.15.1", features = ["log_backend"] }
@@ -33,14 +56,49 @@ whisper-rs = { version = "0.15.1", features = ["log_backend"] }
 # On Linux the pure-Rust Secret Service client avoids a libdbus build dependency.
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3.6.3", features = ["apple-native"] }
+# Speaker separation: see the Linux entry below for why these are bindings and not the `sherpa-onnx` wrapper. Here
+# sherpa-onnx is linked statically: its build script downloads the prebuilt library (onnxruntime included, about 20 MB)
+# into target/sherpa-onnx-prebuilt, and CI caches that folder. A static link keeps out what the program does not use,
+# which is how the espeak-ng (GPL-3.0) in the library stays out (scripts/check-no-espeak.sh checks it). Its build
+# dependencies need `cargo update -p deflate64 --precise 0.1.9` to build with Rust 1.85 (0.1.12 needs 1.87); a
+# `cargo update` of anything else leaves that pin alone.
+sherpa-onnx-sys = "=1.13.8"
 # Whisper runs on the GPU through Metal here; the other systems use the CPU.
 whisper-rs = { version = "0.15.1", features = ["metal"] }
+# audio.m4a is written by the system's own AAC encoder: AudioToolbox's ExtAudioFile encodes and writes the file in one go.
+# These are the bindings cpal already builds (they are in Cargo.lock); the features are the ones the encoder needs.
+objc2-audio-toolbox = { version = "0.3.2", default-features = false, features = ["std", "AudioConverter", "AudioFile", "ExtendedAudioFile", "objc2-core-audio-types", "objc2-core-foundation"] }
+objc2-core-audio-types = { version = "0.3.2", default-features = false, features = ["std", "CoreAudioBaseTypes"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFURL"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3.6.3", features = ["windows-native"] }
+# Speaker separation, linked statically as on macOS. The archive that the build script downloads for Windows is built
+# for the static C runtime and cannot be linked with whisper.cpp, and it has espeak-ng (GPL-3.0) in it, which the
+# linker takes into the program. So SHERPA_ONNX_LIB_DIR points at the 90 MB /MD archive of the same release that has no
+# text to speech (plus three stand-in libraries for what that one lacks), which CI and app/README.md fetch themselves.
+sherpa-onnx-sys = "=1.13.8"
+# CREATE_NO_WINDOW for the child processes, in the form process-wrap takes it; the job object that counts what ffmpeg started
+# (Win32_System_JobObjects, with the Win32_Security that creating one names); and Media Foundation, whose Sink Writer
+# is the AAC encoder that writes audio.m4a (COM has to be started for it, and its DLLs are looked for when it is first
+# used: a Windows "N" edition has none unless the Media Feature Pack is installed, and a program that imports them
+# would not start there). The version is the one the app and process-wrap already build, so that no second copy of it
+# is built.
+windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_Media_MediaFoundation", "Win32_Security", "Win32_System_Com", "Win32_System_JobObjects", "Win32_System_LibraryLoader", "Win32_System_Threading"] }
 
 [target.'cfg(not(any(target_os = "macos", target_os = "windows")))'.dependencies]
 keyring = { version = "3.6.3", features = ["async-secret-service", "async-io", "crypto-rust"] }
+# Speaker separation. The raw bindings, not the `sherpa-onnx` wrapper: the wrapper keeps the C pointer to itself, and the
+# only call that reports progress (`SherpaOnnxOfflineSpeakerDiarizationProcessWithCallback`) is not in either crate.
+# On Linux sherpa-onnx is a shared library ("shared"), not the static one: next to whisper.cpp the static build
+# aborts with `free(): invalid pointer` on x86_64 (both carry their own, differently compiled, copies of libstdc++'s
+# `std::regex`, and the linker keeps one of each function). A shared library has all of its code in it whatever the
+# program uses, and the one that the build script of sherpa-onnx-sys would download has espeak-ng (GPL-3.0) in it, so
+# SHERPA_ONNX_LIB_DIR must name the build of the release without text to speech (scripts/fetch-sherpa-onnx-no-tts.sh
+# fetches it for x86_64): build.rs stops the build without it and says how. Cargo copies the .so files from there
+# next to the binaries in target/<profile>; build.rs makes the binaries of this crate look there, and the app's does
+# the same. A package of the app has to ship the .so files.
+sherpa-onnx-sys = { version = "=1.13.8", default-features = false, features = ["shared"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"

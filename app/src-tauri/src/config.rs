@@ -50,6 +50,21 @@ pub fn ai_config(store: &SettingsStore, secrets: &dyn SecretStore) -> Result<AiC
     })
 }
 
+/// The AI provider for summaries and questions about a recording: `ai_config`, with the summary model in place of the
+/// main one when one is set.
+pub fn summary_ai_config(
+    store: &SettingsStore,
+    secrets: &dyn SecretStore,
+) -> Result<AiConfig, String> {
+    let mut config = ai_config(store, secrets)?;
+    let summary_model = store.get().summary_model;
+    let summary_model = summary_model.trim();
+    if !summary_model.is_empty() {
+        config.model = summary_model.to_owned();
+    }
+    Ok(config)
+}
+
 /// The transcription service as configured, with the key it uses.
 pub fn transcribe_config(store: &SettingsStore, secrets: &dyn SecretStore) -> TranscribeConfig {
     let settings = store.get();
@@ -210,6 +225,50 @@ mod tests {
         f.store.save(&s).unwrap();
         let config = ai_config(&f.store, &f.secrets).unwrap();
         assert_eq!(config.api_key, None);
+    }
+
+    #[test]
+    fn summary_config_prefers_summary_model() {
+        let f = fixture();
+        f.secrets.set(Account::Ai, AI_KEY).unwrap();
+        let mut s = f.store.get();
+        s.ai_model = "main-model".into();
+        s.vocabulary = "Dictate".into();
+        f.store.save(&s).unwrap();
+
+        // None set: the main model, as for dictation.
+        let config = summary_ai_config(&f.store, &f.secrets).unwrap();
+        assert_eq!(config.model, "main-model");
+
+        // Blanks count as none.
+        s.summary_model = "  \t".into();
+        f.store.save(&s).unwrap();
+        let config = summary_ai_config(&f.store, &f.secrets).unwrap();
+        assert_eq!(config.model, "main-model");
+
+        // One set: it replaces the model and nothing else.
+        s.summary_model = " summary-model ".into();
+        f.store.save(&s).unwrap();
+        let config = summary_ai_config(&f.store, &f.secrets).unwrap();
+        assert_eq!(config.model, "summary-model");
+        assert_eq!(config.api_key.as_deref(), Some(AI_KEY));
+        assert_eq!(config.base_url, "https://api.anthropic.com");
+        assert_eq!(config.vocabulary, "Dictate");
+        // The main config is untouched by it.
+        assert_eq!(ai_config(&f.store, &f.secrets).unwrap().model, "main-model");
+    }
+
+    #[test]
+    fn summary_config_asks_for_the_key_like_the_ai_config() {
+        let f = fixture();
+        let mut s = f.store.get();
+        s.summary_model = "summary-model".into();
+        f.store.save(&s).unwrap();
+
+        let err = summary_ai_config(&f.store, &f.secrets).unwrap_err();
+
+        assert_eq!(err, ai_config(&f.store, &f.secrets).unwrap_err());
+        assert!(!err.contains("summary-model"));
     }
 
     // ---- the transcription check

@@ -1,0 +1,32 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "meetings",
+  "description": "What the meetings window may do: its own commands, and hear the events of its jobs and of the files dropped on it. The dialogs, the notifications and the file manager are opened from Rust, not by the page.",
+  "windows": ["meetings"],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "allow-meetings-list",
+    "allow-meeting-detail",
+    "allow-meetings-pick-files",
+    "allow-meetings-import-files",
+    "allow-meetings-import-link",
+    "allow-meeting-cancel",
+    "allow-meeting-rerun",
+    "allow-meeting-resummarize",
+    "allow-meeting-retry",
+    "allow-meeting-set-task",
+    "allow-meeting-rename-speakers",
+    "allow-meeting-ask",
+    "allow-meeting-markdown",
+    "allow-meeting-export",
+    "allow-meeting-log",
+    "allow-meeting-open-folder",
+    "allow-meeting-open-media",
+    "allow-meeting-delete",
+    "allow-copy-text",
+    "allow-meetings-open-settings",
+    "allow-meetings-readiness",
+    "allow-media-tools"
+  ]
+}

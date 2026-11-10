@@ -23,6 +23,8 @@ dictate-core = { path = "../../crates/dictate-core" }
 dictate-services = { path = "../../crates/dictate-services" }
 dirs = "7.0.0"
 env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
+# The random token in the address of the media server. Already in Cargo.lock (Tauri uses it), pinned to that version.
+getrandom = "=0.3.4"
 log = "0.4"
 reqwest = { version = "0.12.28", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
@@ -30,12 +32,22 @@ sys-locale = "0.3"
 # macos-private-api: a transparent window on macOS (the floating panels), which the macOSPrivateApi setting of tauri.conf.json asks for too.
 tauri = { version = "2", features = ["tray-icon", "macos-private-api"] }
 tauri-plugin-autostart = "2"
+# The dialogs of the meetings window, opened from Rust: choosing files to import and saving an export. Pinned by the plan.
+tauri-plugin-dialog = "=2.7.3"
 # The global shortcut, with the press and the release of the key. Pinned: 2.4 and later need Rust 1.90.
 tauri-plugin-global-shortcut = "=2.3.2"
+# The banner that says a recording is done. Pinned by the plan.
+tauri-plugin-notification = "=2.4.0"
 tauri-plugin-single-instance = "2"
 tauri-plugin-opener = "2"
-# The channel the shortcut and `dictate --toggle` send their events on, and the timer for the release of a key.
-tokio = { version = "1.54.1", default-features = false, features = ["sync", "time"] }
+# Deleting a recording moves its folder to the Trash or the Recycle Bin. Pinned by the plan.
+trash = "=5.2.9"
+# The loopback server that plays a recording's media to the meetings window (src/meetings/media_server.rs).
+tiny_http = "=0.12.0"
+# The channel the shortcut and `dictate --toggle` send their events on, the timer for the release of a key, `select!` (the
+# meeting backend waits for a blocking thread and for what it reports at once) and `#[tokio::test]`, which needs the runtime:
+# the services turn these features on too, and the app does not rely on that.
+tokio = { version = "1.54.1", default-features = false, features = ["macros", "rt", "sync", "time"] }
 tokio-util = { version = "0.7.20", default-features = false }
 
 # The platform layer (src/platform): the focused text field, the frontmost app, the permissions, and pasting into
@@ -82,6 +94,9 @@ enigo = { version = "0.6.1", default-features = false, features = ["x11rb"] }
 x11rb = "0.13"
 
 [dev-dependencies]
+# The scripted `MeetingBackend` of the pipeline's tests (`meetings::fakes`), which the tests of the meetings commands run
+# the pipeline on. No normal build has the feature: Cargo does not turn on the features of dev-dependencies for those.
+dictate-services = { path = "../../crates/dictate-services", features = ["test-support"] }
 # The mock runtime, to ask the app's own commands from the windows of the app and see what the permissions let through.
 tauri = { version = "2", features = ["test"] }
 serde_json = "1.0.154"

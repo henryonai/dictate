@@ -22,11 +22,12 @@ use crate::config::saved_key;
 pub enum Job {
     /// The download of the Whisper model with this id.
     Download(String),
-    /// A local transcription.
-    Transcribe,
     /// A dictation with this number, from the shortcut to the text in the field. Each has its own, so that a new one
     /// can begin while the one before it is told to stop.
     Dictation(u64),
+    /// The processing of the recording with this id (its folder name): download, audio, transcript and summary. One at
+    /// a time for each recording, and any number of recordings at once.
+    Meeting(String),
 }
 
 /// The job is running already.
@@ -120,45 +121,87 @@ impl Drop for JobGuard {
     }
 }
 
-/// A model that is loaded once and used by every dictation after it: loading takes seconds and the model takes a
-/// good part of a gigabyte. It is loaded again when another one is asked for.
+/// A model that is loaded once and used by every dictation and transcription after it: loading takes seconds and
+/// the model takes a good part of a gigabyte. It is loaded again when another one is asked for, and let go of when
+/// nobody has used it for a while (`unload_idle`).
 pub struct ModelCache<T> {
-    slot: Mutex<Option<(String, Arc<T>)>>,
+    slot: Mutex<Option<Loaded<T>>>,
+    /// What time it is: `Instant::now`, except in the tests, which move it by hand.
+    clock: Box<dyn Fn() -> Instant + Send + Sync>,
+}
+
+/// The model in memory.
+struct Loaded<T> {
+    id: String,
+    model: Arc<T>,
+    /// When it was last asked for, or last seen in use.
+    last_used: Instant,
 }
 
 impl<T> Default for ModelCache<T> {
     fn default() -> Self {
         Self {
             slot: Mutex::new(None),
+            clock: Box::new(Instant::now),
         }
     }
 }
 
 impl<T> ModelCache<T> {
+    #[cfg(test)]
+    fn with_clock(clock: impl Fn() -> Instant + Send + Sync + 'static) -> Self {
+        Self {
+            slot: Mutex::new(None),
+            clock: Box::new(clock),
+        }
+    }
+
     /// The model `id`, loaded with `load` when it isn't the one in memory. The lock is held while it loads, so that two
     /// that ask for the same model at once load it once. A failed load is not remembered: the next one tries again.
+    /// Asking for a model counts as using it.
     pub fn get(
         &self,
         id: &str,
         load: impl FnOnce() -> Result<T, String>,
     ) -> Result<Arc<T>, String> {
         let mut slot = lock(&self.slot);
-        if let Some((loaded, model)) = slot.as_ref() {
-            if loaded == id {
-                return Ok(Arc::clone(model));
-            }
+        if let Some(loaded) = slot.as_mut().filter(|loaded| loaded.id == id) {
+            loaded.last_used = (self.clock)();
+            return Ok(Arc::clone(&loaded.model));
         }
         // The old one goes first: two big models are not in memory at once.
         *slot = None;
         let model = Arc::new(load()?);
-        *slot = Some((id.to_owned(), Arc::clone(&model)));
+        *slot = Some(Loaded {
+            id: id.to_owned(),
+            model: Arc::clone(&model),
+            last_used: (self.clock)(),
+        });
         Ok(model)
+    }
+
+    /// Lets the model go from memory when nothing has used it for longer than `idle`. The app asks every minute.
+    ///
+    /// A model that something still holds is in use however long ago it was asked for (a transcription of hours
+    /// asks once and holds it): it stays, and counts as used now, so that it is not let go the moment the job ends
+    /// and the next one has to load it again.
+    pub fn unload_idle(&self, idle: Duration) {
+        let mut slot = lock(&self.slot);
+        let now = (self.clock)();
+        let Some(loaded) = slot.as_mut() else {
+            return;
+        };
+        if Arc::strong_count(&loaded.model) > 1 {
+            loaded.last_used = now;
+        } else if now.saturating_duration_since(loaded.last_used) > idle {
+            *slot = None;
+        }
     }
 
     /// Lets the model `id` go from memory, because its file is deleted. Another one stays.
     pub fn forget(&self, id: &str) {
         let mut slot = lock(&self.slot);
-        if slot.as_ref().is_some_and(|(loaded, _)| loaded == id) {
+        if slot.as_ref().is_some_and(|loaded| loaded.id == id) {
             *slot = None;
         }
     }
@@ -265,6 +308,15 @@ pub fn open_model_dir(base_dir: &Path) -> io::Result<ModelDir> {
     Ok(ModelDir::new(root))
 }
 
+/// The folder of the speaker separation models (`dictate_services::diarize::DIARIZE_MODELS`) below `base_dir`, created
+/// when it is missing. It is a folder of its own, not the Whisper models': neither list of files may take the other's
+/// for its own.
+pub fn open_diarize_dir(base_dir: &Path) -> io::Result<PathBuf> {
+    let root = base_dir.join("Dictate").join("diarization-models");
+    fs::create_dir_all(&root)?;
+    Ok(root)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,7 +345,9 @@ mod tests {
         let jobs = Arc::new(Jobs::default());
         let _tiny = jobs.start(download("tiny")).unwrap();
         let _base = jobs.start(download("base")).unwrap();
-        let _transcription = jobs.start(Job::Transcribe).unwrap();
+        let _meeting = jobs
+            .start(Job::Meeting("2026-11-09 10-00-00".into()))
+            .unwrap();
     }
 
     #[test]
@@ -489,6 +543,24 @@ mod tests {
         assert!(open_model_dir(dir.path()).is_ok());
     }
 
+    #[test]
+    fn the_diarization_model_folder_is_dictate_diarization_models_below_the_base_dir_and_is_created(
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let models = open_diarize_dir(dir.path()).unwrap();
+        assert_eq!(
+            models,
+            dir.path().join("Dictate").join("diarization-models")
+        );
+        assert!(models.is_dir());
+        // A second start finds it there, and it is not the Whisper models' folder.
+        assert_eq!(open_diarize_dir(dir.path()).unwrap(), models);
+        assert_ne!(
+            models,
+            open_model_dir(dir.path()).unwrap().root().to_path_buf()
+        );
+    }
+
     // ---- the model in memory
 
     #[test]
@@ -560,6 +632,112 @@ mod tests {
         cache.forget("tiny");
         drop(kept);
         cache.get("tiny", load).unwrap();
+        assert_eq!(loads.load(Ordering::SeqCst), 1);
+    }
+
+    /// A clock that stands still until the test moves it.
+    fn hand_clock(start: Instant) -> (Arc<Mutex<Instant>>, impl Fn() -> Instant + Send + Sync) {
+        let now = Arc::new(Mutex::new(start));
+        let reader = Arc::clone(&now);
+        (now, move || *lock(&reader))
+    }
+
+    #[test]
+    fn model_cache_unloads_after_idle() {
+        let start = Instant::now();
+        let (now, clock) = hand_clock(start);
+        let cache = ModelCache::<String>::with_clock(clock);
+        let loads = AtomicUsize::new(0);
+        let load = || {
+            loads.fetch_add(1, Ordering::SeqCst);
+            Ok("tiny".to_string())
+        };
+        let idle = Duration::from_secs(300);
+        let at = |seconds: u64| *lock(&now) = start + Duration::from_secs(seconds);
+
+        cache.get("tiny", load).unwrap();
+        assert_eq!(loads.load(Ordering::SeqCst), 1);
+
+        // Used 299 s ago: it stays, and asking for it is a use.
+        at(299);
+        cache.unload_idle(idle);
+        cache.get("tiny", load).unwrap();
+        assert_eq!(loads.load(Ordering::SeqCst), 1, "unloaded after 299 s");
+
+        // 299 s since that use, though 598 s since it was loaded: the last use is what counts.
+        at(598);
+        cache.unload_idle(idle);
+        cache.get("tiny", load).unwrap();
+        assert_eq!(loads.load(Ordering::SeqCst), 1, "the use did not count");
+
+        // Exactly as long as `idle` is not longer than it.
+        at(898);
+        cache.unload_idle(idle);
+        cache.get("tiny", load).unwrap();
+        assert_eq!(loads.load(Ordering::SeqCst), 1, "unloaded after 300 s");
+
+        // 301 s without a use: it goes, and the next one loads it again.
+        at(898 + 301);
+        cache.unload_idle(idle);
+        cache.get("tiny", load).unwrap();
+        assert_eq!(loads.load(Ordering::SeqCst), 2, "still there after 301 s");
+    }
+
+    #[test]
+    fn model_cache_unload_idle_with_nothing_loaded_does_nothing() {
+        let cache = ModelCache::<String>::default();
+
+        cache.unload_idle(Duration::ZERO);
+
+        assert_eq!(
+            cache.get("tiny", || Ok("tiny".into())).unwrap().as_str(),
+            "tiny"
+        );
+    }
+
+    #[test]
+    fn model_cache_keeps_a_model_that_is_in_use() {
+        let start = Instant::now();
+        let (now, clock) = hand_clock(start);
+        let cache = ModelCache::<String>::with_clock(clock);
+        let idle = Duration::from_secs(300);
+        let at = |seconds: u64| *lock(&now) = start + Duration::from_secs(seconds);
+        // A transcription of hours takes the model once and holds it.
+        let running = cache.get("tiny", || Ok("tiny".to_string())).unwrap();
+
+        at(3_600);
+        cache.unload_idle(idle);
+        let again = cache
+            .get("tiny", || Err("loaded a second copy".into()))
+            .unwrap();
+        assert!(Arc::ptr_eq(&running, &again), "two models in memory");
+        drop(again);
+
+        // It ends: the model has been used until just now, so it stays for the idle time from here.
+        drop(running);
+        at(3_600 + 200);
+        cache.unload_idle(idle);
+        let loads = AtomicUsize::new(0);
+        cache
+            .get("tiny", || {
+                loads.fetch_add(1, Ordering::SeqCst);
+                Ok("tiny".to_string())
+            })
+            .unwrap();
+        assert_eq!(
+            loads.load(Ordering::SeqCst),
+            0,
+            "unloaded straight after a long job"
+        );
+
+        at(3_600 + 200 + 301);
+        cache.unload_idle(idle);
+        cache
+            .get("tiny", || {
+                loads.fetch_add(1, Ordering::SeqCst);
+                Ok("tiny".to_string())
+            })
+            .unwrap();
         assert_eq!(loads.load(Ordering::SeqCst), 1);
     }
 

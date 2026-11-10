@@ -16,16 +16,25 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # The SHA-256 of the /MD build of sherpa-onnx without text to speech that the Windows jobs download (v1.13.8, 94,095,902 bytes): the
+  # digest that GitHub lists for the release asset, which is also what a download of it hashes to. A job that gets anything else stops
+  # before it unpacks it. It changes with the version in the URL below, and with the key of the cache (which has its first 8
+  # characters in it, so that a new pin is downloaded and checked and not restored from the cache). The one for Linux is pinned in
+  # scripts/fetch-sherpa-onnx-no-tts.sh.
+  SHERPA_ONNX_MD_SHA256: 542348e56e827b59c6d249fd0dfd38dc34b7bd0c521a1ebe9eb6e2db154fa15d
 
 jobs:
   test:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    # A cold Windows run took about 21 of the 30 minutes before sherpa-onnx; its 90 MB library comes on top.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 45 || 30 }}
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest, ubuntu-latest]
+        # Linux is pinned: `ubuntu-latest` is Ubuntu 26.04 now, whose libclang 21 makes the bindgen of whisper-rs-sys 0.14.1 emit
+        # zero-size structs (E0080 size asserts on _IO_FILE and whisper_full_params). Move it when that crate builds there.
+        os: [macos-latest, windows-latest, ubuntu-24.04]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -37,6 +46,74 @@ jobs:
         with:
           shared-key: ${{ runner.os }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      # The sherpa-onnx library (onnxruntime inside), and why each system gets it from where it does. The one thing that is the same
+      # everywhere: the speech synthesis of sherpa-onnx has espeak-ng in it, which is GPL-3.0 and which Dictate has no use for, and
+      # scripts/check-no-espeak.sh (the `app` job) fails when a program or a library that is shipped has any of it.
+      #  - macOS: the static library that the build script of sherpa-onnx-sys downloads and unpacks into
+      #    target/sherpa-onnx-prebuilt (20 MB). A static link keeps out what the program does not use, and the check shows it.
+      #    The folder is cached as unpacked, so that a run with a hit neither downloads nor unpacks it. The build script looks for
+      #    the folder of the version it is built for, so after a version change it fetches the new one whatever this key hits.
+      - uses: actions/cache@v4
+        if: runner.os == 'macOS'
+        with:
+          path: target/sherpa-onnx-prebuilt
+          key: sherpa-onnx-1.13.8-${{ runner.os }}-${{ runner.arch }}
+      #  - Windows: the static library of the same release without text to speech, 90 MB, which SHERPA_ONNX_LIB_DIR hands to the
+      #    build script. The one it would download is built with the static C runtime (/MT, "RuntimeLibrary=MT_StaticRelease" in its
+      #    objects), and whisper.cpp and Rust use the DLL one (/MD): the linker refuses to put them in one program (LNK2038,
+      #    LNK2005). The /MD build with the synthesis in it was used first, and the linker pulls espeak-ng into the program from
+      #    it, /OPT:REF or not (check-no-espeak.sh found it in dictate.exe; the one object of the C API that the program needs
+      #    also holds the synthesis, which refers to espeak-ng).
+      #    The build without the synthesis has no espeak-ng.lib, piper_phonemize.lib or ucd.lib, which the build script of
+      #    sherpa-onnx-sys names for every static build: copies of kissfft-float.lib stand in for them (the linker takes nothing
+      #    from a copy: the real one is first in the list and has every symbol). The key has the start of the pinned hash in it.
+      - uses: actions/cache@v4
+        if: runner.os == 'Windows'
+        with:
+          path: target/sherpa-onnx-md-no-tts
+          key: sherpa-onnx-md-no-tts-1.13.8-542348e5-${{ runner.arch }}
+      - name: Use the /MD build of sherpa-onnx without text to speech (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:GITHUB_WORKSPACE 'target/sherpa-onnx-md-no-tts'
+          if (-not (Test-Path (Join-Path $dir 'lib'))) {
+            New-Item -ItemType Directory -Force $dir | Out-Null
+            $archive = Join-Path $env:RUNNER_TEMP 'sherpa-onnx-md-no-tts.tar.bz2'
+            curl.exe -fsSL --retry 3 -o $archive 'https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-v1.13.8-win-x64-static-MD-Release-no-tts-lib.tar.bz2'
+            if ($LASTEXITCODE -ne 0) { throw 'the download failed' }
+            # It has to be the archive that was pinned: a file that is another one (the release asset was replaced, something on the
+            # way answered for it) is not linked into the app. -ne compares text without regard to case; Get-FileHash gives capitals.
+            $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash
+            if ($actual -ne $env:SHERPA_ONNX_MD_SHA256) {
+              Remove-Item -Force $archive
+              throw "the SHA-256 of the sherpa-onnx archive is $actual, not the pinned $env:SHERPA_ONNX_MD_SHA256"
+            }
+            # The Windows tar (bsdtar), not the GNU one of Git for Windows, which reads `D:` as a host name.
+            & "$env:SystemRoot\System32\tar.exe" -xjf $archive -C $dir --strip-components=1
+            if ($LASTEXITCODE -ne 0) { throw 'the unpacking failed' }
+            # The three libraries that the build script of sherpa-onnx-sys names and this build does not have.
+            foreach ($name in 'espeak-ng', 'piper_phonemize', 'ucd') {
+              Copy-Item (Join-Path $dir 'lib/kissfft-float.lib') (Join-Path $dir "lib/$name.lib")
+            }
+          }
+          "SHERPA_ONNX_LIB_DIR=$(Join-Path $dir 'lib')" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      #  - Linux: the shared library of the same release without text to speech (9 MB). The shared library has all of its own code in
+      #    it, so the ordinary one ships espeak-ng with the app (static on Linux aborts next to whisper.cpp, see
+      #    crates/dictate-services/Cargo.toml). scripts/fetch-sherpa-onnx-no-tts.sh downloads it, checks the SHA-256 that it pins
+      #    before it unpacks anything and prints the folder for SHERPA_ONNX_LIB_DIR, which crates/dictate-services/build.rs requires on
+      #    Linux. Two statements, so that the failure of the script fails the step (`echo "...$(script)"` would not).
+      - uses: actions/cache@v4
+        if: runner.os == 'Linux'
+        with:
+          path: target/sherpa-onnx-no-tts
+          key: sherpa-onnx-no-tts-1.13.8-bf2d998c-${{ runner.arch }}
+      - name: Use the sherpa-onnx build without text to speech (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          lib="$(bash scripts/fetch-sherpa-onnx-no-tts.sh target/sherpa-onnx-no-tts)"
+          echo "SHERPA_ONNX_LIB_DIR=$lib" >> "$GITHUB_ENV"
       # whisper.cpp is built from source: it needs cmake and a C++ compiler, and its bindings need libclang. The
       # macOS and Windows runners have them; this makes sure the Linux one does. libasound2-dev is the ALSA header
       # that microphone capture builds against. The rest is what the Tauri app links against: the web view, the
@@ -47,19 +124,65 @@ jobs:
           sudo apt-get update && sudo apt-get install -y
           cmake libclang-dev libasound2-dev
           libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
+      # The tests of the code that runs ffmpeg (decoding what symphonia cannot read, writing audio.m4a on Linux and
+      # as the stand-in for Media Foundation on Windows) run against a real one. On a developer's machine they skip
+      # without it; they fail when the CI variable is set (Actions sets it), so that a runner without ffmpeg cannot
+      # pass them without running them.
+      - name: Install ffmpeg (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg
+      - name: Install ffmpeg (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y ffmpeg
+      - name: Install ffmpeg (Windows)
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg -y --no-progress
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --all --locked
+      # Speaker separation on the real models. It is the only run of sherpa-onnx next to whisper.cpp on each system: on
+      # Linux the static build aborted here with "free(): invalid pointer", and this step keeps that from coming back
+      # unseen. The two models (46 MB) are cached under the SHA-256 of each: a new model is a new key. They are
+      # fetched with curl when the cache misses; the test itself refuses a file whose size or SHA-256 differs.
+      - uses: actions/cache@v4
+        id: diarize-models
+        with:
+          path: ${{ runner.temp }}/diarize-models
+          key: diarize-models-220ad67ca923bef2fa91f2390c786097bf305bceb5e261d4af67b38e938e1079-ad4a1802485d8b34c722d2a9d04249662f2ece5d28a7a039063ca22f515a789e
+      - name: Download the speaker separation models
+        if: steps.diarize-models.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/diarize-models"
+          cd "$RUNNER_TEMP/diarize-models"
+          curl -fsSL --retry 3 -o pyannote-segmentation-3.0.onnx https://huggingface.co/csukuangfj/sherpa-onnx-pyannote-segmentation-3-0/resolve/main/model.onnx
+          curl -fsSL --retry 3 -o nemo_en_titanet_small.onnx https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/nemo_en_titanet_small.onnx
+      # On Linux the programs load the sherpa-onnx .so files from target/debug. rust-cache saves only build/, deps/
+      # and .fingerprint/ of it, so after a restore they are gone, and the build script of sherpa-onnx-sys, which
+      # copied them, is up to date and does not run again: the one of dictate-services has to bring them back. Delete
+      # them as a restore does; the next step then fails with "error while loading shared libraries" if it does not.
+      - name: Remove the sherpa-onnx libraries as a cache restore does (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          rm -f target/debug/libsherpa-onnx-*.so* target/debug/libonnxruntime.so*
+          if ls target/debug/*.so* 2>/dev/null; then echo 'a .so file is left in target/debug'; exit 1; fi
+      # The third test loads the models from a folder named "Người dùng", as they are for a person with a Vietnamese user name (Windows
+      # gives the app's folders under the profile); it runs on every system, and Windows is where it can fail.
+      - name: Separate the speakers of a recording with the real models
+        env:
+          DICTATE_TEST_DIARIZE_DIR: ${{ runner.temp }}/diarize-models
+        run: cargo test -p dictate-services --lib --locked -- --ignored --nocapture diarizer_finds_two_speakers no_audio_and_silence_have_no_turns diarizer_loads_models_from_a_folder_with_a_non_ascii_name
 
   # The app: its web UI (type check, tests, build) and the Tauri shell around it, on every OS.
   app:
     name: app (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 45 || 30 }}
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest, ubuntu-latest]
+        # Linux is pinned as in the job above (whisper-rs-sys does not build on Ubuntu 26.04).
+        os: [macos-latest, windows-latest, ubuntu-24.04]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -67,6 +190,54 @@ jobs:
         with:
           shared-key: ${{ runner.os }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      # The sherpa-onnx library, as in the test job: the same steps, with the same keys.
+      - uses: actions/cache@v4
+        if: runner.os == 'macOS'
+        with:
+          path: target/sherpa-onnx-prebuilt
+          key: sherpa-onnx-1.13.8-${{ runner.os }}-${{ runner.arch }}
+      - uses: actions/cache@v4
+        if: runner.os == 'Windows'
+        with:
+          path: target/sherpa-onnx-md-no-tts
+          key: sherpa-onnx-md-no-tts-1.13.8-542348e5-${{ runner.arch }}
+      - name: Use the /MD build of sherpa-onnx without text to speech (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:GITHUB_WORKSPACE 'target/sherpa-onnx-md-no-tts'
+          if (-not (Test-Path (Join-Path $dir 'lib'))) {
+            New-Item -ItemType Directory -Force $dir | Out-Null
+            $archive = Join-Path $env:RUNNER_TEMP 'sherpa-onnx-md-no-tts.tar.bz2'
+            curl.exe -fsSL --retry 3 -o $archive 'https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-v1.13.8-win-x64-static-MD-Release-no-tts-lib.tar.bz2'
+            if ($LASTEXITCODE -ne 0) { throw 'the download failed' }
+            # It has to be the archive that was pinned: a file that is another one (the release asset was replaced, something on the
+            # way answered for it) is not linked into the app. -ne compares text without regard to case; Get-FileHash gives capitals.
+            $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash
+            if ($actual -ne $env:SHERPA_ONNX_MD_SHA256) {
+              Remove-Item -Force $archive
+              throw "the SHA-256 of the sherpa-onnx archive is $actual, not the pinned $env:SHERPA_ONNX_MD_SHA256"
+            }
+            # The Windows tar (bsdtar), not the GNU one of Git for Windows, which reads `D:` as a host name.
+            & "$env:SystemRoot\System32\tar.exe" -xjf $archive -C $dir --strip-components=1
+            if ($LASTEXITCODE -ne 0) { throw 'the unpacking failed' }
+            # The three libraries that the build script of sherpa-onnx-sys names and this build does not have.
+            foreach ($name in 'espeak-ng', 'piper_phonemize', 'ucd') {
+              Copy-Item (Join-Path $dir 'lib/kissfft-float.lib') (Join-Path $dir "lib/$name.lib")
+            }
+          }
+          "SHERPA_ONNX_LIB_DIR=$(Join-Path $dir 'lib')" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - uses: actions/cache@v4
+        if: runner.os == 'Linux'
+        with:
+          path: target/sherpa-onnx-no-tts
+          key: sherpa-onnx-no-tts-1.13.8-bf2d998c-${{ runner.arch }}
+      - name: Use the sherpa-onnx build without text to speech (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          lib="$(bash scripts/fetch-sherpa-onnx-no-tts.sh target/sherpa-onnx-no-tts)"
+          echo "SHERPA_ONNX_LIB_DIR=$lib" >> "$GITHUB_ENV"
       - name: Install the Linux build dependencies
         if: runner.os == 'Linux'
         run: >
@@ -87,6 +258,20 @@ jobs:
       - run: pnpm --dir app/ui test
       - run: pnpm --dir app/ui build
       - run: cargo build -p dictate-app --locked
+      # sherpa-onnx comes with espeak-ng, which is GPL-3.0 and which Dictate has no use for (it is for speech synthesis). Windows and
+      # Linux link the builds of sherpa-onnx that have none (see the test job), and macOS links the static library, which keeps out what
+      # the program does not use: no program or library that is shipped may have any of it. On Windows the symbol names are in a
+      # separate file, so the script looks for the string that espeak-ng reads its data path from. scripts/check-no-espeak.sh says more.
+      - name: Check that no espeak-ng code is linked into the program (macOS, Windows)
+        if: runner.os != 'Linux'
+        shell: bash
+        run: bash scripts/check-no-espeak.sh "target/debug/dictate${{ runner.os == 'Windows' && '.exe' || '' }}"
+      # The shared libraries on Linux have all of their code in them whether or not the program uses it: the program is checked, and so
+      # are the libraries that come with it and that a package has to ship.
+      - name: Check that no espeak-ng code is in the program or its shared libraries (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash scripts/check-no-espeak.sh target/debug/dictate target/debug/*.so
       # The macOS bundle is where Info.plist and Entitlements.plist take effect. A debug bundle is the quick one to
       # build, and the identity "-" signs it ad hoc, which is what applies the entitlements: check that the reason for
       # the microphone and the right to use it ended up in it.
@@ -106,7 +291,8 @@ jobs:
   # because `rust-toolchain.toml` would otherwise pick the stable one.
   msrv:
     name: msrv (1.85)
-    runs-on: ubuntu-latest
+    # Pinned as in the test job (whisper-rs-sys does not build on Ubuntu 26.04).
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -115,6 +301,16 @@ jobs:
         with:
           shared-key: msrv
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      # The sherpa-onnx library, as in the test job (this job is Linux only).
+      - uses: actions/cache@v4
+        with:
+          path: target/sherpa-onnx-no-tts
+          key: sherpa-onnx-no-tts-1.13.8-bf2d998c-${{ runner.arch }}
+      - name: Use the sherpa-onnx build without text to speech
+        shell: bash
+        run: |
+          lib="$(bash scripts/fetch-sherpa-onnx-no-tts.sh target/sherpa-onnx-no-tts)"
+          echo "SHERPA_ONNX_LIB_DIR=$lib" >> "$GITHUB_ENV"
       - name: Install the Linux build dependencies
         run: >
           sudo apt-get update && sudo apt-get install -y

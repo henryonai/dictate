@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { setLanguage } from "../lib/i18n";
 import { fakePanelState } from "../test-helpers";
 import {
@@ -18,6 +18,8 @@ import {
   languageLabel,
   languageName,
   noticeText,
+  onLinux,
+  onMac,
   type PanelError,
   VIEWS_OF,
   WAVE_SHAPE,
@@ -328,5 +330,40 @@ describe("errors", () => {
 
   test("a state that says nothing went wrong has no error", () => {
     expect(HIDDEN_STATE.error).toBeNull();
+  });
+});
+
+describe("the system the window runs on", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  /** The web view says what it is run on in `navigator.platform`, and in the user agent when that is empty. */
+  function on(platform: string, userAgent = "") {
+    vi.spyOn(navigator, "platform", "get").mockReturnValue(platform);
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue(userAgent);
+  }
+
+  test("onLinux: WebKitGTK says Linux, the other systems don't", () => {
+    on("Linux x86_64");
+    expect(onLinux()).toBe(true);
+    on("Linux aarch64");
+    expect(onLinux()).toBe(true);
+    on("MacIntel");
+    expect(onLinux()).toBe(false);
+    on("Win32");
+    expect(onLinux()).toBe(false);
+  });
+
+  test("onLinux: with no platform the user agent says it", () => {
+    on("", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15");
+    expect(onLinux()).toBe(true);
+    on("", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
+    expect(onLinux()).toBe(false);
+  });
+
+  test("onMac and onLinux are never both true", () => {
+    on("MacIntel");
+    expect([onMac(), onLinux()]).toEqual([true, false]);
+    on("Linux x86_64");
+    expect([onMac(), onLinux()]).toEqual([false, true]);
   });
 });

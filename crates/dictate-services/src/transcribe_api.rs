@@ -2,7 +2,7 @@
 //! (OpenAI, Groq, local servers) or, as base64 in a chat message, to an audio-capable model on OpenRouter.
 //! The request shapes and instruction texts follow the Swift app (TranscribeAPI.swift).
 //!
-//! One call sends one file: cutting a long recording into parts is the caller's job.
+//! One call sends one file; `transcribe_long` cuts a long recording into parts and sends them one by one.
 
 use std::fmt;
 use std::path::Path;
@@ -14,6 +14,10 @@ use reqwest::multipart::{Form, Part};
 use serde_json::{json, Value};
 
 use crate::http::{self, ApiError};
+
+mod long;
+
+pub use long::{part_seconds, transcribe_long, ApiProgress, BoxFuture, LongApiError};
 
 /// One second of 16 kHz mono 16-bit silence: what `check` sends.
 const SILENCE_WAV: &[u8] = include_bytes!("../assets/silence.wav");

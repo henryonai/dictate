@@ -1,12 +1,12 @@
 //! Test data shared by the meetings tests: a recording's summary and transcript, and a library of recordings.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 use tempfile::TempDir;
 
-use crate::meetings::library::{files, MeetingLibrary, SCREEN_SOURCE};
+use crate::meetings::library::{files, MeetingLibrary, Meta, SCREEN_SOURCE};
 
 /// The summary of the screen recording "Họp kế hoạch refactor": 2 action items and a 2-mark timeline.
 pub const SUMMARY: &str = r#"# Họp kế hoạch refactor
@@ -100,5 +100,14 @@ impl Fixture {
         for (name, text) in contents {
             fs::write(folder.join(name), text).expect("write a recording file");
         }
+    }
+
+    /// Adds the recording folder `id` holding only a `meta.json` with `meta`, and returns the folder.
+    pub fn write_meta(&self, id: &str, meta: &Meta) -> PathBuf {
+        let folder = self.dir().join(id);
+        fs::create_dir_all(&folder).expect("create the recording folder");
+        let json = serde_json::to_string_pretty(meta).expect("serialize meta");
+        fs::write(folder.join(files::META), json).expect("write meta.json");
+        folder
     }
 }

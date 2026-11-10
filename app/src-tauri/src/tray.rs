@@ -3,13 +3,14 @@
 use dictate_services::dictation::lang::display_hotkey;
 use dictate_services::settings::{Settings, UiLanguage};
 use serde::Serialize;
-use tauri::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+use tauri::menu::{IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager};
 
 use crate::commands;
 use crate::dictation::system::DictationHandle;
 use crate::hotkey::HotkeyEvent;
+use crate::meetings;
 
 const TRAY_ID: &str = "main";
 const SETTINGS_WINDOW: &str = "settings";
@@ -17,6 +18,7 @@ const SETTINGS_WINDOW: &str = "settings";
 const ID_DICTATE: &str = "dictate";
 const ID_SETTINGS: &str = "settings";
 const ID_MEETINGS: &str = "meetings";
+const ID_MEETINGS_FOLDER: &str = "meetings-folder";
 const ID_DICTATIONS: &str = "dictations";
 const ID_VERSION: &str = "version";
 const ID_QUIT: &str = "quit";
@@ -46,6 +48,8 @@ pub fn resolve_language(setting: UiLanguage, os_locale: Option<&str>) -> Lang {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TrayLabels {
     pub settings: &'static str,
+    /// The meetings window.
+    pub meetings: &'static str,
     pub open_meetings: &'static str,
     pub open_dictations: &'static str,
     pub quit: &'static str,
@@ -55,12 +59,14 @@ pub fn tray_labels(lang: Lang) -> TrayLabels {
     match lang {
         Lang::En => TrayLabels {
             settings: "Settings…",
+            meetings: "Meetings…",
             open_meetings: "Open meetings folder",
             open_dictations: "Open dictations folder",
             quit: "Quit",
         },
         Lang::Vi => TrayLabels {
             settings: "Cài đặt…",
+            meetings: "Cuộc họp…",
             open_meetings: "Mở thư mục cuộc họp",
             open_dictations: "Mở thư mục đọc chính tả",
             quit: "Thoát",
@@ -92,45 +98,56 @@ pub fn system_language() -> Lang {
     resolve_language(UiLanguage::System, sys_locale::get_locale().as_deref())
 }
 
-fn build_menu(app: &AppHandle, lang: Lang, hotkey: &str) -> tauri::Result<Menu<tauri::Wry>> {
+/// One item of the tray menu.
+struct Entry {
+    id: &'static str,
+    text: String,
+    enabled: bool,
+}
+
+/// The items of the menu, from the top; `None` is a separator.
+fn menu_entries(lang: Lang, hotkey: &str) -> Vec<Option<Entry>> {
     let labels = tray_labels(lang);
-    let dictate = MenuItem::with_id(
-        app,
-        ID_DICTATE,
-        dictate_label(lang, hotkey),
-        true,
-        None::<&str>,
-    )?;
-    let settings = MenuItem::with_id(app, ID_SETTINGS, labels.settings, true, None::<&str>)?;
-    let meetings = MenuItem::with_id(app, ID_MEETINGS, labels.open_meetings, true, None::<&str>)?;
-    let dictations = MenuItem::with_id(
-        app,
-        ID_DICTATIONS,
-        labels.open_dictations,
-        true,
-        None::<&str>,
-    )?;
-    let version = MenuItem::with_id(
-        app,
-        ID_VERSION,
-        format!("Dictate {}", env!("CARGO_PKG_VERSION")),
-        false,
-        None::<&str>,
-    )?;
-    let quit = MenuItem::with_id(app, ID_QUIT, labels.quit, true, None::<&str>)?;
-    Menu::with_items(
-        app,
-        &[
-            &dictate,
-            &PredefinedMenuItem::separator(app)?,
-            &settings,
-            &meetings,
-            &dictations,
-            &PredefinedMenuItem::separator(app)?,
-            &version,
-            &quit,
-        ],
-    )
+    let entry = |id, text: &str, enabled| {
+        Some(Entry {
+            id,
+            text: text.to_owned(),
+            enabled,
+        })
+    };
+    vec![
+        entry(ID_DICTATE, &dictate_label(lang, hotkey), true),
+        None,
+        entry(ID_SETTINGS, labels.settings, true),
+        entry(ID_MEETINGS, labels.meetings, true),
+        entry(ID_MEETINGS_FOLDER, labels.open_meetings, true),
+        entry(ID_DICTATIONS, labels.open_dictations, true),
+        None,
+        entry(
+            ID_VERSION,
+            &format!("Dictate {}", env!("CARGO_PKG_VERSION")),
+            false,
+        ),
+        entry(ID_QUIT, labels.quit, true),
+    ]
+}
+
+fn build_menu(app: &AppHandle, lang: Lang, hotkey: &str) -> tauri::Result<Menu<tauri::Wry>> {
+    let mut items: Vec<Box<dyn IsMenuItem<tauri::Wry>>> = Vec::new();
+    for entry in menu_entries(lang, hotkey) {
+        items.push(match entry {
+            Some(entry) => Box::new(MenuItem::with_id(
+                app,
+                entry.id,
+                entry.text,
+                entry.enabled,
+                None::<&str>,
+            )?),
+            None => Box::new(PredefinedMenuItem::separator(app)?),
+        });
+    }
+    let items: Vec<&dyn IsMenuItem<tauri::Wry>> = items.iter().map(Box::as_ref).collect();
+    Menu::with_items(app, &items)
 }
 
 /// Puts the icon in the tray. Clicking it opens the menu (on macOS too, as menu bar apps do).
@@ -187,6 +204,11 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
         }
         ID_SETTINGS => show_settings(app),
         ID_MEETINGS => {
+            // Making a window asks the thread that runs the menu, and on Windows waiting for it there would never end.
+            let app = app.clone();
+            tauri::async_runtime::spawn_blocking(move || meetings::window::show(&app));
+        }
+        ID_MEETINGS_FOLDER => {
             // Starting the file manager can take a moment: not on the thread that runs the menu.
             let app = app.clone();
             tauri::async_runtime::spawn_blocking(move || {
@@ -231,15 +253,65 @@ mod tests {
     fn tray_labels_vi_and_en() {
         let en = tray_labels(Lang::En);
         assert_eq!(en.settings, "Settings…");
+        assert_eq!(en.meetings, "Meetings…");
         assert_eq!(en.open_meetings, "Open meetings folder");
         assert_eq!(en.open_dictations, "Open dictations folder");
         assert_eq!(en.quit, "Quit");
 
         let vi = tray_labels(Lang::Vi);
         assert_eq!(vi.settings, "Cài đặt…");
+        assert_eq!(vi.meetings, "Cuộc họp…");
         assert_eq!(vi.open_meetings, "Mở thư mục cuộc họp");
         assert_eq!(vi.open_dictations, "Mở thư mục đọc chính tả");
         assert_eq!(vi.quit, "Thoát");
+    }
+
+    #[test]
+    fn the_menu_has_the_meetings_window_above_the_meetings_folder() {
+        let entries = menu_entries(Lang::En, "Ctrl+Alt+Space");
+        let ids: Vec<Option<&str>> = entries
+            .iter()
+            .map(|entry| entry.as_ref().map(|entry| entry.id))
+            .collect();
+        // `None` is a separator.
+        assert_eq!(
+            ids,
+            [
+                Some(ID_DICTATE),
+                None,
+                Some(ID_SETTINGS),
+                Some(ID_MEETINGS),
+                Some(ID_MEETINGS_FOLDER),
+                Some(ID_DICTATIONS),
+                None,
+                Some(ID_VERSION),
+                Some(ID_QUIT),
+            ]
+        );
+        let text = |lang, id| {
+            menu_entries(lang, "Ctrl+Alt+Space")
+                .into_iter()
+                .flatten()
+                .find(|entry| entry.id == id)
+                .map(|entry| (entry.text, entry.enabled))
+        };
+        assert_eq!(
+            text(Lang::En, ID_MEETINGS),
+            Some(("Meetings…".to_owned(), true))
+        );
+        assert_eq!(
+            text(Lang::Vi, ID_MEETINGS),
+            Some(("Cuộc họp…".to_owned(), true))
+        );
+        assert_eq!(
+            text(Lang::En, ID_MEETINGS_FOLDER),
+            Some(("Open meetings folder".to_owned(), true))
+        );
+        // The line with the version is a label, not something to click.
+        assert_eq!(
+            text(Lang::En, ID_VERSION).map(|(_, enabled)| enabled),
+            Some(false)
+        );
     }
 
     #[test]

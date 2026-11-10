@@ -5,6 +5,7 @@ mod commands;
 mod config;
 mod dictation;
 mod hotkey;
+mod meetings;
 mod panel;
 // Fixture states for the panels, to look at them without the controller. A debug build only.
 #[cfg(debug_assertions)]
@@ -63,7 +64,10 @@ fn main() {
             MacosLauncher::LaunchAgent,
             None,
         ))
-        .plugin(tauri_plugin_opener::init());
+        .plugin(tauri_plugin_opener::init())
+        // The dialogs and the banners of the meetings: opened from Rust, and not by any page (no capability gives them).
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init());
     // The bubble is a panel of AppKit: this is what lets Tauri turn its window into one.
     #[cfg(target_os = "macos")]
     let builder = builder.plugin(tauri_nspanel::init());
@@ -83,6 +87,8 @@ fn main() {
                 }
                 // A floating window hidden like this is not shown any more, and the next state shows it again.
                 panel::window_closed(window.app_handle(), window.label());
+                // A hidden web view goes on playing: the meetings page pauses its player.
+                meetings::window::window_hidden(window.app_handle(), window.label());
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -101,14 +107,34 @@ fn main() {
             commands::cancel_download,
             commands::delete_model,
             commands::models_disk_usage_mb,
-            commands::transcribe_wav,
-            commands::cancel_transcribe,
             commands::edit_presets,
             commands::transcribe_presets,
             commands::open_meetings_folder,
             commands::permissions_status,
             commands::request_permission,
             commands::open_permission_settings,
+            meetings::commands::media_tools,
+            meetings::commands::meetings_list,
+            meetings::commands::meeting_detail,
+            meetings::commands::meetings_pick_files,
+            meetings::commands::meetings_import_files,
+            meetings::commands::meetings_import_link,
+            meetings::commands::meeting_cancel,
+            meetings::commands::meeting_rerun,
+            meetings::commands::meeting_resummarize,
+            meetings::commands::meeting_retry,
+            meetings::commands::meeting_set_task,
+            meetings::commands::meeting_rename_speakers,
+            meetings::commands::meeting_ask,
+            meetings::commands::meeting_markdown,
+            meetings::commands::meeting_export,
+            meetings::commands::meeting_log,
+            meetings::commands::meeting_open_folder,
+            meetings::commands::meeting_open_media,
+            meetings::commands::meeting_delete,
+            meetings::commands::copy_text,
+            meetings::commands::meetings_open_settings,
+            meetings::commands::meetings_readiness,
             panel::dictation_languages,
             panel::dictation_stop,
             panel::dictation_cancel,
@@ -183,6 +209,7 @@ fn setup(
     let hotkey = tray::hotkey_label(&initial);
     let accel = initial.hotkey;
 
+    let diarize_dir = state::open_diarize_dir(&models_base)?;
     let state = AppState::new(store, warning, Arc::new(KeyringStore::new()), models);
     let startup = state.clone();
     app.manage(state);
@@ -197,6 +224,8 @@ fn setup(
     app.manage(dictation.clone());
     tray::create(app.handle(), lang, &hotkey)?;
     panel::create(app.handle())?;
+    // The meetings: their jobs wait until the folders are cleared and the keys are read, off this thread.
+    meetings::start(app.handle(), &startup, diarize_dir);
     // A debug build can cycle fixture states through the panels, to look at them without the controller.
     #[cfg(debug_assertions)]
     panel_demo::start(app.handle());
@@ -240,7 +269,7 @@ mod tests {
     use tauri::{App, WebviewUrl, WebviewWindowBuilder};
 
     /// The commands of the Settings window.
-    const SETTINGS_COMMANDS: [&str; 23] = [
+    const SETTINGS_COMMANDS: [&str; 22] = [
         "get_settings",
         "save_settings",
         "set_ai_provider",
@@ -256,15 +285,44 @@ mod tests {
         "cancel_download",
         "delete_model",
         "models_disk_usage_mb",
-        "transcribe_wav",
-        "cancel_transcribe",
         "edit_presets",
         "transcribe_presets",
         "open_meetings_folder",
         "permissions_status",
         "request_permission",
         "open_permission_settings",
+        // Which tools of the system are installed: the one command the meetings window shares with Settings.
+        "media_tools",
     ];
+
+    /// The commands of the meetings window.
+    const MEETINGS_COMMANDS: [&str; 22] = [
+        "meetings_list",
+        "meeting_detail",
+        "meetings_pick_files",
+        "meetings_import_files",
+        "meetings_import_link",
+        "meeting_cancel",
+        "meeting_rerun",
+        "meeting_resummarize",
+        "meeting_retry",
+        "meeting_set_task",
+        "meeting_rename_speakers",
+        "meeting_ask",
+        "meeting_markdown",
+        "meeting_export",
+        "meeting_log",
+        "meeting_open_folder",
+        "meeting_open_media",
+        "meeting_delete",
+        "copy_text",
+        "meetings_open_settings",
+        "meetings_readiness",
+        "media_tools",
+    ];
+
+    /// The one command that Settings and the meetings window both ask.
+    const SHARED_COMMAND: &str = "media_tools";
 
     /// The commands of the two floating windows.
     const PANEL_COMMANDS: [&str; 18] = [
@@ -298,7 +356,7 @@ mod tests {
             })
             .build(super::context())
             .expect("the app could not be built with its permissions");
-        for label in ["settings", "bubble", "card", "stranger"] {
+        for label in ["settings", "bubble", "card", "meetings", "stranger"] {
             WebviewWindowBuilder::new(&app, label, WebviewUrl::default())
                 .build()
                 .expect("a window");
@@ -340,6 +398,23 @@ mod tests {
             let refusal = asked_by(&app, "settings", command).expect_err(command);
             assert!(refusal.contains("not allowed"), "{command}: {refusal}");
         }
+        // The library is the meetings window's: Settings has only the tools of the system in common with it.
+        for command in MEETINGS_COMMANDS
+            .into_iter()
+            .filter(|c| *c != SHARED_COMMAND)
+        {
+            let refusal = asked_by(&app, "settings", command).expect_err(command);
+            assert!(refusal.contains("not allowed"), "{command}: {refusal}");
+        }
+        // The dialogs and the notifications are Rust's: no page of the app is given them.
+        for command in [
+            "plugin:dialog|open",
+            "plugin:dialog|save",
+            "plugin:notification|notify",
+        ] {
+            let refusal = asked_by(&app, "settings", command).expect_err(command);
+            assert!(refusal.contains("not allowed"), "{command}: {refusal}");
+        }
     }
 
     #[test]
@@ -354,7 +429,7 @@ mod tests {
                 );
             }
             // The keys, the settings and the downloads are not theirs: a page that went wrong can't reach them.
-            for command in SETTINGS_COMMANDS {
+            for command in SETTINGS_COMMANDS.into_iter().chain(MEETINGS_COMMANDS) {
                 let refusal = asked_by(&app, window, command).expect_err(command);
                 assert!(
                     refusal.contains("not allowed"),
@@ -367,9 +442,149 @@ mod tests {
     #[test]
     fn a_window_no_capability_names_may_ask_for_nothing() {
         let app = app();
-        for command in SETTINGS_COMMANDS.into_iter().chain(PANEL_COMMANDS) {
+        for command in SETTINGS_COMMANDS
+            .into_iter()
+            .chain(PANEL_COMMANDS)
+            .chain(MEETINGS_COMMANDS)
+        {
             assert!(asked_by(&app, "stranger", command).is_err(), "{command}");
         }
+    }
+
+    #[test]
+    fn the_meetings_window_may_ask_for_its_commands_and_for_nothing_of_settings_or_the_panels() {
+        let app = app();
+        for command in MEETINGS_COMMANDS {
+            assert_eq!(asked_by(&app, "meetings", command), Ok(()), "{command}");
+        }
+        let others = SETTINGS_COMMANDS
+            .into_iter()
+            .chain(PANEL_COMMANDS)
+            .filter(|command| !MEETINGS_COMMANDS.contains(command));
+        for command in others {
+            let refusal = asked_by(&app, "meetings", command).expect_err(command);
+            assert!(refusal.contains("not allowed"), "{command}: {refusal}");
+        }
+        // The dialogs, the notifications and the opener are opened from Rust: the page is not given them.
+        for command in [
+            "plugin:dialog|open",
+            "plugin:dialog|save",
+            "plugin:dialog|message",
+            "plugin:notification|notify",
+            "plugin:opener|open_path",
+            "plugin:opener|open_url",
+            "plugin:opener|reveal_item_in_dir",
+            "plugin:autostart|enable",
+        ] {
+            let refusal = asked_by(&app, "meetings", command).expect_err(command);
+            assert!(refusal.contains("not allowed"), "{command}: {refusal}");
+        }
+    }
+
+    /// The commands a capability file gives (`allow-get-settings` is `get_settings`), and what else it names.
+    fn capability(source: &str) -> (Vec<String>, BTreeSet<String>, Vec<String>) {
+        let file: Value = serde_json::from_str(source).unwrap();
+        let windows = file["windows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|window| window.as_str().unwrap().to_owned())
+            .collect();
+        let mut commands = BTreeSet::new();
+        let mut others = Vec::new();
+        for permission in file["permissions"].as_array().unwrap() {
+            match permission.as_str() {
+                Some(name) if name.starts_with("allow-") => {
+                    commands.insert(name["allow-".len()..].replace('-', "_"));
+                }
+                Some(name) => others.push(name.to_owned()),
+                None => others.push(permission["identifier"].as_str().unwrap().to_owned()),
+            }
+        }
+        (windows, commands, others)
+    }
+
+    #[test]
+    fn the_capability_of_the_meetings_window_is_the_list_of_its_commands_and_listening_for_events()
+    {
+        let (windows, commands, others) = capability(include_str!("../capabilities/meetings.json"));
+
+        assert_eq!(windows, ["meetings"]);
+        let wanted: BTreeSet<String> = MEETINGS_COMMANDS.into_iter().map(str::to_owned).collect();
+        assert_eq!(commands, wanted);
+        // The events of the jobs (`meeting-job`, `meetings-changed`) and of the files dropped on it; no more of the core.
+        assert_eq!(
+            others,
+            ["core:event:allow-listen", "core:event:allow-unlisten"]
+        );
+    }
+
+    #[test]
+    fn no_command_of_meetings_is_in_the_other_capabilities_except_the_one_that_is_shared() {
+        let (_, settings, _) = capability(include_str!("../capabilities/default.json"));
+        let (_, panels, _) = capability(include_str!("../capabilities/panel.json"));
+        for command in MEETINGS_COMMANDS {
+            assert_eq!(
+                settings.contains(command),
+                command == SHARED_COMMAND,
+                "{command} in default.json"
+            );
+            assert!(!panels.contains(command), "{command} in panel.json");
+        }
+        // And every command of Settings is still the settings' own (no panel command crept in).
+        let own: BTreeSet<String> = SETTINGS_COMMANDS.into_iter().map(str::to_owned).collect();
+        assert_eq!(settings, own);
+    }
+
+    #[test]
+    fn the_content_security_policy_lets_the_page_play_media_from_the_local_server_and_nothing_else_from_outside(
+    ) {
+        let config: Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let csp = config["app"]["security"]["csp"].as_str().unwrap();
+        assert!(csp.contains("media-src 'self' http://127.0.0.1:*"), "{csp}");
+        // The rest is what it was: the page's own files, and the IPC.
+        assert!(csp.starts_with("default-src 'self';"), "{csp}");
+        assert!(
+            csp.contains("connect-src 'self' ipc: http://ipc.localhost"),
+            "{csp}"
+        );
+        assert!(
+            !csp.contains("script-src"),
+            "scripts are the page's own, by default-src"
+        );
+        assert!(
+            !csp.contains("unsafe-eval") && !csp.contains("https:"),
+            "{csp}"
+        );
+    }
+
+    #[test]
+    fn the_meetings_window_is_not_made_at_start_but_by_the_tray() {
+        // The window is made when it is asked for (`meetings::window::show`), so it is not in the configuration: its label is
+        // only named by the capability.
+        let config: Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let labels: Vec<&str> = config["app"]["windows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|window| window["label"].as_str())
+            .collect();
+        assert_eq!(labels, ["settings"]);
+    }
+
+    #[test]
+    fn the_deb_recommends_the_gstreamer_packages_that_play_the_recordings() {
+        // WebKitGTK plays the audio of a recording (AAC in MP4) only with GStreamer's good plugins and libav. They are
+        // recommended, not required: the app runs without them and says which package to install.
+        let config: Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        assert_eq!(
+            config["bundle"]["linux"]["deb"]["recommends"],
+            json!(["gstreamer1.0-plugins-good", "gstreamer1.0-libav"])
+        );
+        assert!(
+            config["bundle"]["linux"]["deb"]["depends"].is_null(),
+            "a package that is only recommended is not a dependency"
+        );
     }
 
     /// The names between quotes in the first list of strings after `marker`.
@@ -384,10 +599,11 @@ mod tests {
     }
 
     #[test]
-    fn every_command_of_the_app_is_in_the_manifest_that_scopes_it_and_in_one_list_of_these_tests() {
+    fn every_command_of_the_app_is_in_the_manifest_that_scopes_it_and_in_a_list_of_these_tests() {
         let wanted: BTreeSet<String> = SETTINGS_COMMANDS
             .into_iter()
             .chain(PANEL_COMMANDS)
+            .chain(MEETINGS_COMMANDS)
             .map(str::to_owned)
             .collect();
         for build in as_checked_out(include_str!("../build.rs")) {

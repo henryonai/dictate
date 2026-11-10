@@ -1,7 +1,8 @@
 //! Local speech recognition: Whisper (whisper.cpp, through whisper-rs) on the user's machine.
 //!
-//! `LocalWhisper::load` reads a model of up to 1.6 GB and `transcribe` runs as long as the audio takes: both
-//! block. From async code call them on a blocking thread (`tokio::task::spawn_blocking`).
+//! `LocalWhisper::load` reads a model of up to 1.6 GB, and `transcribe` and `transcribe_timed` (for recordings of
+//! any length) run as long as the audio takes: all block. From async code call them on a blocking thread
+//! (`tokio::task::spawn_blocking`).
 //!
 //! whisper.cpp and ggml log to stderr by default. `load` hands their logging to whisper-rs, which (with the
 //! `log_backend` feature) passes it on to the `log` crate: nothing shows until the app installs a logger.
@@ -13,11 +14,15 @@ use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
 use std::path::Path;
 
 use dictate_core::text::segments::Segment;
-use dictate_core::text::whisper::clean;
+use dictate_core::text::whisper::{clean, Timed};
 use tokio_util::sync::CancellationToken;
 use whisper_rs::{
     FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters,
-    WhisperError as EngineError, WhisperSysContext, WhisperSysState,
+    WhisperError as EngineError, WhisperState, WhisperSysContext, WhisperSysState,
+};
+
+use super::long::{
+    chunk_bounds, chunk_prompt, seconds, words_from_tokens, TokenSpan, CONTEXT_CHARS,
 };
 
 /// The only sample rate Whisper takes.
@@ -29,6 +34,15 @@ const MAX_PROMPT_CHARS: usize = 800;
 /// More tokens than any prompt of `MAX_PROMPT_CHARS` characters can make: a character is at most 4 bytes of
 /// UTF-8 and a token stands for at least one byte.
 const MAX_PROMPT_TOKENS: usize = 4 * MAX_PROMPT_CHARS;
+
+/// The same for the prompt of a chunk of a long recording: the vocabulary, a space, and the end of the text before.
+const MAX_CHUNK_PROMPT_TOKENS: usize = 4 * (MAX_PROMPT_CHARS + 1 + CONTEXT_CHARS);
+
+/// How long a chunk of a long recording is, in seconds, and how far either side of that a quiet place to cut it is
+/// looked for. Whisper takes the whole of a recording at once, which for hours of audio means a lot of memory, no
+/// progress to show, and no way to stop it between steps.
+const CHUNK_S: f64 = 600.0;
+const CUT_SEARCH_S: f64 = 30.0;
 
 /// Why local transcription did not give a transcript.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,6 +69,17 @@ impl fmt::Display for WhisperError {
 }
 
 impl std::error::Error for WhisperError {}
+
+/// What `LocalWhisper::transcribe_timed` heard.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TimedTranscript {
+    /// The lines Whisper wrote, in time order, with the words of each when they were asked for (else none). Times are
+    /// seconds from the start of the recording. The text is as Whisper wrote it, with its leading space: what
+    /// `timed_to_segments` takes.
+    pub lines: Vec<(Timed, Vec<Timed>)>,
+    /// The language the transcript is in: the one asked for, or the one Whisper detected.
+    pub language: Option<String>,
+}
 
 /// A Whisper model in memory, ready to transcribe. It is `Send + Sync`: share it (in an `Arc`) rather than
 /// loading it again for each recording.
@@ -187,6 +212,185 @@ impl LocalWhisper {
         }
         Ok(segments)
     }
+
+    /// The lines of 16 kHz mono audio of any length, with the times of their words when `words` is set (for
+    /// speaker separation, which needs to know who said what), in the form `timed_to_segments` takes.
+    ///
+    /// The audio goes to Whisper in chunks of about 10 minutes, cut where it is quiet (see `chunk_bounds`), each
+    /// shown the vocabulary in `prompt` and the end of the text before it. Times are from the start of the audio.
+    /// `language` is as in `transcribe`; when none is given, the one Whisper hears in the first chunk with speech
+    /// in it is used for the others too, so that it cannot change half way through a meeting.
+    ///
+    /// `on_progress` hears how far it is, from 0 to 1. Cancelling `cancel` stops it between chunks and, within a
+    /// chunk, within a moment: `WhisperError::Cancelled`. If `on_progress` panics, the chunk is still finished and
+    /// then the panic comes out of this call.
+    pub fn transcribe_timed(
+        &self,
+        samples_16k: &[f32],
+        language: Option<&str>,
+        prompt: &str,
+        words: bool,
+        cancel: &CancellationToken,
+        mut on_progress: impl FnMut(f32),
+    ) -> Result<TimedTranscript, WhisperError> {
+        if cancel.is_cancelled() {
+            return Err(WhisperError::Cancelled);
+        }
+        let language = language_choice(language)?;
+        let mut transcript = TimedTranscript {
+            lines: Vec::new(),
+            language: language.map(str::to_owned),
+        };
+        if samples_16k.is_empty() {
+            return Ok(transcript);
+        }
+        let vocabulary = cut_prompt(prompt);
+        let mut state = self
+            .context
+            .create_state()
+            .map_err(|e| WhisperError::Failed(format!("could not start: {e}")))?;
+
+        let chunks = chunk_bounds(samples_16k, SAMPLE_RATE, CHUNK_S, CUT_SEARCH_S);
+        let count = chunks.len();
+        // What the chunk before said.
+        let mut before = String::new();
+        for (i, chunk) in chunks.into_iter().enumerate() {
+            if cancel.is_cancelled() {
+                return Err(WhisperError::Cancelled);
+            }
+            let prompt_tokens = self.chunk_prompt_tokens(&chunk_prompt(&vocabulary, &before))?;
+            let job = ChunkJob {
+                language: transcript.language.as_deref(),
+                prompt_tokens: &prompt_tokens,
+                words,
+                offset: chunk.start as f64 / f64::from(SAMPLE_RATE),
+            };
+            let mut report =
+                |percent: u8| on_progress((i as f32 + f32::from(percent) / 100.0) / count as f32);
+            let lines =
+                self.transcribe_chunk(&mut state, &samples_16k[chunk], &job, cancel, &mut report)?;
+
+            if transcript.language.is_none() && !lines.is_empty() {
+                transcript.language =
+                    whisper_rs::get_lang_str(state.full_lang_id_from_state()).map(str::to_owned);
+            }
+            before = lines
+                .iter()
+                .map(|(line, _)| clean(&line.text))
+                .collect::<Vec<_>>()
+                .join(" ");
+            transcript.lines.extend(lines);
+        }
+        Ok(transcript)
+    }
+
+    /// The prompt of a chunk as Whisper gets it. A prompt goes in as tokens (see `transcribe`).
+    fn chunk_prompt_tokens(&self, prompt: &str) -> Result<Vec<c_int>, WhisperError> {
+        if prompt.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        self.context
+            .tokenize(prompt, MAX_CHUNK_PROMPT_TOKENS)
+            .map_err(|e| {
+                WhisperError::Failed(format!("the prompt is no text Whisper can read: {e}"))
+            })
+    }
+
+    /// One chunk of `transcribe_timed`: its lines, in seconds from the start of the whole recording.
+    fn transcribe_chunk(
+        &self,
+        state: &mut WhisperState,
+        audio: &[f32],
+        job: &ChunkJob<'_>,
+        cancel: &CancellationToken,
+        report: &mut dyn FnMut(u8),
+    ) -> Result<Vec<(Timed, Vec<Timed>)>, WhisperError> {
+        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 5 });
+        params.set_language(job.language);
+        if !job.prompt_tokens.is_empty() {
+            params.set_tokens(job.prompt_tokens);
+        }
+        params.set_print_progress(false);
+        params.set_print_realtime(false);
+        params.set_print_special(false);
+        params.set_print_timestamps(false);
+        params.set_token_timestamps(job.words);
+
+        let mut sink = ProgressSink {
+            report,
+            last: None,
+            panic: None,
+        };
+        // SAFETY: as in `transcribe`: the pointers outlive `state.full`, the only call that uses them, and the
+        // sink and the token are only touched the way `report_progress` and `poll_cancel` do.
+        unsafe {
+            params.set_progress_callback(Some(report_progress));
+            params.set_progress_callback_user_data(std::ptr::from_mut(&mut sink).cast());
+            params.set_abort_callback(Some(poll_cancel));
+            params.set_abort_callback_user_data(std::ptr::from_ref(cancel).cast_mut().cast());
+        }
+        let outcome = state.full(params, audio);
+
+        if let Some(payload) = sink.panic.take() {
+            resume_unwind(payload);
+        }
+        if cancel.is_cancelled() {
+            return Err(WhisperError::Cancelled);
+        }
+        outcome.map_err(|e| WhisperError::Failed(e.to_string()))?;
+        if sink.last != Some(100) {
+            (sink.report)(100);
+        }
+
+        // Tokens from this one on are Whisper's own marks (the language, the times) and not text.
+        let first_special = self.context.token_eot();
+        let mut lines = Vec::new();
+        for segment in state.as_iter() {
+            let text = segment
+                .to_str_lossy()
+                .map_err(|e| WhisperError::Failed(e.to_string()))?
+                .into_owned();
+            if clean(&text).is_empty() {
+                continue;
+            }
+            let start = job.offset + seconds(segment.start_timestamp());
+            let line = Timed {
+                start,
+                end: (job.offset + seconds(segment.end_timestamp())).max(start),
+                text,
+                speaker: None,
+            };
+            let words = if job.words {
+                let tokens: Vec<TokenSpan> = (0..segment.n_tokens())
+                    .filter_map(|n| segment.get_token(n))
+                    .filter(|token| token.token_id() < first_special)
+                    .filter_map(|token| {
+                        let times = token.token_data();
+                        Some(TokenSpan {
+                            bytes: token.to_bytes().ok()?.to_vec(),
+                            start: times.t0,
+                            end: times.t1,
+                        })
+                    })
+                    .collect();
+                words_from_tokens(&tokens, job.offset)
+            } else {
+                Vec::new()
+            };
+            lines.push((line, words));
+        }
+        Ok(lines)
+    }
+}
+
+/// What one chunk of `transcribe_timed` is transcribed with.
+struct ChunkJob<'a> {
+    language: Option<&'a str>,
+    prompt_tokens: &'a [c_int],
+    /// Whether the words of each line are timed.
+    words: bool,
+    /// Where the chunk starts in the recording, in seconds.
+    offset: f64,
 }
 
 /// What `report_progress` reaches while whisper.cpp runs.

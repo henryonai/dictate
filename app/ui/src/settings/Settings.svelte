@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { api } from "../lib/api";
   import { t } from "../lib/i18n";
   import { SettingsStore } from "../lib/settings-store.svelte";
   import Accounts from "./Accounts.svelte";
@@ -23,9 +24,14 @@
     const stopWatching = store.watchHotkey();
     // The language menu of the dictation chip changes the settings without this window.
     const stopWatchingSettings = store.watchSettings();
+    // The meetings window sends people here, to the page where an API key or a model is set up.
+    const stopWatchingTabs = api.onSettingsTab((id) => {
+      if (TABS.some((entry) => entry.id === id)) tab = id;
+    });
     return () => {
       void stopWatching.then((stop) => stop());
       void stopWatchingSettings.then((stop) => stop());
+      void stopWatchingTabs.then((stop) => stop());
     };
   });
 </script>

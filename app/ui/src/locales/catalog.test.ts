@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
@@ -71,6 +71,44 @@ describe("what the controller says, the UI has words for", () => {
   test("the button of an error that has one has its words too", () => {
     for (const locale of [en, vi] as Record<string, string>[]) {
       expect(locale["dictation.open_settings"]).toBeTruthy();
+    }
+  });
+});
+
+describe("what the app no longer has, the locales do not carry", () => {
+  test("no text of the WAV file test of the Speech page is left", () => {
+    for (const locale of [en, vi] as Record<string, string>[]) {
+      expect(Object.keys(locale).filter((key) => key.startsWith("wav."))).toEqual([]);
+    }
+  });
+});
+
+describe("what the meetings window asks for, the locales have", () => {
+  const uiSrc = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+  /** The keys of the texts that the sources of the window name: they are strings, some in tables, that `t` is given later. */
+  function meetingsKeys(): string[] {
+    const files = [
+      ...readdirSync(join(uiSrc, "meetings"))
+        .filter((name) => name.endsWith(".svelte"))
+        .map((name) => join("meetings", name)),
+      "lib/meetings-store.svelte.ts",
+      "lib/meeting-errors.ts",
+      "lib/days.ts",
+    ];
+    const keys = files.flatMap((file) => [
+      ...readFileSync(join(uiSrc, file), "utf8").matchAll(/"(meetings\.[a-z_]+(?:\.[a-z_]+)*)"/g),
+    ]);
+    return [...new Set(keys.map((match) => match[1]))];
+  }
+
+  test("every text of the screens, the store and the formats has words in both locales", () => {
+    const keys = meetingsKeys();
+    expect(keys.length).toBeGreaterThan(40);
+    for (const key of keys) {
+      for (const locale of [en, vi] as Record<string, string>[]) {
+        expect(locale[key], key).toBeTruthy();
+      }
     }
   });
 });

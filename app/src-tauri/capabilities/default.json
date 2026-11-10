@@ -20,14 +20,13 @@
     "allow-cancel-download",
     "allow-delete-model",
     "allow-models-disk-usage-mb",
-    "allow-transcribe-wav",
-    "allow-cancel-transcribe",
     "allow-edit-presets",
     "allow-transcribe-presets",
     "allow-open-meetings-folder",
     "allow-permissions-status",
     "allow-request-permission",
     "allow-open-permission-settings",
+    "allow-media-tools",
     {
       "identifier": "opener:allow-open-url",
       "allow": [{ "url": "https://*" }]

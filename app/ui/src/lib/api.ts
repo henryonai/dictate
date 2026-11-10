@@ -1,8 +1,9 @@
-// The commands of the Rust side and its `model-download`, `hotkey-status` and `settings-changed` events, with their types. Nothing else in the UI calls
-// `invoke`: when a command changes, this is the one place to follow it. Names and argument names mirror
-// app/src-tauri/src/commands.rs.
+// The commands of the Rust side and its events (`model-download`, `hotkey-status`, `settings-changed`, `meeting-job`,
+// `meetings-changed`), with their types. Nothing else in the UI calls `invoke`: when a command changes, this is the one
+// place to follow it. Names and argument names mirror app/src-tauri/src/commands.rs and app/src-tauri/src/meetings/.
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { PanelState } from "../panel/state";
 
@@ -12,6 +13,8 @@ export type AiProvider = "anthropic" | "openai";
 export type TranscribePreset = "openrouter" | "openai" | "groq" | "custom";
 /** Which key a command is about. */
 export type Account = "ai" | "transcribe";
+/** The pages of Settings: what the Rust side may ask it to show (`settings-tab`). */
+export type SettingsTab = "general" | "speech" | "ai" | "accounts";
 
 /** The settings file. */
 export interface Settings {
@@ -108,11 +111,211 @@ export interface DictationLanguages {
   others: string[];
 }
 
+/**
+ * Which tools of the system are installed, with the version each says it is (`null` for one that is not; "unknown" for one that is
+ * there and says nothing sensible), and the command that installs each on this system.
+ */
+export interface ToolsView {
+  ffmpeg: string | null;
+  ytDlp: string | null;
+  ffmpegCommand: string;
+  ytDlpCommand: string;
+}
+
 export interface TranscribePresetView {
   id: TranscribePreset;
   models: string[];
   key_url: string | null;
 }
+
+// ---- The meetings window. The shapes mirror app/src-tauri/src/meetings/{views.rs,commands.rs}, in camelCase.
+
+/** The step a job is in. */
+export type StepName = "download" | "audio" | "transcript" | "summary";
+
+/** The names of the pipeline's error kinds, as the Rust side sends them: the error card picks its buttons by them. */
+export type ErrorKind =
+  | "Api"
+  | "MissingTool"
+  | "Unsupported"
+  | "NoModel"
+  | "NoAudio"
+  | "NoMedia"
+  | "Empty"
+  | "Unfinished"
+  | "Cancelled"
+  | "Other";
+
+/**
+ * Why something failed: `key` is a key of the texts (`meetings.error.*`) with `{detail}` and `{command}` to fill in; `detail`
+ * is what is behind it, in English; `command` is what installs a missing tool. Some of the commands reject with one.
+ */
+export interface ErrorView {
+  kind: ErrorKind;
+  key: string;
+  detail: string | null;
+  command: string | null;
+}
+
+function isErrorView(value: unknown): value is ErrorView {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as ErrorView).kind === "string" &&
+    typeof (value as ErrorView).key === "string"
+  );
+}
+
+function sentenceOf(failure: unknown): string {
+  if (typeof failure === "string") return failure;
+  if (failure instanceof Error) return failure.message;
+  if (typeof failure === "object" && failure !== null && typeof (failure as { message?: unknown }).message === "string") {
+    return (failure as { message: string }).message;
+  }
+  return "";
+}
+
+/**
+ * What a command failed with, as an error to show. The commands that reject with an `ErrorView` do (and the wrappers below
+ * make one of any other failure, such as the IPC itself failing with an `Error`); a sentence in English is the detail of an
+ * error of no kind in particular.
+ */
+export function asErrorView(failure: unknown): ErrorView {
+  if (isErrorView(failure)) return failure;
+  return { kind: "Other", key: "meetings.error.other", detail: sentenceOf(failure), command: null };
+}
+
+/** A command that rejects with an `ErrorView`: whatever it fails with reaches the caller as one. */
+function invokeView<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  return invoke<T>(cmd, args).catch((failure: unknown) => {
+    throw asErrorView(failure);
+  });
+}
+
+export type OutcomeView = { kind: "done"; summary: boolean } | { kind: "failed"; error: ErrorView };
+
+/** A job as the `meeting-job` event and a row carry it. An ended job has no step and has its outcome. */
+export interface JobView {
+  /** The recording's id. */
+  id: string;
+  /** `null` while the job only waits (for the start of the app, or for another local transcription). */
+  step: StepName | null;
+  /** 0 to 1; `null` when there is no figure yet. */
+  progress: number | null;
+  /** When the step began, in milliseconds since the Unix epoch. */
+  stepStartedMs: number;
+  outcome: OutcomeView | null;
+}
+
+export type MeetingKind = "screen" | "file" | "link";
+
+/** One recording of the list. */
+export interface MeetingRow {
+  id: string;
+  title: string;
+  kind: MeetingKind;
+  /** Seconds since the Unix epoch; 0 when the recording has no date. */
+  created: number;
+  /** Seconds, once the audio is known. */
+  duration: number | null;
+  hasSummary: boolean;
+  /** The action items that are not ticked. */
+  openTasks: number;
+  /** The job that works on the recording now. */
+  live: JobView | null;
+  /** Why the recording is not done: its last job failed or was cancelled, or the app closed before it was processed. */
+  error: ErrorView | null;
+}
+
+export interface LineView {
+  /** Seconds from the start of the recording. */
+  start: number;
+  /** `mm:ss` or `h:mm:ss`; empty for a line that has none. */
+  stamp: string;
+  speaker: string | null;
+  text: string;
+}
+
+export interface SpeakerView {
+  name: string;
+  lines: number;
+  sample: LineView;
+}
+
+export interface ActionView {
+  /** What `meetingSetTask` takes. */
+  index: number;
+  owner: string | null;
+  text: string;
+  done: boolean;
+}
+
+export interface MarkView {
+  seconds: number;
+  label: string;
+  text: string;
+}
+
+export interface SectionView {
+  /** Empty for the text before the first heading. */
+  heading: string;
+  body: string;
+}
+
+export interface SummaryView {
+  /** The whole of `summary.md`, as the model wrote it. */
+  markdown: string;
+  title: string | null;
+  summary: string | null;
+  keyPoints: string | null;
+  decisions: string[];
+  actions: ActionView[];
+  questions: string[];
+  timeline: MarkView[];
+  other: SectionView[];
+}
+
+/** The media to play. The address changes with every launch of the app: never keep it. */
+export interface MediaView {
+  url: string;
+  video: boolean;
+  /** Where the `audio.m4a` made from the recording plays, when `url` is the original and that file is there: for a file the system can't play. */
+  fallbackUrl: string | null;
+}
+
+export interface MeetingDetail {
+  row: MeetingRow;
+  /** The link, the path of the imported file, or the screen recording's own word. */
+  source: string;
+  /** The host of a link (without `www.`) or the file name of an import; empty for a screen recording. */
+  sourceLabel: string;
+  transcript: LineView[];
+  /** The transcript is the rougher live captions of a screen recording. */
+  transcriptIsLive: boolean;
+  /** Empty when the transcript is live captions. */
+  speakers: SpeakerView[];
+  summary: SummaryView | null;
+  /** `null` when the media server did not start. */
+  media: MediaView | null;
+  /** The recording's media file is named in `meta.json` and is gone (even when `audio.m4a` plays instead). */
+  mediaMissing: boolean;
+}
+
+/** What the empty state and the "no summary" texts need to know of the settings. */
+export interface Readiness {
+  /** The AI model that writes summaries is set up. */
+  ai: boolean;
+  /** The Whisper model of this computer is downloaded. */
+  whisper: boolean;
+  /**
+   * The language of the UI as the settings choose it ("same as the system" already resolved). The meetings window can't read the
+   * settings, so this is how it learns its language: it asks again when it gets the focus back.
+   */
+  language: "en" | "vi";
+}
+
+/** What the window hears of a file dragged over it: the paths come with a drop. */
+export type FileDropEvent = { type: "enter" } | { type: "leave" } | { type: "drop"; paths: string[] };
 
 export const api = {
   getSettings: () => invoke<SettingsView>("get_settings"),
@@ -141,13 +344,12 @@ export const api = {
   cancelDownload: (id: string) => invoke<void>("cancel_download", { id }),
   deleteModel: (id: string) => invoke<void>("delete_model", { id }),
   modelsDiskUsageMb: () => invoke<number>("models_disk_usage_mb"),
-  /** Resolves with the `[mm:ss] text` lines. */
-  transcribeWav: (path: string) => invoke<string>("transcribe_wav", { path }),
-  cancelTranscribe: () => invoke<void>("cancel_transcribe"),
 
   editPresets: () => invoke<EditPresetView[]>("edit_presets"),
   transcribePresets: () => invoke<TranscribePresetView[]>("transcribe_presets"),
   openMeetingsFolder: () => invoke<void>("open_meetings_folder"),
+  /** ffmpeg and yt-dlp as the system has them (versions as they say them): what a link or a file that symphonia can't read needs. */
+  mediaTools: () => invoke<ToolsView>("media_tools"),
   /** The microphone and Accessibility permissions as the system has them now (macOS; elsewhere both are `not_needed`). */
   permissionsStatus: () => invoke<PermissionsView>("permissions_status"),
   /** Shows the system's prompt for a permission. It doesn't wait for the answer: the status shows it. */
@@ -156,6 +358,47 @@ export const api = {
   openPermissionSettings: (kind: PermissionKind) => invoke<void>("open_permission_settings", { kind }),
   /** In the system browser. The capability only allows https. */
   openUrl: (url: string) => openUrl(url),
+
+  // The meetings window. Eight commands reject with an `ErrorView` (and their wrappers see to it that they always do): the four
+  // that start a job (`meetingRerun`, `meetingResummarize`, `meetingRetry`, `meetingsImportLink`) and `meetingRenameSpeakers`,
+  // `meetingAsk`, `meetingExport` and `meetingOpenMedia`. The rest reject with a plain sentence.
+  /** The recordings that have every word of `query` in the title, the summary or the transcript; all of them when it is empty. */
+  meetingsList: (query: string) => invoke<MeetingRow[]>("meetings_list", { query }),
+  meetingDetail: (id: string) => invoke<MeetingDetail>("meeting_detail", { id }),
+  /** Opens the dialog for the files and imports each: the ids of the recordings made, none when the dialog was closed. */
+  meetingsPickFiles: () => invoke<string[]>("meetings_pick_files"),
+  /** The ids of the recordings made of the files that were dropped. */
+  meetingsImportFiles: (paths: string[]) => invoke<string[]>("meetings_import_files", { paths }),
+  /** The id of the recording made. Rejects with an `ErrorView`. */
+  meetingsImportLink: (url: string) => invokeView<string>("meetings_import_link", { url }),
+  meetingCancel: (id: string) => invoke<void>("meeting_cancel", { id }),
+  /** "Transcribe + summarize again from scratch". Rejects with an `ErrorView`. */
+  meetingRerun: (id: string) => invokeView<void>("meeting_rerun", { id }),
+  /** "Summarize again" ("Retry summary"). Rejects with an `ErrorView`. */
+  meetingResummarize: (id: string) => invokeView<void>("meeting_resummarize", { id }),
+  /** "Try again", from the step that failed. Rejects with an `ErrorView`. */
+  meetingRetry: (id: string) => invokeView<void>("meeting_retry", { id }),
+  /** `index` is the `index` of an `ActionView`. */
+  meetingSetTask: (id: string, index: number, done: boolean) => invoke<void>("meeting_set_task", { id, index, done }),
+  /** Old name to new. The renames that were done, sorted. Rejects with an `ErrorView`. */
+  meetingRenameSpeakers: (id: string, names: Record<string, string>, resummarize: boolean) =>
+    invokeView<[string, string][]>("meeting_rename_speakers", { id, names, resummarize }),
+  /** Rejects with an `ErrorView`. */
+  meetingAsk: (id: string, question: string) => invokeView<string>("meeting_ask", { id, question }),
+  meetingMarkdown: (id: string) => invoke<string>("meeting_markdown", { id }),
+  /** Asks where to save the Markdown and writes it there. `false` when the dialog was closed. Rejects with an `ErrorView`. */
+  meetingExport: (id: string) => invokeView<boolean>("meeting_export", { id }),
+  meetingLog: (id: string) => invoke<string>("meeting_log", { id }),
+  meetingOpenFolder: (id: string) => invoke<void>("meeting_open_folder", { id }),
+  /** In the program of the system for it. Rejects with an `ErrorView`. */
+  meetingOpenMedia: (id: string) => invokeView<void>("meeting_open_media", { id }),
+  /** Stops the job and moves the recording to the Trash. */
+  meetingDelete: (id: string) => invoke<void>("meeting_delete", { id }),
+  /** The clipboard of the system: the meetings window has no other way to it. */
+  copyText: (text: string) => invoke<void>("copy_text", { text }),
+  /** Shows Settings on one of its pages. */
+  meetingsOpenSettings: (tab: SettingsTab) => invoke<void>("meetings_open_settings", { tab }),
+  meetingsReadiness: () => invoke<Readiness>("meetings_readiness"),
 
   // The two floating windows of dictation (the bubble and the card).
   /** The BCP-47 codes of the language menu, in the order it shows them. */
@@ -204,6 +447,32 @@ export const api = {
   /** Settings that the Rust side changed without the window (the language menu of the dictation chip): only the ones that changed. */
   onSettingsChanged: (handler: (patch: Partial<Settings>) => void) =>
     listen<Partial<Settings>>("settings-changed", (event) => handler(event.payload)),
+  /** The meetings window sends someone to a page of Settings (`meetings_open_settings`): show it. Resolves with the function that stops listening. */
+  onSettingsTab: (handler: (tab: SettingsTab) => void) =>
+    listen<SettingsTab>("settings-tab", (event) => handler(event.payload)),
+  /** A job went one step on, made progress or ended (to the meetings window only). Resolves with the function that stops listening. */
+  onMeetingJob: (handler: (job: JobView) => void) => listen<JobView>("meeting-job", (event) => handler(event.payload)),
+  /**
+   * A recording is new, gone or renamed, or a job of it started or ended (to the meetings window only). It doesn't come while a
+   * job goes on. Resolves with the function that stops listening.
+   */
+  onMeetingsChanged: (handler: () => void) => listen("meetings-changed", () => handler()),
+  /**
+   * The window was closed, which only hides it: a hidden web view goes on playing, so the page pauses its player. Resolves with the
+   * function that stops listening.
+   */
+  onMeetingsHidden: (handler: () => void) => listen("meetings-hidden", () => handler()),
+  /**
+   * Files dragged over this window: entering, leaving and the drop with the paths. It needs only the permission to listen to
+   * events. Resolves with the function that stops listening.
+   */
+  onFileDrop: async (handler: (event: FileDropEvent) => void) =>
+    getCurrentWebview().onDragDropEvent((event) => {
+      const drag = event.payload;
+      if (drag.type === "drop") handler({ type: "drop", paths: drag.paths });
+      else if (drag.type === "enter") handler({ type: "enter" });
+      else if (drag.type === "leave") handler({ type: "leave" });
+    }),
   /** Both panel windows hear every state. Resolves with the function that stops listening. */
   onPanelState: (handler: (state: PanelState) => void) =>
     listen<PanelState>("panel-state", (event) => handler(event.payload)),

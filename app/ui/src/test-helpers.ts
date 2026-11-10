@@ -1,7 +1,21 @@
 // Shared by the tests only: settings as the Rust side sends them, and the api with every call stubbed.
 import { vi } from "vitest";
 import { api } from "./lib/api";
-import type { DownloadEvent, HotkeyStatus, Settings, SettingsView } from "./lib/api";
+import type {
+  DownloadEvent,
+  ErrorView,
+  FileDropEvent,
+  HotkeyStatus,
+  JobView,
+  MediaView,
+  MeetingDetail,
+  MeetingRow,
+  Readiness,
+  Settings,
+  SettingsTab,
+  SettingsView,
+  SummaryView,
+} from "./lib/api";
 import { SettingsStore } from "./lib/settings-store.svelte";
 import type { PanelState } from "./panel/state";
 
@@ -62,6 +76,7 @@ export function stubApi() {
   let listener: ((event: DownloadEvent) => void) | undefined;
   let hotkeyListener: ((status: HotkeyStatus) => void) | undefined;
   let settingsListener: ((patch: Partial<Settings>) => void) | undefined;
+  let tabListener: ((tab: SettingsTab) => void) | undefined;
 
   vi.spyOn(api, "getSettings").mockResolvedValue(fakeView());
   vi.spyOn(api, "saveSettings").mockImplementation(async (settings) => fakeView(settings));
@@ -78,8 +93,6 @@ export function stubApi() {
   vi.spyOn(api, "cancelDownload").mockResolvedValue();
   vi.spyOn(api, "deleteModel").mockResolvedValue();
   vi.spyOn(api, "modelsDiskUsageMb").mockResolvedValue(0);
-  vi.spyOn(api, "transcribeWav").mockResolvedValue("[00:00] hello");
-  vi.spyOn(api, "cancelTranscribe").mockResolvedValue();
   vi.spyOn(api, "editPresets").mockResolvedValue(
     EDIT_PRESET_IDS.map((id) => ({ id, instruction: `instruction of ${id}` })),
   );
@@ -90,6 +103,12 @@ export function stubApi() {
     { id: "custom", models: [], key_url: null },
   ]);
   vi.spyOn(api, "openMeetingsFolder").mockResolvedValue();
+  vi.spyOn(api, "mediaTools").mockResolvedValue({
+    ffmpeg: null,
+    ytDlp: null,
+    ffmpegCommand: "brew install ffmpeg",
+    ytDlpCommand: "brew install yt-dlp ffmpeg",
+  });
   // Not a Mac: no permissions, so no section.
   vi.spyOn(api, "permissionsStatus").mockResolvedValue({ microphone: "not_needed", accessibility: "not_needed" });
   vi.spyOn(api, "requestPermission").mockResolvedValue();
@@ -116,10 +135,18 @@ export function stubApi() {
     };
   });
 
+  vi.spyOn(api, "onSettingsTab").mockImplementation(async (handler) => {
+    tabListener = handler;
+    return () => {
+      tabListener = undefined;
+    };
+  });
+
   return {
     emitDownload: (event: DownloadEvent) => listener?.(event),
     emitHotkey: (status: HotkeyStatus) => hotkeyListener?.(status),
     emitSettings: (patch: Partial<Settings>) => settingsListener?.(patch),
+    emitTab: (tab: SettingsTab) => tabListener?.(tab),
   };
 }
 
@@ -220,5 +247,201 @@ export function stubPanelApi() {
   return {
     emitState: (state: PanelState) => listener?.(state),
     stopListening,
+  };
+}
+
+// ---- The meetings window
+
+/** An error as the Rust side sends it: the one of a failed summary, unless a test says otherwise. */
+export function fakeError(overrides: Partial<ErrorView> = {}): ErrorView {
+  return { kind: "Other", key: "meetings.error.other", detail: "Something broke.", command: null, ...overrides };
+}
+
+/** A job that is on its transcript, with no figure yet. */
+export function fakeJob(overrides: Partial<JobView> = {}): JobView {
+  return { id: "2026-03-02 10-00-00", step: "transcript", progress: null, stepStartedMs: 0, outcome: null, ...overrides };
+}
+
+/** A recording that is done and summarized: a file of 12 minutes with two action items open. */
+export function fakeRow(overrides: Partial<MeetingRow> = {}): MeetingRow {
+  return {
+    id: "2026-03-02 10-00-00",
+    title: "Weekly planning",
+    kind: "file",
+    created: new Date(2026, 2, 2, 10, 0, 0).getTime() / 1000,
+    duration: 720,
+    hasSummary: true,
+    openTasks: 2,
+    live: null,
+    error: null,
+    ...overrides,
+  };
+}
+
+/** The detail of a recording: a transcript of two lines and no summary, which a test fills in as it needs. */
+export function fakeDetail(overrides: Partial<MeetingDetail> = {}): MeetingDetail {
+  return {
+    row: fakeRow(),
+    source: "/home/lan/talks/planning.mp4",
+    sourceLabel: "planning.mp4",
+    transcript: [
+      { start: 0, stamp: "00:00", speaker: "Speaker 1", text: "Let's start." },
+      { start: 65, stamp: "01:05", speaker: "Speaker 2", text: "First, the budget." },
+    ],
+    transcriptIsLive: false,
+    speakers: [],
+    summary: null,
+    media: null,
+    mediaMissing: false,
+    ...overrides,
+  };
+}
+
+/** The summary a model wrote, in the shape the window gets it: a summary, a point, a decision, two action items, a question and two chapters. */
+export function fakeSummary(overrides: Partial<SummaryView> = {}): SummaryView {
+  return {
+    markdown: "# Weekly planning\n\n## Summary\nWe planned the quarter.",
+    title: "Weekly planning",
+    summary: "We planned the quarter.",
+    keyPoints: "- Budget is **fixed**\n- See [01:05] for the budget",
+    decisions: ["Ship in May"],
+    actions: [
+      { index: 0, owner: "An", text: "Send the budget", done: false },
+      { index: 1, owner: null, text: "Book the room", done: true },
+    ],
+    questions: ["Who owns the docs?"],
+    timeline: [
+      { seconds: 0, label: "00:00", text: "Kick-off" },
+      { seconds: 65, label: "01:05", text: "Budget" },
+    ],
+    other: [],
+    ...overrides,
+  };
+}
+
+/** Where a recording plays from: the address of the local media server, which differs from one launch to the next. */
+export function fakeMedia(overrides: Partial<MediaView> = {}): MediaView {
+  return { url: "http://127.0.0.1:41000/token/1", video: true, fallbackUrl: null, ...overrides };
+}
+
+/**
+ * A media element, as far as the player's logic looks at one: a position, whether it is paused, an address that resets the position
+ * and pauses it when it is set (as the load of a new address does), the three calls and the events. A test sends the events itself.
+ */
+export class FakeMedia extends EventTarget {
+  paused = true;
+  ended = false;
+  currentTime = 0;
+  private attributes = new Map<string, string>();
+  /** Every address that was set, in order. */
+  readonly sources: string[] = [];
+  /** The calls that were made, in order: "play", "pause", "load". */
+  readonly calls: string[] = [];
+
+  get src(): string {
+    return this.attributes.get("src") ?? "";
+  }
+
+  set src(address: string) {
+    this.attributes.set("src", address);
+    this.sources.push(address);
+    // The load of an address starts at 0 and, as the load algorithm says, leaves the element paused.
+    this.currentTime = 0;
+    this.paused = true;
+  }
+
+  getAttribute(name: string): string | null {
+    return this.attributes.get(name) ?? null;
+  }
+
+  removeAttribute(name: string): void {
+    this.calls.push(`removeAttribute(${name})`);
+    this.attributes.delete(name);
+  }
+
+  play = vi.fn(async () => {
+    this.calls.push("play");
+    this.paused = false;
+    this.emit("play");
+  });
+
+  pause = vi.fn(() => {
+    this.calls.push("pause");
+    if (this.paused) return;
+    this.paused = true;
+    this.emit("pause");
+  });
+
+  load = vi.fn(() => {
+    this.calls.push("load");
+  });
+
+  emit(type: string): void {
+    this.dispatchEvent(new Event(type));
+  }
+
+  /** The element is playing, at this position. */
+  playAt(seconds: number): void {
+    this.currentTime = seconds;
+    this.paused = false;
+  }
+}
+
+/**
+ * Stubs every call of the meetings window with a calm answer: the library holds `rows`, and the detail of a row is
+ * `fakeDetail` of it. A test changes the calls it cares about with `vi.mocked(api.meetingRetry).mockRejectedValue(...)`.
+ * Returns a way to send the events of the window.
+ */
+export function stubMeetingsApi(rows: MeetingRow[] = []) {
+  const jobListeners = new Set<(job: JobView) => void>();
+  const changedListeners = new Set<() => void>();
+  const dropListeners = new Set<(event: FileDropEvent) => void>();
+  const hiddenListeners = new Set<() => void>();
+  const listener = <T>(set: Set<T>) => async (handler: T) => {
+    set.add(handler);
+    return () => {
+      set.delete(handler);
+    };
+  };
+
+  vi.spyOn(api, "meetingsList").mockResolvedValue(rows);
+  vi.spyOn(api, "meetingDetail").mockImplementation(async (id) =>
+    fakeDetail({ row: rows.find((row) => row.id === id) ?? fakeRow({ id }) }),
+  );
+  vi.spyOn(api, "meetingsPickFiles").mockResolvedValue([]);
+  vi.spyOn(api, "meetingsImportFiles").mockResolvedValue([]);
+  vi.spyOn(api, "meetingsImportLink").mockResolvedValue("2026-03-02 11-00-00");
+  vi.spyOn(api, "meetingCancel").mockResolvedValue();
+  vi.spyOn(api, "meetingRerun").mockResolvedValue();
+  vi.spyOn(api, "meetingResummarize").mockResolvedValue();
+  vi.spyOn(api, "meetingRetry").mockResolvedValue();
+  vi.spyOn(api, "meetingSetTask").mockResolvedValue();
+  vi.spyOn(api, "meetingRenameSpeakers").mockResolvedValue([]);
+  vi.spyOn(api, "meetingAsk").mockResolvedValue("An answer.");
+  vi.spyOn(api, "meetingMarkdown").mockResolvedValue("# Weekly planning");
+  vi.spyOn(api, "meetingExport").mockResolvedValue(true);
+  vi.spyOn(api, "meetingLog").mockResolvedValue("");
+  vi.spyOn(api, "meetingOpenFolder").mockResolvedValue();
+  vi.spyOn(api, "meetingOpenMedia").mockResolvedValue();
+  vi.spyOn(api, "meetingDelete").mockResolvedValue();
+  vi.spyOn(api, "copyText").mockResolvedValue();
+  vi.spyOn(api, "meetingsOpenSettings").mockResolvedValue();
+  vi.spyOn(api, "meetingsReadiness").mockResolvedValue({ ai: true, whisper: true, language: "en" });
+  vi.spyOn(api, "onMeetingJob").mockImplementation(listener(jobListeners));
+  vi.spyOn(api, "onMeetingsChanged").mockImplementation(listener(changedListeners));
+  vi.spyOn(api, "onFileDrop").mockImplementation(listener(dropListeners));
+  vi.spyOn(api, "onMeetingsHidden").mockImplementation(listener(hiddenListeners));
+
+  return {
+    emitJob: (job: JobView) => jobListeners.forEach((handler) => handler(job)),
+    emitChanged: () => changedListeners.forEach((handler) => handler()),
+    emitDrop: (event: FileDropEvent) => dropListeners.forEach((handler) => handler(event)),
+    /** The window was closed (hidden). */
+    emitHidden: () => hiddenListeners.forEach((handler) => handler()),
+    /** How many listeners of the window being closed are on now (it is not in `listening`: only the detail listens to it). */
+    hiddenListeners: () => hiddenListeners.size,
+    /** How many listeners of each event are on now. */
+    listening: () => ({ jobs: jobListeners.size, changed: changedListeners.size, drops: dropListeners.size }),
+    setReadiness: (readiness: Readiness) => vi.mocked(api.meetingsReadiness).mockResolvedValue(readiness),
   };
 }
