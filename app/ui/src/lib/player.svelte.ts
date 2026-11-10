@@ -60,6 +60,8 @@ export class PlayerController {
   private queued: { fatal: boolean; url: string } | null = null;
   private recoveries = 0;
   private released = false;
+  /** How many times `pause()` was called: a seek that was waiting when it grew was paused, and does not play. */
+  private pauses = 0;
 
   constructor(fetchMedia: FetchMedia = fromServer) {
     this.fetchMedia = fetchMedia;
@@ -122,9 +124,10 @@ export class PlayerController {
     if (!element || this.released || !this.available) return;
     this.currentTime = seconds;
     if (this.redirect(seconds)) return;
-    // After a pause the server may be another one: its address is read first.
+    // After a pause the server may be another one: its address is read first. A `pause()` that comes while it is read ends this seek.
+    const turn = this.pauses;
     const fresh = element.paused ? await this.fresher() : null;
-    if (this.element !== element || this.released || this.redirect(seconds)) return;
+    if (this.element !== element || this.released || this.redirect(seconds) || turn !== this.pauses) return;
     // This is the look at the address for this play: the `play` event that follows has no need of another.
     this.wasPaused = false;
     if (fresh) {
@@ -135,8 +138,12 @@ export class PlayerController {
     this.play(element);
   }
 
-  /** Pauses it, and a new address that is still loading is not to play on when it has loaded. Heard only when there is a player. */
+  /**
+   * Pauses it, and a new address that is still loading is not to play on when it has loaded; a seek that is waiting for the address
+   * does not play either. Heard only when there is a player.
+   */
   pause(): void {
+    this.pauses += 1;
     if (this.pending) this.pending = { ...this.pending, resume: false };
     if (this.element && !this.released) this.element.pause();
   }

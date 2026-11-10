@@ -279,7 +279,7 @@ impl Meetings {
         }
         let applied = record
             .rename_speakers(names)
-            .map_err(|e| ErrorView::other(format!("Couldn't save the speaker names: {e}")))?;
+            .map_err(|e| ErrorView::other(e.to_string()))?;
         if applied.is_empty() {
             return Ok(applied);
         }
@@ -1122,6 +1122,43 @@ mod tests {
             .rename_speakers(SCREEN, &HashMap::new(), true)
             .unwrap();
         assert!(!rig.meetings.registry.is_running(SCREEN));
+    }
+
+    /// The sheet that renames speakers puts its own sentence ("Couldn't save the speaker names: …", in the language of the window) before
+    /// the reason, so the reason is all that the error carries: not its English words as well.
+    #[cfg(unix)]
+    #[test]
+    fn a_rename_that_cannot_be_written_carries_only_the_reason() {
+        use std::os::unix::fs::PermissionsExt;
+        let rig = Rig::new();
+        let folder = rig.library.folder(SCREEN);
+        let names = HashMap::from([("Speaker 1".to_owned(), "Lan".to_owned())]);
+        // A folder that nothing can be written in: the temporary file of the write cannot be made.
+        fs::set_permissions(&folder, fs::Permissions::from_mode(0o555)).unwrap();
+        let writable = fs::write(folder.join("probe"), b"").is_ok();
+
+        let result = rig.meetings.rename_speakers(SCREEN, &names, false);
+
+        fs::set_permissions(&folder, fs::Permissions::from_mode(0o755)).unwrap();
+        if writable {
+            // Whoever runs this can write anywhere (root): there is no failure to look at.
+            return;
+        }
+        let refused = result.unwrap_err();
+        assert_eq!(
+            (refused.kind.as_str(), refused.key.as_str()),
+            ("Other", "meetings.error.other")
+        );
+        let detail = refused.detail.expect("the reason");
+        assert!(
+            !detail.starts_with("Couldn't"),
+            "the window has the words, the detail is the reason: {detail}"
+        );
+        assert!(detail.to_lowercase().contains("denied"), "{detail}");
+        // Nothing was changed.
+        assert!(fs::read_to_string(folder.join(files::TRANSCRIPT))
+            .unwrap()
+            .contains("Speaker 1: "));
     }
 
     #[test]

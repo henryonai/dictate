@@ -190,6 +190,46 @@ describe("pause", () => {
     expect(element.play).not.toHaveBeenCalled();
   });
 
+  test("a pause while a seek waits to look at the address cancels the play that the seek was to make", async () => {
+    const { player } = setup();
+    const answer = deferred<MediaView | null>();
+    fetchMedia.mockImplementation(() => answer.promise);
+
+    // The element is paused, so the seek asks the server first.
+    const seeking = player.seek(65);
+    await settle();
+    player.pause();
+    answer.resolve(OLD);
+    await seeking;
+    await settle();
+
+    expect(element.play).not.toHaveBeenCalled();
+    expect(element.currentTime).toBe(0);
+    expect(player.playing).toBe(false);
+  });
+
+  test("a pause while a seek waits keeps a new address from being swapped in to play, and a seek after it plays as usual", async () => {
+    const { player } = setup(NEW);
+    const answer = deferred<MediaView | null>();
+    fetchMedia.mockImplementationOnce(() => answer.promise);
+
+    const seeking = player.seek(65);
+    await settle();
+    player.pause();
+    answer.resolve(NEW);
+    await seeking;
+
+    expect(element.sources).toEqual([OLD.url]);
+
+    // The pause belongs to the seek that was waiting: the next one is not cancelled by it.
+    fetchMedia.mockImplementation(async () => NEW);
+    await player.seek(70);
+    expect(element.src).toBe(NEW.url);
+    element.emit("loadedmetadata");
+    expect(element.currentTime).toBe(70);
+    expect(element.play).toHaveBeenCalledTimes(1);
+  });
+
   test("a pause with no element, or after the player let go of the file, does nothing", () => {
     const bare = new PlayerController(async () => OLD);
     bare.bind(ID, OLD);

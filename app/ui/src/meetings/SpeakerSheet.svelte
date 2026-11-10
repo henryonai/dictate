@@ -31,16 +31,17 @@
   /** A summary to write again, and a model to write it. */
   const canResummarize = $derived(detail.summary !== null && store.readiness?.ai === true);
 
-  /** The words that the Rust side puts before the reason, in English: the sheet has them in both languages, so they are taken off. */
-  const SAVE_PREFIX = /^Couldn't save the speaker names:\s*/;
-
   function listen(start: number) {
     listened = true;
     void player.seek(start);
   }
 
-  /** Closes the sheet; a sample that it played does not go on. */
+  /**
+   * Closes the sheet; a sample that it played does not go on. Not while the names are being saved: a save that fails says so in the
+   * sheet, and one that is closed meanwhile would lose that (and what was typed).
+   */
   function close() {
+    if (saving) return;
     if (listened) player.pause();
     store.closeRename();
   }
@@ -53,7 +54,7 @@
     if (gone) return;
     saving = false;
     if (problem) {
-      failure = t("meetings.speakers.save_failed", { reason: errorMessage(problem).replace(SAVE_PREFIX, "") });
+      failure = t("meetings.speakers.save_failed", { reason: errorMessage(problem) });
       return;
     }
     close();
@@ -131,7 +132,7 @@
     {/if}
 
     <div class="actions">
-      <button type="button" onclick={close}>{t("common.cancel")}</button>
+      <button type="button" disabled={saving} onclick={close}>{t("common.cancel")}</button>
       <button type="submit" class="primary" disabled={!canRename || saving}>{t("meetings.speakers.rename")}</button>
     </div>
   </form>
