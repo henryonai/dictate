@@ -14,11 +14,13 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use super::video::Frame;
-use super::{Capturer, EndReason, RecordOptions, RunningSource, SourceEvent, StartError, Track};
+use super::{
+    Capturer, EndReason, Note, RecordOptions, RunningSource, SourceEvent, StartError, Track,
+};
 
 /// How much sound a live tone is delivered in: 20 ms, as a microphone does.
 const CHUNK: Duration = Duration::from_millis(20);
-/// The rate of a live tone.
+/// The rate of a live tone, unless it is given one.
 const RATE: u32 = 48_000;
 
 /// `count` samples of a sine wave at `hz` (half of full scale), sampled at `rate`, from the sample numbered `first`.
@@ -33,6 +35,7 @@ pub fn sine(hz: f32, rate: u32, first: usize, count: usize) -> Vec<f32> {
 enum Plan {
     Tone {
         hz: f32,
+        rate: u32,
     },
     Frames {
         width: u32,
@@ -45,8 +48,16 @@ enum Plan {
 #[derive(Default)]
 struct Script {
     plan: Option<Plan>,
+    /// What the track does when it is started again (after it has been started once), in place of `plan`.
+    again: Option<Plan>,
     ends: Option<(Duration, EndReason)>,
+    /// `ends` is for the first start only.
+    ends_once: bool,
     fails: Option<StartError>,
+    /// The first time the track is started again, it fails with this.
+    fails_again: Option<StartError>,
+    /// How many times the track was started.
+    starts: u32,
 }
 
 #[derive(Default)]
@@ -77,7 +88,18 @@ impl FakeCapturer {
     /// `track` delivers a tone of `hz` as it goes: 48 kHz in chunks of 20 ms, each stamped with when its first sample
     /// was due, from the moment the track starts.
     pub fn tone(self, track: Track, hz: f32) -> FakeCapturer {
-        self.script(track, |script| script.plan = Some(Plan::Tone { hz }))
+        self.tone_at(track, hz, RATE)
+    }
+
+    /// `tone` at a sample rate of `rate` (in chunks of 20 ms of it).
+    pub fn tone_at(self, track: Track, hz: f32, rate: u32) -> FakeCapturer {
+        self.script(track, |script| script.plan = Some(Plan::Tone { hz, rate }))
+    }
+
+    /// When `track` is started again (it was lost, and the session took up the device that the system has now), it
+    /// delivers a tone of `hz` at `rate` instead of what it did the first time: another device, with its own rate.
+    pub fn restarted_as_tone(self, track: Track, hz: f32, rate: u32) -> FakeCapturer {
+        self.script(track, |script| script.again = Some(Plan::Tone { hz, rate }))
     }
 
     /// The screen delivers frames of one colour (`pixel` is BGRA), `fps` of them a second, from the moment it starts.
@@ -97,9 +119,22 @@ impl FakeCapturer {
         self.script(track, |script| script.ends = Some((after, reason)))
     }
 
+    /// `ends_after`, for the first time `track` is started only: a track that is started again does not end.
+    pub fn ends_once_after(self, track: Track, after: Duration, reason: EndReason) -> FakeCapturer {
+        self.script(track, |script| {
+            script.ends = Some((after, reason));
+            script.ends_once = true;
+        })
+    }
+
     /// Starting `track` fails with `error` (the first time).
     pub fn fails(self, track: Track, error: StartError) -> FakeCapturer {
         self.script(track, |script| script.fails = Some(error))
+    }
+
+    /// Starting `track` again, after it has started, fails with `error` (the first time it is).
+    pub fn fails_when_started_again(self, track: Track, error: StartError) -> FakeCapturer {
+        self.script(track, |script| script.fails_again = Some(error))
     }
 
     /// The tracks that were started, in the order they were.
@@ -136,6 +171,11 @@ impl FakeCapturer {
         self.send(Track::Screen, SourceEvent::Frame(frame));
     }
 
+    /// Sends a note as `track`. Panics when the track has not been started.
+    pub fn send_note(&self, track: Track, note: Note) {
+        self.send(track, SourceEvent::Note { track, note });
+    }
+
     /// Ends `track` as if it had by itself. Panics when the track has not been started.
     pub fn send_ended(&self, track: Track, reason: EndReason) {
         lock(&self.log).ended.insert(track, Instant::now());
@@ -166,7 +206,20 @@ impl Capturer for FakeCapturer {
             if let Some(error) = script.fails.take() {
                 return Err(error);
             }
-            (script.plan.clone(), script.ends.clone())
+            let again = script.starts > 0;
+            if again {
+                if let Some(error) = script.fails_again.take() {
+                    return Err(error);
+                }
+            }
+            script.starts += 1;
+            let plan = script
+                .again
+                .clone()
+                .filter(|_| again)
+                .or(script.plan.clone());
+            let ends = script.ends.clone().filter(|_| !(again && script.ends_once));
+            (plan, ends)
         };
         {
             let mut log = lock(&self.log);
@@ -238,14 +291,14 @@ fn deliver(
         while start + period * (delivered + 1) <= now {
             let at = start + period * delivered;
             let event = match &plan {
-                Some(Plan::Tone { hz }) => {
-                    let count = (RATE as usize * period.as_millis() as usize) / 1000;
-                    let mono = sine(*hz, RATE, samples, count);
+                Some(Plan::Tone { hz, rate }) => {
+                    let count = (*rate as usize * period.as_millis() as usize) / 1000;
+                    let mono = sine(*hz, *rate, samples, count);
                     samples += count;
                     Some(SourceEvent::Audio {
                         track,
                         at,
-                        rate: RATE,
+                        rate: *rate,
                         mono,
                     })
                 }
@@ -508,5 +561,98 @@ mod tests {
         while rx.try_recv().is_ok() {}
         std::thread::sleep(Duration::from_millis(100));
         assert!(rx.try_recv().is_err(), "a stopped source went on");
+    }
+
+    #[test]
+    fn a_track_that_ends_once_is_started_again_without_ending() {
+        let fake = FakeCapturer::new()
+            .tone(Track::System, 220.0)
+            .ends_once_after(
+                Track::System,
+                Duration::from_millis(40),
+                EndReason::DeviceLost("unplugged".into()),
+            );
+        let (first, rx) = start(&fake, Track::System);
+        loop {
+            if let SourceEvent::Ended { .. } =
+                rx.recv_timeout(Duration::from_secs(2)).expect("the end")
+            {
+                break;
+            }
+        }
+        first.unwrap().stop();
+
+        let (second, rx) = start(&fake, Track::System);
+        std::thread::sleep(Duration::from_millis(150));
+        second.unwrap().stop();
+
+        assert_eq!(fake.started(), [Track::System, Track::System]);
+        let events: Vec<SourceEvent> = rx.try_iter().collect();
+        assert!(!events.is_empty());
+        assert!(
+            events
+                .iter()
+                .all(|event| matches!(event, SourceEvent::Audio { .. })),
+            "the second start has no end of its own"
+        );
+    }
+
+    #[test]
+    fn a_track_that_is_started_again_can_do_something_else() {
+        let fake = FakeCapturer::new()
+            .tone(Track::Mic, 440.0)
+            .restarted_as_tone(Track::Mic, 880.0, 44_100);
+        let (first, rx) = start(&fake, Track::Mic);
+        let SourceEvent::Audio { rate, .. } = rx.recv_timeout(Duration::from_secs(2)).unwrap()
+        else {
+            panic!("not audio")
+        };
+        assert_eq!(rate, 48_000);
+        first.unwrap().stop();
+
+        let (second, rx) = start(&fake, Track::Mic);
+        let SourceEvent::Audio { rate, mono, .. } =
+            rx.recv_timeout(Duration::from_secs(2)).unwrap()
+        else {
+            panic!("not audio")
+        };
+        second.unwrap().stop();
+
+        // 20 ms at 44.1 kHz, of the tone of the restart.
+        assert_eq!(rate, 44_100);
+        assert_eq!(mono, sine(880.0, 44_100, 0, 882));
+    }
+
+    #[test]
+    fn a_start_again_can_be_scripted_to_fail() {
+        let fake = FakeCapturer::new()
+            .tone(Track::System, 220.0)
+            .fails_when_started_again(Track::System, StartError::Source("no output device".into()));
+        let (first, _rx) = start(&fake, Track::System);
+        first.unwrap().stop();
+
+        let (second, _rx) = start(&fake, Track::System);
+
+        assert_eq!(
+            second.err(),
+            Some(StartError::Source("no output device".into()))
+        );
+        assert_eq!(fake.started(), [Track::System]);
+    }
+
+    #[test]
+    fn a_note_arrives_as_the_track() {
+        let fake = FakeCapturer::new();
+        let (_mic, rx) = start(&fake, Track::Mic);
+
+        fake.send_note(Track::Mic, Note::Silent);
+
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(SourceEvent::Note {
+                track: Track::Mic,
+                note: Note::Silent
+            })
+        ));
     }
 }

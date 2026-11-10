@@ -5,8 +5,9 @@
 //! - It is started on the session's thread by [`Capturer::start`], and stopped on that same thread: a microphone of some
 //!   systems cannot be moved to another. `stop` comes back promptly (it does not wait for anything of the system's to
 //!   happen) with the device or the child process released, and dropping a source stops it as well.
-//! - The rate of a track is the same for as long as it lives. A device that changes its format ends the track with
-//!   [`EndReason::DeviceLost`], and the track is not carried on at another rate.
+//! - The rate of a track is the same for as long as a start of it lives. A device that changes its format ends the
+//!   track with [`EndReason::DeviceLost`], and the track is not carried on at another rate: the session starts it again,
+//!   on the device that the system has then, and the stem goes on at the rate of the new one.
 //! - Each buffer is stamped with when its first sample was captured: the time the system's callback ran, less the length
 //!   of the buffer.
 //! - Nothing that runs on the audio thread of the system blocks or logs: it sends on the channel and returns.
@@ -16,7 +17,9 @@ use std::sync::mpsc::Sender;
 
 use crate::audio::capture::{Capture, CaptureError, Report};
 
-use super::{Capturer, EndReason, RecordOptions, RunningSource, SourceEvent, StartError, Track};
+use super::{
+    Capturer, EndReason, Note, RecordOptions, RunningSource, SourceEvent, StartError, Track,
+};
 
 /// Windows records what the default output device plays through the same calls as a microphone. That is all this is,
 /// so it is built on every system, to be checked on all of them.
@@ -69,7 +72,7 @@ fn start_system_audio(_tx: Sender<SourceEvent>) -> Result<Box<dyn RunningSource>
 }
 
 /// What a track makes of what a stream of the system reports: a buffer is the track's sound, a stream that breaks is
-/// the end of the track, and a stream that delivers nothing but silence is neither (see below).
+/// the end of the track (the session starts it again), and a microphone that delivers nothing but silence is a note.
 fn reporter(
     track: Track,
     rate: u32,
@@ -91,8 +94,13 @@ fn reporter(
                 track,
                 reason: EndReason::DeviceLost(error.to_string()),
             },
-            // The sound goes on being recorded, as it is. Nothing carries a note of it to the session yet: a
-            // microphone that the privacy switch of Windows silences is a recording with a silent microphone.
+            // The sound goes on being recorded, as it is, and the user is told: a microphone that the privacy switch of
+            // Windows silences would else be a meeting recorded without a word of it. What the system plays is silent
+            // when nothing plays, which is nothing to tell.
+            Report::Error(CaptureError::Silent) if track == Track::Mic => SourceEvent::Note {
+                track,
+                note: Note::Silent,
+            },
             Report::Error(CaptureError::Silent) => return,
         };
         // A session that is over has no one to read.
@@ -203,9 +211,12 @@ mod real_audio {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio::capture::Tap;
     use crate::record::quality::Quality;
+    use crate::record::stem::StemWriter;
     use crate::record::{Capturer, Mode, RecordOptions, StartError, Track};
     use std::sync::mpsc;
+    use std::time::{Duration, Instant};
 
     fn options() -> RecordOptions {
         RecordOptions {
@@ -235,6 +246,51 @@ mod tests {
                 unavailable
             );
         }
+    }
+
+    /// How many samples the stem has after what a track delivered (a buffer each at the instants given, which are
+    /// milliseconds after `base`, of 960 samples: 20 ms at 48 kHz) was put in it, on a clock that began at `base`.
+    fn samples_in_the_stem(arrivals: &[u64]) -> usize {
+        let base = Instant::now() + Duration::from_secs(60);
+        let (tx, rx) = mpsc::channel();
+        let mut tap = Tap::new(1, 48_000, reporter(Track::Mic, 48_000, tx));
+        for ms in arrivals {
+            tap.push_at(&[0.25_f32; 960], base + Duration::from_millis(*ms));
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mic.wav");
+        let mut stem = StemWriter::create(&path, 48_000).unwrap();
+        for event in rx.try_iter() {
+            let SourceEvent::Audio { at, mono, .. } = event else {
+                panic!("not audio")
+            };
+            stem.push(at - base, &mono).unwrap();
+        }
+        stem.finish().unwrap();
+        hound::WavReader::open(&path).unwrap().len() as usize
+    }
+
+    #[test]
+    fn a_burst_of_buffers_is_in_the_stem_whole() {
+        // A buffer on time, and then three that were captured at 20, 40 and 60 ms and come together at 80: the stem is
+        // the four of them, with nothing missing and nothing between.
+        assert_eq!(samples_in_the_stem(&[20, 80, 80, 80]), 4 * 960);
+    }
+
+    #[test]
+    fn a_gap_of_the_source_is_silence_in_the_stem() {
+        // The second buffer was captured at 200 ms, 180 ms after the first one ended.
+        assert_eq!(samples_in_the_stem(&[20, 220]), 960 + 8_640 + 960);
+    }
+
+    #[test]
+    fn what_the_system_plays_being_silent_is_not_a_note() {
+        let (tx, rx) = mpsc::channel();
+        let mut report = reporter(Track::System, 48_000, tx);
+
+        report(Report::Error(CaptureError::Silent));
+
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]

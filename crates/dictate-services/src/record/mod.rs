@@ -66,7 +66,7 @@ pub enum Track {
 pub enum SourceEvent {
     /// A buffer of sound. `at` is when its first sample was captured (not when it arrived: the time a capture
     /// callback gets a buffer is later by the latency of the device), and `rate` is the same for every buffer
-    /// of a track.
+    /// of a start of a track (a track that is started again, after the device it had was lost, may have another).
     Audio {
         track: Track,
         at: Instant,
@@ -77,6 +77,8 @@ pub enum SourceEvent {
     Frame(Frame),
     /// The source is over without being asked to stop.
     Ended { track: Track, reason: EndReason },
+    /// The source has something to say that is not an end: the recording goes on, and the user should know.
+    Note { track: Track, note: Note },
 }
 
 /// Why a source ended by itself.
@@ -88,6 +90,53 @@ pub enum EndReason {
     DeviceLost(String),
     PermissionRevoked,
     Failed(String),
+}
+
+/// Something about a track that the user should be told, though the recording goes on. A source sends the ones that
+/// it knows of (`SourceEvent::Note`); the session makes the others, about what it did with a source that was lost.
+///
+/// The session keeps the latest of each track in its state (`SessionState`), for the app to show, and the whole of them,
+/// in English, in the notes of the recording (`Finished::notes`, which end up in its log).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
+pub enum Note {
+    /// The track hears nothing but silence: on Windows the privacy switch for desktop apps keeps a microphone silent.
+    Silent,
+    /// The device of the track was lost (the detail says how), and it went on with the one that the system has now.
+    /// What came between is silence.
+    Restarted(String),
+    /// The device of the track was lost (the detail says how), and could not be taken up again: the track is off for the
+    /// rest of the recording, which goes on without it.
+    Off(String),
+}
+
+impl Track {
+    /// What the track is called in the notes of a recording.
+    fn name(self) -> &'static str {
+        match self {
+            Track::Mic => "The microphone",
+            Track::System => "The system's audio",
+            Track::Screen => "The screen",
+        }
+    }
+}
+
+impl Note {
+    /// The note in English, as the log of a recording has it.
+    pub(crate) fn describe(&self, track: Track) -> String {
+        let name = track.name();
+        match self {
+            Note::Silent => format!(
+                "{name} hears only silence. Check that it is allowed and not muted (on Windows: Settings, Privacy, Microphone, let desktop apps use it)."
+            ),
+            Note::Restarted(why) => format!(
+                "{name} was lost ({why}) and was started again on the device that the system has now. What came between is silence."
+            ),
+            Note::Off(why) => format!(
+                "{name} was lost ({why}) and could not be started again: it is off for the rest of the recording."
+            ),
+        }
+    }
 }
 
 /// Why a recording could not begin.
@@ -118,13 +167,45 @@ pub trait RunningSource: Send {
 /// Starts the sources of a recording: the part of it that is different on every system.
 pub trait Capturer: Send + Sync {
     /// Starts one track, which sends what it captures to `tx` until it is stopped. Called on the session's thread;
-    /// the source it returns is stopped on that same thread.
+    /// the source it returns is stopped on that same thread. A sound track whose source ended with
+    /// `EndReason::DeviceLost` is started again by a call to this, after that source has been stopped: it should take up
+    /// the device that the system has then.
     fn start(
         &self,
         track: Track,
         options: &RecordOptions,
         tx: Sender<SourceEvent>,
     ) -> Result<Box<dyn RunningSource>, StartError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_note_says_which_track_it_is_about_and_why() {
+        assert!(Note::Silent
+            .describe(Track::Mic)
+            .starts_with("The microphone hears only silence"));
+        let restarted = Note::Restarted("unplugged".into()).describe(Track::System);
+        assert!(restarted.contains("The system's audio was lost (unplugged)"));
+        assert!(restarted.contains("started again"));
+        let off = Note::Off("no device".into()).describe(Track::Mic);
+        assert!(off.contains("The microphone was lost (no device)"));
+        assert!(off.contains("off for the rest of the recording"));
+    }
+
+    #[test]
+    fn a_note_is_a_kind_and_its_detail_to_the_app() {
+        assert_eq!(
+            serde_json::to_string(&Note::Silent).unwrap(),
+            r#"{"kind":"silent"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&Note::Off("gone".into())).unwrap(),
+            r#"{"kind":"off","detail":"gone"}"#
+        );
+    }
 }
 
 /// Probes for the tests of the recording's files.

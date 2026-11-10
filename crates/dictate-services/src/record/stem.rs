@@ -110,17 +110,44 @@ impl StemWriter {
         self.base + (self.fed * u64::from(STEM_RATE) + rate / 2) / rate
     }
 
-    /// Lets the resampler bring out what it holds, writes silence up to `want`, and goes on with a new resampler
-    /// (the old one holds the end of the audio before the gap: it must not leak into what comes after).
-    fn fill_gap_to(&mut self, want: u64) -> io::Result<()> {
-        let fresh = StreamResampler::new(self.source_rate, STEM_RATE);
+    /// The source goes on at `rate` Hz from the next `push`, and not at the rate it had: a track that was started again
+    /// (on the device that the system has now, after the one it had was lost) may have another. What the resampler
+    /// holds of the audio before is written, and what comes after is resampled from `rate`. Where it goes in the stem
+    /// is still given by the time of the next `push`: what is between is silence. Nothing happens when `rate` is the
+    /// rate the source has.
+    pub fn set_source_rate(&mut self, rate: u32) -> io::Result<()> {
+        if rate == self.source_rate {
+            return Ok(());
+        }
+        if rate == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "the source of a stem needs a sample rate",
+            ));
+        }
+        self.restart_resampler(rate)?;
+        self.base = self.written;
+        Ok(())
+    }
+
+    /// Lets the resampler bring out what it holds and goes on with a new one, for a source at `rate` (the old one holds
+    /// the end of the audio before: it must not leak into what comes after). Nothing is fed to the new one yet.
+    fn restart_resampler(&mut self, rate: u32) -> io::Result<()> {
+        let fresh = StreamResampler::new(rate, STEM_RATE);
         let tail = std::mem::replace(&mut self.resampler, fresh).finish();
         self.write(&tail)?;
+        self.source_rate = rate;
+        self.fed = 0;
+        Ok(())
+    }
+
+    /// Writes silence up to `want`, after what the resampler holds, and goes on with a new resampler.
+    fn fill_gap_to(&mut self, want: u64) -> io::Result<()> {
+        self.restart_resampler(self.source_rate)?;
         for _ in self.written..want {
             self.writer.write_sample(0_i16).map_err(into_io_error)?;
             self.written += 1;
         }
-        self.fed = 0;
         self.base = self.written;
         Ok(())
     }
@@ -383,6 +410,79 @@ mod tests {
         stem.push(at(0.0), &[2.0, -2.0, 0.5]).unwrap();
         stem.finish().unwrap();
         assert_eq!(read(&path).1, [i16::MAX, i16::MIN, 16_384]);
+    }
+
+    /// How often the signal crosses zero in `samples[from..to]`.
+    fn crossings(samples: &[i16], from: usize, to: usize) -> usize {
+        samples[from..to]
+            .windows(2)
+            .filter(|w| (w[0] < 0) != (w[1] < 0))
+            .count()
+    }
+
+    #[test]
+    fn a_source_that_goes_on_at_another_rate_is_resampled_from_that_rate() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = stem_in(&dir);
+        let mut stem = StemWriter::create(&path, 48_000).unwrap();
+        stem.push(at(0.0), &sine(440.0, 48_000, 1.0)).unwrap();
+        // The device is lost, and the track is started again on one that has 44.1 kHz, 2 s later.
+        stem.set_source_rate(44_100).unwrap();
+        stem.push(at(3.0), &sine(880.0, 44_100, 1.0)).unwrap();
+        let written = stem.finish().unwrap();
+
+        assert!((written - 4.0).abs() < 0.01, "{written} s");
+        let (_, samples) = read(&path);
+        assert!((seconds(&samples) - 4.0).abs() < 0.01);
+        assert!(crossings(&samples, 0, 48_000).abs_diff(880) <= 10);
+        assert!(samples[48_100..143_900].iter().all(|&s| s == 0));
+        // 880 Hz crosses zero 1 760 times a second: samples taken as 48 kHz would be 1 900.
+        let later = crossings(&samples, 144_100, 191_900);
+        assert!(later.abs_diff(1_760) <= 20, "{later} crossings");
+    }
+
+    #[test]
+    fn a_source_that_goes_on_at_another_rate_without_a_gap_does_so_seamlessly() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = stem_in(&dir);
+        let mut stem = StemWriter::create(&path, 48_000).unwrap();
+        stem.push(at(0.0), &sine(440.0, 48_000, 1.0)).unwrap();
+        stem.set_source_rate(16_000).unwrap();
+        stem.push(at(1.0), &sine(440.0, 16_000, 1.0)).unwrap();
+        stem.finish().unwrap();
+
+        let (_, samples) = read(&path);
+        assert!(
+            (seconds(&samples) - 2.0).abs() < 0.01,
+            "{} s",
+            seconds(&samples)
+        );
+        // No silence was put between them.
+        assert!(samples[40_000..56_000].iter().any(|&s| s.abs() > 1000));
+        assert!(crossings(&samples, 52_000, 92_000).abs_diff(733) <= 10);
+    }
+
+    #[test]
+    fn the_rate_it_already_has_is_left_as_it_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = stem_in(&dir);
+        let mut stem = StemWriter::create(&path, 44_100).unwrap();
+        stem.push(at(0.0), &sine(440.0, 44_100, 1.0)).unwrap();
+        stem.set_source_rate(44_100).unwrap();
+        stem.push(at(1.0), &sine(440.0, 44_100, 1.0)).unwrap();
+        stem.finish().unwrap();
+
+        let (_, samples) = read(&path);
+        assert!((seconds(&samples) - 2.0).abs() < 0.01);
+        assert!(crossings(&samples, 0, 96_000).abs_diff(1_760) <= 20);
+    }
+
+    #[test]
+    fn a_source_cannot_go_on_without_a_rate() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut stem = StemWriter::create(&stem_in(&dir), 48_000).unwrap();
+        let error = stem.set_source_rate(0).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
     }
 
     #[test]

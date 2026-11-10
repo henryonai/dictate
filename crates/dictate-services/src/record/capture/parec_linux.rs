@@ -20,7 +20,7 @@ use std::time::Instant;
 
 use process_wrap::std::{ProcessGroup, StdChildWrapper, StdCommandWrap};
 
-use crate::audio::capture::began;
+use crate::audio::capture::Stamper;
 use crate::media::decode::Tail;
 use crate::media::tools;
 use crate::record::{EndReason, RunningSource, SourceEvent, StartError, Track};
@@ -133,6 +133,7 @@ fn read_blocks(
     tx: &Sender<SourceEvent>,
 ) {
     let mut block = [0_u8; BLOCK_BYTES];
+    let mut stamper = Stamper::default();
     loop {
         let filled = fill(&mut stdout, &mut block);
         // A last sample that is cut short is not one.
@@ -141,7 +142,7 @@ fn read_blocks(
             .map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
             .collect();
         if !mono.is_empty() {
-            let at = began(Instant::now(), mono.len(), RATE);
+            let at = stamper.stamp(Instant::now(), mono.len(), RATE);
             let audio = SourceEvent::Audio {
                 track: Track::System,
                 at,
@@ -254,11 +255,26 @@ mod tests {
 
         assert!(!buffers.is_empty());
         assert_eq!(buffers.iter().map(|(_, n)| n).sum::<usize>(), 9_600);
-        assert!(
-            buffers.windows(2).all(|pair| pair[0].0 < pair[1].0),
-            "the stamps of the buffers increase"
-        );
         assert!(matches!(reason, EndReason::DeviceLost(_)), "{reason:?}");
+    }
+
+    #[test]
+    fn blocks_that_were_read_together_are_stamped_one_after_the_other() {
+        let dir = tempfile::tempdir().unwrap();
+        // Three blocks at once, as a reader that was not scheduled for 60 ms finds them in the pipe.
+        let program = parec(dir.path(), "head -c 11520 /dev/zero");
+        let (tx, rx) = mpsc::channel();
+        let source = start_with(&program, tx).unwrap();
+
+        let (buffers, _) = until_the_end(&rx);
+        source.stop();
+
+        let stamps: Vec<Instant> = buffers.iter().map(|(at, _)| *at).collect();
+        assert_eq!(stamps.len(), 3);
+        // Each is where the one before it ends: 20 ms on, to the nanosecond, and not the microseconds of the time the
+        // reader took to read them.
+        assert_eq!(stamps[1] - stamps[0], Duration::from_millis(20));
+        assert_eq!(stamps[2] - stamps[1], Duration::from_millis(20));
     }
 
     #[test]

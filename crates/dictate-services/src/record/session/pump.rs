@@ -22,7 +22,7 @@ use super::Levels;
 use crate::audio::level::level;
 use crate::record::stem::StemWriter;
 use crate::record::video::FrameSlot;
-use crate::record::{EndReason, SourceEvent, Track};
+use crate::record::{EndReason, Note, SourceEvent, Track};
 
 /// How long a level stays on the meter after the buffer it was measured from: a source that delivers nothing (a system
 /// that plays no sound sends no buffers) is quiet, not as loud as the last thing it said.
@@ -75,6 +75,8 @@ pub(super) struct PumpSetup {
     pub folder: PathBuf,
     /// Called for a source that ended by itself, and for a stem that could not be written (as the source of it).
     pub ended: Box<dyn Fn(Track, EndReason) + Send + Sync>,
+    /// Called for a note that a source sends.
+    pub note: Box<dyn Fn(Track, Note) + Send + Sync>,
 }
 
 /// How a stem ended.
@@ -100,19 +102,17 @@ impl Pump {
             .name("recording stems".into())
             .spawn(move || write(&folder, &to_write, &*report))?;
         let seen = stop.clone();
+        let routing = Routing {
+            events: setup.events,
+            gate: setup.gate,
+            frames: setup.frames,
+            meters: setup.meters,
+            ended,
+            note: setup.note,
+        };
         let router = std::thread::Builder::new()
             .name("recording sound".into())
-            .spawn(move || {
-                route(
-                    &setup.events,
-                    &setup.gate,
-                    &setup.frames,
-                    &setup.meters,
-                    &*ended,
-                    &jobs,
-                    &seen,
-                )
-            })?;
+            .spawn(move || route(&routing, &jobs, &seen))?;
         Ok(Pump {
             stop,
             router,
@@ -139,19 +139,30 @@ struct Job {
     mono: Vec<f32>,
 }
 
-fn route(
-    events: &Receiver<SourceEvent>,
-    gate: &SharedGate,
-    frames: &FrameSlot,
-    meters: &SharedMeters,
-    ended: &(dyn Fn(Track, EndReason) + Send + Sync),
-    jobs: &Sender<Job>,
-    stop: &AtomicBool,
-) {
+/// What the router takes in, and where it passes it on.
+struct Routing {
+    events: Receiver<SourceEvent>,
+    gate: SharedGate,
+    frames: FrameSlot,
+    meters: SharedMeters,
+    ended: Arc<dyn Fn(Track, EndReason) + Send + Sync>,
+    note: Box<dyn Fn(Track, Note) + Send + Sync>,
+}
+
+fn route(routing: &Routing, jobs: &Sender<Job>, stop: &AtomicBool) {
+    let Routing {
+        events,
+        gate,
+        frames,
+        meters,
+        ended,
+        note,
+    } = routing;
     while !stop.load(Ordering::SeqCst) {
         match events.recv_timeout(LOOK) {
             Ok(SourceEvent::Frame(frame)) => frames.put(frame),
             Ok(SourceEvent::Ended { track, reason }) => ended(track, reason),
+            Ok(SourceEvent::Note { track, note: what }) => note(track, what),
             Ok(SourceEvent::Audio {
                 track,
                 at,
@@ -204,7 +215,11 @@ fn write(
             }
         });
         if let Stem::Open(writer) = stem {
-            if let Err(e) = writer.push(job.active, &job.mono[job.skip..]) {
+            // A track that was started again may have another rate than the one before it.
+            let written = writer
+                .set_source_rate(job.rate)
+                .and_then(|()| writer.push(job.active, &job.mono[job.skip..]));
+            if let Err(e) = written {
                 *stem = fail(ended, job.track, &e);
             }
         }
@@ -247,6 +262,7 @@ mod tests {
         events: mpsc::Sender<SourceEvent>,
         frames: FrameSlot,
         ended: mpsc::Receiver<EndReason>,
+        notes: mpsc::Receiver<(Track, Note)>,
         base: Instant,
         folder: tempfile::TempDir,
     }
@@ -255,6 +271,7 @@ mod tests {
         let folder = tempfile::tempdir().unwrap();
         let (events, rx) = mpsc::channel();
         let (ended_tx, ended) = mpsc::channel();
+        let (notes_tx, notes) = mpsc::channel();
         let gate = gate::shared();
         let base = Instant::now();
         lock(&gate).begin(base);
@@ -268,6 +285,9 @@ mod tests {
             ended: Box::new(move |_, reason| {
                 let _ = ended_tx.send(reason);
             }),
+            note: Box::new(move |track, note| {
+                let _ = notes_tx.send((track, note));
+            }),
         })
         .unwrap();
         Rig {
@@ -275,6 +295,7 @@ mod tests {
             events,
             frames,
             ended,
+            notes,
             base,
             folder,
         }
@@ -365,5 +386,73 @@ mod tests {
         assert!(why.contains("could not write the sound"), "{why}");
         let ends = rig.pump.finish();
         assert!(ends[0].result.is_err());
+    }
+
+    #[test]
+    fn a_note_of_a_source_is_passed_on() {
+        let rig = rig();
+
+        rig.events
+            .send(SourceEvent::Note {
+                track: Track::Mic,
+                note: Note::Silent,
+            })
+            .unwrap();
+
+        assert_eq!(
+            rig.notes.recv_timeout(Duration::from_secs(2)),
+            Ok((Track::Mic, Note::Silent))
+        );
+        rig.pump.finish();
+    }
+
+    #[test]
+    fn a_track_that_is_started_again_at_another_rate_goes_on_in_its_stem() {
+        let rig = rig();
+        let at = |seconds: u64| rig.base + Duration::from_secs(seconds);
+        // One second of 440 Hz at 48 kHz; the device is lost, and the one the system has now gives 880 Hz at 44.1 kHz,
+        // from the third second.
+        rig.events
+            .send(SourceEvent::Audio {
+                track: Track::Mic,
+                at: at(0),
+                rate: 48_000,
+                mono: sine(440.0, 48_000, 0, 48_000),
+            })
+            .unwrap();
+        rig.events
+            .send(SourceEvent::Audio {
+                track: Track::Mic,
+                at: at(3),
+                rate: 44_100,
+                mono: sine(880.0, 44_100, 0, 44_100),
+            })
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+
+        let ends = rig.pump.finish();
+
+        assert_eq!(ends.len(), 1);
+        let seconds = ends[0].result.as_ref().unwrap();
+        assert!((seconds - 4.0).abs() < 0.01, "{seconds} s");
+        let samples: Vec<i16> = hound::WavReader::open(&ends[0].path)
+            .unwrap()
+            .samples::<i16>()
+            .map(Result::unwrap)
+            .collect();
+        let crossings = |from: usize, to: usize| {
+            samples[from..to]
+                .windows(2)
+                .filter(|pair| (pair[0] < 0) != (pair[1] < 0))
+                .count()
+        };
+        // The first second is 440 Hz, the gap is silence, and the last second is 880 Hz and not 880 Hz sped up by 48/44.1.
+        assert!(crossings(0, 48_000).abs_diff(880) <= 10);
+        assert!(samples[48_100..143_900].iter().all(|&s| s == 0));
+        assert!(
+            crossings(144_100, 191_900).abs_diff(1_760) <= 20,
+            "{} crossings",
+            crossings(144_100, 191_900)
+        );
     }
 }

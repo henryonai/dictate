@@ -22,7 +22,7 @@ mod tests {
     use super::super::reporter;
     use super::start;
     use crate::audio::capture::Tap;
-    use crate::record::{EndReason, SourceEvent, Track};
+    use crate::record::{EndReason, Note, SourceEvent, Track};
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
@@ -83,16 +83,32 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         let mut tap = Tap::new(1, 48_000, reporter(Track::Mic, 48_000, tx));
         let start = Instant::now();
-        // 2 s of exact zeros: the audio goes on, and the track is not over.
+        // 2 s of exact zeros: the audio goes on, once, and the track is not over.
         for n in 1..=100 {
             tap.push_at(&[0.0_f32; 960], start + Duration::from_millis(20) * n);
         }
 
         let events: Vec<SourceEvent> = rx.try_iter().collect();
-        assert_eq!(events.len(), 100, "a buffer each, and nothing else");
-        assert!(events
+        let notes: Vec<&SourceEvent> = events
             .iter()
-            .all(|event| matches!(event, SourceEvent::Audio { .. })));
+            .filter(|event| matches!(event, SourceEvent::Note { .. }))
+            .collect();
+        assert_eq!(notes.len(), 1, "one note");
+        assert!(matches!(
+            notes[0],
+            SourceEvent::Note {
+                track: Track::Mic,
+                note: Note::Silent
+            }
+        ));
+        let audio = events
+            .iter()
+            .filter(|event| matches!(event, SourceEvent::Audio { .. }))
+            .count();
+        assert_eq!(audio, 100, "every buffer is kept");
+        assert!(!events
+            .iter()
+            .any(|event| matches!(event, SourceEvent::Ended { .. })));
     }
 
     /// Records the real default microphone for a second. Needs a microphone, and on macOS the permission of the app that

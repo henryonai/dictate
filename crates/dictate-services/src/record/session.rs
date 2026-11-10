@@ -2,6 +2,7 @@
 //! ends with the one file that goes to the meetings pipeline.
 
 use serde::Serialize;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -15,7 +16,7 @@ use super::marker::{Marker, MARKER};
 use super::stem::pad_to;
 use super::video::{pick_codec, FrameSlot, VideoCodec};
 use super::{
-    Capturer, EndReason, Mode, RecordOptions, RunningSource, SourceEvent, StartError, Track,
+    Capturer, EndReason, Mode, Note, RecordOptions, RunningSource, SourceEvent, StartError, Track,
 };
 use crate::media::encode::remove_part;
 
@@ -43,18 +44,32 @@ pub struct Levels {
     pub system: Option<f32>,
 }
 
+/// A note about a track (`record::Note`), for the state of a session.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct TrackNote {
+    pub track: Track,
+    pub note: Note,
+}
+
 /// What a session tells its owner, as it goes.
+///
+/// `notes` are what the user should be told of the tracks, though the recording goes on: the latest note of each track
+/// that has one (a microphone that hears only silence, a device that was lost and taken up again, or not), in the order
+/// the tracks first had one. All of them, in English, end up in `Finished::notes`.
 #[derive(Clone, Debug, PartialEq)]
 pub enum SessionState {
     Recording {
         active: Duration,
         levels: Levels,
+        notes: Vec<TrackNote>,
     },
     Paused {
         active: Duration,
         levels: Levels,
+        notes: Vec<TrackNote>,
     },
-    /// A source ended by itself: the sources are stopped, and what was recorded is waiting for `Session::stop`.
+    /// A source ended by itself: the sources are stopped, and what was recorded is waiting for `Session::stop`. The
+    /// loss of the device of a sound track is not that: the track is started again (see `Session`).
     Ended(EndReason),
 }
 
@@ -77,6 +92,8 @@ const REPORT_EVERY: Duration = Duration::from_millis(50);
 struct Timing {
     /// How long `stop` waits for the video to be finished before ffmpeg is killed.
     video_finish_wait: Duration,
+    /// How long a track that was started again must last before its loss is not taken for the same one again.
+    restart_window: Duration,
 }
 
 impl Default for Timing {
@@ -85,6 +102,7 @@ impl Default for Timing {
             // ffmpeg has 30 s to write the end of the file (`VideoEncoder::finish`): this is for the one that is stuck
             // in taking a frame.
             video_finish_wait: Duration::from_secs(40),
+            restart_window: Duration::from_secs(2),
         }
     }
 }
@@ -94,7 +112,9 @@ enum Control {
     /// The clock was paused or resumed: report it now.
     Changed,
     /// A source ended by itself.
-    Ended(EndReason),
+    Ended(Track, EndReason),
+    /// A source has something to say about a track that is not an end.
+    Note(Track, Note),
     /// Finish the recording.
     Stop,
     /// Stop it and remove what it made.
@@ -112,6 +132,15 @@ type Outcome = io::Result<Option<Finished>>;
 /// what the sources deliver (the stems, the meters), and one that gives ffmpeg the frames. A `Session` that is
 /// dropped without `stop` or `discard` stops the sources and leaves the files as they are, with `recording.json`, for
 /// `recover` (as a crash would, but with the stems closed).
+///
+/// A sound track that loses its device (`EndReason::DeviceLost`: headphones are plugged in and the default output
+/// changes, a microphone is unplugged, the sound server goes away) does not end the recording. The session stops that
+/// source and starts the track again, on its own thread, with the device that the system has now, whose rate may be
+/// another: the stem goes on in the new rate, with silence for what came between, and a note says so
+/// (`Note::Restarted`). When starting it fails, or when it is lost again within `Timing::restart_window` (2 s) of the
+/// start, the track is off for the rest of the recording and a note says so (`Note::Off`): what it has recorded is
+/// kept and the stem is silent to the end. Each loss that follows a track that lasted longer than that is started
+/// again once more. What else ends a source (the screen, a stem that cannot be written, ffmpeg) ends the recording.
 pub struct Session {
     control: Sender<Control>,
     gate: SharedGate,
@@ -193,7 +222,12 @@ impl Session {
             control_tx: control.clone(),
             control_rx,
             meters: SharedMeters::default(),
+            events: None,
             sources: Vec::new(),
+            restarted: HashMap::new(),
+            off: HashSet::new(),
+            latest: Vec::new(),
+            history: Vec::new(),
             pump: None,
             ticker: None,
         };
@@ -305,7 +339,18 @@ struct Worker {
     control_tx: Sender<Control>,
     control_rx: Receiver<Control>,
     meters: SharedMeters,
-    sources: Vec<Box<dyn RunningSource>>,
+    /// Where the sources send what they deliver, kept to start a track again.
+    events: Option<Sender<SourceEvent>>,
+    /// The sources that are running, by the track they are.
+    sources: Vec<(Track, Box<dyn RunningSource>)>,
+    /// When each sound track was last started again.
+    restarted: HashMap<Track, Instant>,
+    /// The sound tracks that are off for the rest of the recording.
+    off: HashSet<Track>,
+    /// The latest note of each track, as the state tells it.
+    latest: Vec<TrackNote>,
+    /// Every note, in the order they came, for the notes of the recording.
+    history: Vec<TrackNote>,
     pump: Option<Pump>,
     ticker: Option<Ticker>,
 }
@@ -345,14 +390,18 @@ impl Worker {
         let (tx, events) = mpsc::channel();
         let frames = FrameSlot::new();
         let control = self.control_tx.clone();
+        let noted = self.control_tx.clone();
         let pump = Pump::start(PumpSetup {
             events,
             gate: self.gate.clone(),
             frames: frames.clone(),
             meters: self.meters.clone(),
             folder: self.folder.clone(),
-            ended: Box::new(move |_track, reason| {
-                let _ = control.send(Control::Ended(reason));
+            ended: Box::new(move |track, reason| {
+                let _ = control.send(Control::Ended(track, reason));
+            }),
+            note: Box::new(move |track, note| {
+                let _ = noted.send(Control::Note(track, note));
             }),
         })
         .map_err(|e| {
@@ -363,7 +412,7 @@ impl Worker {
 
         for track in self.tracks() {
             match self.capturer.start(track, &self.options, tx.clone()) {
-                Ok(source) => self.sources.push(source),
+                Ok(source) => self.sources.push((track, source)),
                 Err(error) => {
                     self.undo();
                     return Err(error);
@@ -379,7 +428,8 @@ impl Worker {
                 });
             })
         };
-        drop(tx);
+        // Kept for the tracks that are started again (the pump does not wait for the senders to be gone).
+        self.events = Some(tx);
         lock(&self.gate).begin(Instant::now());
 
         if let (Some(codec), Some(ffmpeg)) = (&self.codec, &self.ffmpeg) {
@@ -424,7 +474,16 @@ impl Worker {
                     self.report();
                     reported = Instant::now();
                 }
-                Ok(Control::Ended(reason)) => self.end_by_itself(reason),
+                Ok(Control::Ended(track, reason)) => {
+                    self.source_ended(track, reason);
+                    self.report();
+                    reported = Instant::now();
+                }
+                Ok(Control::Note(track, note)) => {
+                    self.note(track, note);
+                    self.report();
+                    reported = Instant::now();
+                }
                 Ok(Control::Stop) => return self.stop(),
                 Ok(Control::Discard) => return self.discard(),
                 Ok(Control::Abandon) | Err(RecvTimeoutError::Disconnected) => {
@@ -448,13 +507,91 @@ impl Worker {
             let gate = lock(&self.gate);
             (gate.active_now(), gate.is_paused())
         };
-        let levels =
-            lock(&self.meters).read(self.options.mic, self.options.system_audio, Instant::now());
+        // The meter of a track that is off is off.
+        let levels = lock(&self.meters).read(
+            self.options.mic && !self.off.contains(&Track::Mic),
+            self.options.system_audio && !self.off.contains(&Track::System),
+            Instant::now(),
+        );
+        let notes = self.latest.clone();
         (self.on_state)(if paused {
-            SessionState::Paused { active, levels }
+            SessionState::Paused {
+                active,
+                levels,
+                notes,
+            }
         } else {
-            SessionState::Recording { active, levels }
+            SessionState::Recording {
+                active,
+                levels,
+                notes,
+            }
         });
+    }
+
+    /// A source ended by itself. A sound track that lost its device is started again; anything else ends the recording.
+    fn source_ended(&mut self, track: Track, reason: EndReason) {
+        match reason {
+            EndReason::DeviceLost(why) if matches!(track, Track::Mic | Track::System) => {
+                // A track that was given up, or a recording that is over, has nothing to start.
+                if !self.off.contains(&track) && lock(&self.ended).is_none() {
+                    self.start_again(track, why);
+                }
+            }
+            reason => self.end_by_itself(reason),
+        }
+    }
+
+    /// Starts `track`, whose device was lost (`why`), again: the stem is told of the new rate by what the new source
+    /// sends, and the gap is where the stamps say it is. A track that is lost again within `restart_window` of the start
+    /// is not started again, and one that cannot be is off: the recording goes on without it.
+    fn start_again(&mut self, track: Track, why: String) {
+        // What ended is let go of: its device, or its child process.
+        self.stop_source(track);
+        let at_once = self
+            .restarted
+            .get(&track)
+            .is_some_and(|at| at.elapsed() < self.timing.restart_window);
+        if at_once {
+            self.give_up(
+                track,
+                format!("{why}; lost again right after it was started again"),
+            );
+            return;
+        }
+        let Some(events) = self.events.clone() else {
+            return self.give_up(track, why);
+        };
+        match self.capturer.start(track, &self.options, events) {
+            Ok(source) => {
+                self.restarted.insert(track, Instant::now());
+                self.sources.push((track, source));
+                self.note(track, Note::Restarted(why));
+            }
+            Err(error) => {
+                let how = match &error {
+                    StartError::Source(text) | StartError::Io(text) => text.clone(),
+                    other => format!("{other:?}"),
+                };
+                self.give_up(track, format!("{why}; starting it again failed: {how}"));
+            }
+        }
+    }
+
+    /// `track` is off for the rest of the recording.
+    fn give_up(&mut self, track: Track, why: String) {
+        self.off.insert(track);
+        self.note(track, Note::Off(why));
+    }
+
+    /// Notes what a track has that the user should know.
+    fn note(&mut self, track: Track, note: Note) {
+        let note = TrackNote { track, note };
+        match self.latest.iter_mut().find(|latest| latest.track == track) {
+            Some(latest) => *latest = note.clone(),
+            None => self.latest.push(note.clone()),
+        }
+        self.history.push(note);
     }
 
     /// A source ended by itself (the first to: the others are stopped with it, and whatever they have to say is of no
@@ -481,7 +618,15 @@ impl Worker {
 
     /// Stops every source that is running (the last to start first).
     fn stop_sources(&mut self) {
-        while let Some(source) = self.sources.pop() {
+        while let Some((_, source)) = self.sources.pop() {
+            source.stop();
+        }
+    }
+
+    /// Stops the source of `track`, if it is running.
+    fn stop_source(&mut self, track: Track) {
+        if let Some(at) = self.sources.iter().position(|(source, _)| *source == track) {
+            let (_, source) = self.sources.remove(at);
             source.stop();
         }
     }
@@ -495,6 +640,12 @@ impl Worker {
             .take()
             .map(|ticker| ticker.finish(self.timing.video_finish_wait));
         let stems = self.pump.take().map(Pump::finish).unwrap_or_default();
+        // What a source said as the recording ended may be on its way still.
+        while let Ok(control) = self.control_rx.try_recv() {
+            if let Control::Note(track, note) = control {
+                self.note(track, note);
+            }
+        }
 
         let mut notes = Vec::new();
         let mut hints = Hints::default();
@@ -509,6 +660,7 @@ impl Worker {
                 hints.video_seconds = Some(end.frames as f64 / fps);
             }
         }
+        notes.extend(self.history.iter().map(|n| n.note.describe(n.track)));
         pad_stems(stems, active, &mut notes);
         let mut finished = finalize_with(&self.folder, self.ffmpeg.as_deref(), &hints)?;
         notes.append(&mut finished.notes);

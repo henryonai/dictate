@@ -5,14 +5,14 @@ use super::*;
 use crate::media::decode::MonoDecoder;
 #[cfg(unix)]
 use crate::media::test_support::script;
-use crate::media::test_support::{read_all, real_ffmpeg};
+use crate::media::test_support::{read_all, real_ffmpeg, zero_crossings};
 use crate::record::fakes::{sine, FakeCapturer};
 use crate::record::marker::{Marker, MARKER};
 use crate::record::quality::Quality;
 use crate::record::stem::StemWriter;
 use crate::record::test_support::{cut_off_video, video_seconds};
 use crate::record::video::Frame;
-use crate::record::{EndReason, Mode, RecordOptions, StartError, Track};
+use crate::record::{EndReason, Mode, Note, RecordOptions, StartError, Track};
 use std::sync::Mutex;
 use std::time::Instant;
 
@@ -1033,6 +1033,7 @@ fn stop_gives_up_on_an_encoder_that_is_stuck_and_keeps_the_sound() {
     let fake = Arc::new(frames_of_screen().tone(Track::Mic, 440.0));
     let timing = Timing {
         video_finish_wait: Duration::from_millis(800),
+        ..Timing::default()
     };
     let (session, states) = start_with(
         options(screen(), true, false),
@@ -1358,4 +1359,266 @@ fn a_long_recording_keeps_memory_flat() {
     assert!(grew(at_the_end) < 100.0, "+{} MB", grew(at_the_end));
     assert!(grew(after) < 100.0, "+{} MB after the mix", grew(after));
     assert!((finished.duration - seconds as f64).abs() < 5.0);
+}
+
+// --- A track that is lost, and what a source has to say ---
+
+/// The latest note that was reported of `track`.
+fn note_of(states: &States, track: Track) -> Option<Note> {
+    states
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find_map(|(_, state)| match state {
+            SessionState::Recording { notes, .. } | SessionState::Paused { notes, .. } => notes
+                .iter()
+                .find(|note| note.track == track)
+                .map(|note| note.note.clone()),
+            SessionState::Ended(_) => None,
+        })
+}
+
+/// How many times the zero is crossed by the sound of `media` from `from` to `to` seconds (what is near silence is not
+/// counted).
+fn crossings_between(samples: &[f32], rate: u32, from: f64, to: f64) -> usize {
+    let part = &samples[(from * f64::from(rate)) as usize..(to * f64::from(rate)) as usize];
+    zero_crossings(part)
+}
+
+#[test]
+fn a_system_track_that_loses_its_device_is_started_again_and_the_recording_goes_on() {
+    let Some(ffmpeg) = real_ffmpeg() else { return };
+    let dir = tempfile::tempdir().unwrap();
+    // 880 Hz at 48 kHz for a second; then the device is lost (headphones are plugged in), and the one the system has
+    // now plays 440 Hz at 44.1 kHz.
+    let fake = Arc::new(
+        FakeCapturer::new()
+            .tone(Track::System, 880.0)
+            .ends_once_after(
+                Track::System,
+                Duration::from_secs(1),
+                EndReason::DeviceLost("headphones plugged in".into()),
+            )
+            .restarted_as_tone(Track::System, 440.0, 44_100),
+    );
+    let (session, states) = start(
+        options(Mode::Audio, false, true),
+        dir.path(),
+        &fake,
+        Some(&ffmpeg),
+    )
+    .unwrap();
+    let reference = Reference::of(&states);
+    let slack = Slack::measure();
+
+    wait_until("the track to be started again", || {
+        fake.started().len() == 2
+    });
+    slack.sleep(2200);
+    let asked = Instant::now();
+    assert_eq!(session.wait_end(), None);
+    let finished = session.stop().unwrap();
+
+    // The recording is all of what ran: the loss did not end it.
+    assert_eq!(fake.started(), [Track::System, Track::System]);
+    assert_eq!(fake.stopped(), [Track::System, Track::System]);
+    assert!(!has_ended(&states));
+    let ran = reference.active_at(asked);
+    assert_lasted(finished.duration, ran, ran, CHUNK_SECONDS, &slack);
+    assert_decodes_as_long(&finished.media, &ffmpeg, finished.duration);
+    // The sound is the first tone before the loss, and the tone of the new device after it, at its own pitch (a track
+    // taken for 48 kHz would be 440 x 48 / 44.1 = 479 Hz).
+    let (samples, rate) = audio_of(&finished.media, &ffmpeg);
+    let before = crossings_between(&samples, rate, 0.2, 0.8);
+    assert!(before.abs_diff(1_056) <= 60, "{before} crossings of 880 Hz");
+    let after = crossings_between(&samples, rate, 1.5, ran - 0.3);
+    let expected = (880.0 * (ran - 0.3 - 1.5)) as usize;
+    assert!(
+        after.abs_diff(expected) <= expected / 20,
+        "{after} crossings of 440 Hz, {expected} expected"
+    );
+    // It was told to the owner, and is in the log.
+    let lost = Note::Restarted("headphones plugged in".into());
+    assert_eq!(note_of(&states, Track::System), Some(lost.clone()));
+    assert!(
+        finished.notes.contains(&lost.describe(Track::System)),
+        "{:?}",
+        finished.notes
+    );
+}
+
+#[test]
+fn a_microphone_that_is_lost_is_started_again_too() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = Arc::new(FakeCapturer::new().tone(Track::Mic, 440.0));
+    let (session, _states) =
+        start(options(Mode::Audio, true, false), dir.path(), &fake, None).unwrap();
+
+    fake.send_ended(Track::Mic, EndReason::DeviceLost("unplugged".into()));
+
+    wait_until("the microphone to be started again", || {
+        fake.started().len() == 2
+    });
+    assert_eq!(fake.started(), [Track::Mic, Track::Mic]);
+    assert_eq!(session.wait_end(), None);
+    session.discard();
+}
+
+#[test]
+fn a_track_that_cannot_be_started_again_is_off_for_the_rest_of_the_recording_with_a_note() {
+    let Some(ffmpeg) = real_ffmpeg() else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let fake = Arc::new(
+        FakeCapturer::new()
+            .tone(Track::Mic, 440.0)
+            .tone(Track::System, 880.0)
+            .ends_once_after(
+                Track::System,
+                Duration::from_millis(800),
+                EndReason::DeviceLost("no output".into()),
+            )
+            .fails_when_started_again(
+                Track::System,
+                StartError::Source("no audio output device found".into()),
+            ),
+    );
+    let (session, states) = start(
+        options(Mode::Audio, true, true),
+        dir.path(),
+        &fake,
+        Some(&ffmpeg),
+    )
+    .unwrap();
+    let reference = Reference::of(&states);
+    let slack = Slack::measure();
+
+    wait_until("the note", || note_of(&states, Track::System).is_some());
+    slack.sleep(1800);
+    let asked = Instant::now();
+    assert_eq!(session.wait_end(), None);
+    let finished = session.stop().unwrap();
+
+    // It was asked to start again once, and the recording went on with the microphone.
+    assert_eq!(fake.started(), [Track::System, Track::Mic]);
+    assert_eq!(fake.stopped().len(), 2);
+    let ran = reference.active_at(asked);
+    assert_lasted(finished.duration, ran, ran, CHUNK_SECONDS, &slack);
+    assert_decodes_as_long(&finished.media, &ffmpeg, finished.duration);
+    let (samples, rate) = audio_of(&finished.media, &ffmpeg);
+    assert!(rms(&samples, rate, 1.2, ran - 0.2) > 0.1);
+    // The owner is told, and the meter of the track that is off is off.
+    let off = Note::Off("no output; starting it again failed: no audio output device found".into());
+    assert_eq!(note_of(&states, Track::System), Some(off.clone()));
+    assert!(
+        finished.notes.contains(&off.describe(Track::System)),
+        "{:?}",
+        finished.notes
+    );
+    assert_eq!(levels_of(&states, Track::System).last(), Some(&None));
+    assert!(levels_of(&states, Track::Mic).last().unwrap().is_some());
+}
+
+#[test]
+fn a_track_that_is_lost_again_at_once_is_not_started_again_and_again() {
+    let dir = tempfile::tempdir().unwrap();
+    // Every start of the track ends 300 ms after it, with a device that is there and fails as it is opened.
+    let fake = Arc::new(FakeCapturer::new().tone(Track::System, 880.0).ends_after(
+        Track::System,
+        Duration::from_millis(300),
+        EndReason::DeviceLost("gone".into()),
+    ));
+    let (session, states) =
+        start(options(Mode::Audio, false, true), dir.path(), &fake, None).unwrap();
+
+    wait_until("the track to be given up", || {
+        matches!(note_of(&states, Track::System), Some(Note::Off(_)))
+    });
+    // Time enough for a loop to show itself.
+    sleep(1500);
+
+    assert_eq!(fake.started(), [Track::System, Track::System]);
+    assert_eq!(session.wait_end(), None);
+    assert!(!has_ended(&states));
+    session.discard();
+}
+
+#[test]
+fn a_track_that_lasted_after_it_was_started_again_is_started_again_when_it_is_lost_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = Arc::new(FakeCapturer::new().tone(Track::System, 880.0).ends_after(
+        Track::System,
+        Duration::from_millis(600),
+        EndReason::DeviceLost("gone".into()),
+    ));
+    // A track that lasts for longer than 300 ms is not one that is lost at once.
+    let timing = Timing {
+        restart_window: Duration::from_millis(300),
+        ..Timing::default()
+    };
+    let (session, states) = start_with(
+        options(Mode::Audio, false, true),
+        dir.path(),
+        &fake,
+        None,
+        timing,
+    )
+    .unwrap();
+
+    wait_until("the third start", || fake.started().len() >= 3);
+
+    wait_until("the note", || {
+        matches!(note_of(&states, Track::System), Some(Note::Restarted(_)))
+    });
+    assert_eq!(session.wait_end(), None);
+    session.discard();
+}
+
+#[test]
+fn a_sound_track_that_fails_for_another_reason_still_ends_the_recording() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = Arc::new(FakeCapturer::new().tone(Track::Mic, 440.0));
+    let (session, states) =
+        start(options(Mode::Audio, true, false), dir.path(), &fake, None).unwrap();
+
+    // What cannot be written (a disk that is full) is the end of the recording, as the loss of a device is not.
+    fake.send_ended(
+        Track::Mic,
+        EndReason::Failed("could not write the sound".into()),
+    );
+
+    wait_until("the end", || has_ended(&states));
+    assert_eq!(
+        session.wait_end(),
+        Some(EndReason::Failed("could not write the sound".into()))
+    );
+    assert_eq!(fake.started(), [Track::Mic]);
+    session.discard();
+}
+
+#[test]
+fn a_microphone_that_hears_only_silence_is_noted_and_the_recording_goes_on() {
+    let Some(ffmpeg) = real_ffmpeg() else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let fake = Arc::new(FakeCapturer::new().tone(Track::Mic, 440.0));
+    let (session, states) = start(
+        options(Mode::Audio, true, false),
+        dir.path(),
+        &fake,
+        Some(&ffmpeg),
+    )
+    .unwrap();
+
+    fake.send_note(Track::Mic, Note::Silent);
+
+    wait_until("the note", || note_of(&states, Track::Mic).is_some());
+    assert_eq!(note_of(&states, Track::Mic), Some(Note::Silent));
+    assert_eq!(session.wait_end(), None);
+    sleep(300);
+    let finished = session.stop().unwrap();
+    assert!(
+        finished.notes.contains(&Note::Silent.describe(Track::Mic)),
+        "{:?}",
+        finished.notes
+    );
 }

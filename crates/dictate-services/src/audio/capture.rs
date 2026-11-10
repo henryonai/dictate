@@ -124,15 +124,51 @@ fn stream_error_ends_recording(kind: ErrorKind) -> bool {
     )
 }
 
+/// How long a buffer of `frames` frames at `rate` Hz is.
+fn length_of(frames: usize, rate: u32) -> Duration {
+    Duration::from_nanos((frames as u64).saturating_mul(1_000_000_000) / u64::from(rate.max(1)))
+}
+
 /// When the first sample of a buffer of `frames` frames at `rate` Hz was captured, if the buffer was handed over at
 /// `arrived`, the moment after its last sample was.
-pub(crate) fn began(arrived: Instant, frames: usize, rate: u32) -> Instant {
-    let nanos = (frames as u64).saturating_mul(1_000_000_000) / u64::from(rate.max(1));
+fn began(arrived: Instant, frames: usize, rate: u32) -> Instant {
     // A clock that has not run for as long as the buffer is would be taken back past its start (a panic on some
     // systems): the buffer is then stamped with the time it arrived.
     arrived
-        .checked_sub(Duration::from_nanos(nanos))
+        .checked_sub(length_of(frames, rate))
         .unwrap_or(arrived)
+}
+
+/// How far from where the buffer before it ended (earlier or later) a buffer may be stamped and still be taken as
+/// following it: more than the jitter of the times that the system's callbacks run at, and the length of a buffer
+/// or two.
+const FOLLOWS: Duration = Duration::from_millis(40);
+
+/// Gives each buffer of a stream the time its first sample was captured.
+///
+/// That is the time the buffer arrived less its length, but not as it stands: a callback that was kept waiting (a thread
+/// that was not scheduled for 60 ms) is handed the buffers that piled up, one after the other at the same time, and
+/// every one of them would be stamped the same 20 ms ago, and taken by the stem for a repeat of the one before. A
+/// stream is continuous, so a buffer that is within `FOLLOWS` of where the one before it ended is stamped with that.
+/// One that is further is a gap in the stream (a system that plays nothing delivers nothing), and is stamped as it
+/// arrived: the stem fills the gap with silence.
+#[derive(Default)]
+pub(crate) struct Stamper {
+    /// Where the latest buffer ended.
+    end: Option<Instant>,
+}
+
+impl Stamper {
+    /// The stamp of a buffer of `frames` frames at `rate` Hz that arrived at `arrived`.
+    pub(crate) fn stamp(&mut self, arrived: Instant, frames: usize, rate: u32) -> Instant {
+        let began = began(arrived, frames, rate);
+        let at = match self.end {
+            Some(end) if began.max(end) - began.min(end) <= FOLLOWS => end,
+            _ => began,
+        };
+        self.end = Some(at.checked_add(length_of(frames, rate)).unwrap_or(at));
+        at
+    }
 }
 
 /// What the callback of the system's audio thread does with one buffer: make it mono, stamp it, send it on, and watch
@@ -140,6 +176,7 @@ pub(crate) fn began(arrived: Instant, frames: usize, rate: u32) -> Instant {
 pub(crate) struct Tap<R> {
     channels: usize,
     rate: u32,
+    stamper: Stamper,
     report: R,
     watch: SilenceWatch,
     silence_reported: bool,
@@ -151,6 +188,7 @@ impl<R: FnMut(Report)> Tap<R> {
         Tap {
             channels,
             rate,
+            stamper: Stamper::default(),
             report,
             watch: SilenceWatch::new(rate),
             silence_reported: false,
@@ -171,7 +209,7 @@ impl<R: FnMut(Report)> Tap<R> {
     {
         let mono = downmix(data, self.channels);
         let silent = !self.silence_reported && self.watch.feed(&mono);
-        let at = began(arrived, mono.len(), self.rate);
+        let at = self.stamper.stamp(arrived, mono.len(), self.rate);
         // A listener that is gone is not told: the recording is being stopped.
         (self.report)(Report::Samples { at, mono });
         if silent {
@@ -623,6 +661,64 @@ mod tests {
         assert_eq!(began(arrived, 0, 48_000), arrived);
         // A rate of 0 is not a division by zero.
         assert!(began(arrived, 960, 0) <= arrived);
+    }
+
+    /// The stamps `Stamper` gives to `arrivals` (when each buffer arrived, in milliseconds after `base`; every buffer is
+    /// 20 ms long at 48 kHz), in milliseconds after `base`.
+    fn stamped(base: Instant, arrivals: &[u64]) -> Vec<i64> {
+        let mut stamper = Stamper::default();
+        arrivals
+            .iter()
+            .map(|&ms| {
+                let at = stamper.stamp(base + Duration::from_millis(ms), 960, 48_000);
+                if at >= base {
+                    (at - base).as_millis() as i64
+                } else {
+                    -((base - at).as_millis() as i64)
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn buffers_that_arrive_in_a_burst_follow_on_from_each_other() {
+        // The thread that reads the audio was away for 60 ms: three buffers come at once, which were captured 20 ms
+        // apart. Stamped by when they arrived they would all be the same 20 ms ago, and the stem would take the second
+        // and third for repeats of the first.
+        let base = Instant::now() + Duration::from_secs(60);
+        assert_eq!(stamped(base, &[100, 100, 100]), [80, 100, 120]);
+    }
+
+    #[test]
+    fn a_burst_after_buffers_that_were_on_time_has_no_gap_before_it() {
+        // 100 ms is where the buffer before ended; the next three come together at 160: the one captured at 100 is 40 ms
+        // later than it would be if it were stamped by when it arrived.
+        let base = Instant::now() + Duration::from_secs(60);
+        assert_eq!(stamped(base, &[100, 160, 160, 160]), [80, 100, 120, 140]);
+    }
+
+    #[test]
+    fn buffers_that_are_a_little_late_or_early_follow_on() {
+        let base = Instant::now() + Duration::from_secs(60);
+        // Jitter of the time a callback runs at: 5 ms, and then 15 ms early.
+        assert_eq!(stamped(base, &[100, 125, 130]), [80, 100, 120]);
+    }
+
+    #[test]
+    fn a_gap_that_is_real_stays_a_gap() {
+        // A system that plays nothing delivers nothing: 100 ms later (and 5 s later) the next buffer is where it was
+        // captured, and the stem fills what is between with silence.
+        let base = Instant::now() + Duration::from_secs(60);
+        assert_eq!(stamped(base, &[100, 220]), [80, 200]);
+        assert_eq!(stamped(base, &[100, 5_000]), [80, 4_980]);
+    }
+
+    #[test]
+    fn an_overlap_of_more_than_40_ms_is_not_hidden() {
+        // A fourth buffer in a burst is 60 ms before where the third ends: it is stamped by when it arrived, as the
+        // stem takes what is of the audio and drops what is a repeat.
+        let base = Instant::now() + Duration::from_secs(60);
+        assert_eq!(stamped(base, &[100, 100, 100, 100]), [80, 100, 120, 80]);
     }
 
     #[test]
