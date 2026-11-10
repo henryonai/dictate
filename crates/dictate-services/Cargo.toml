@@ -78,12 +78,13 @@ keyring = { version = "3.6.3", features = ["windows-native"] }
 # linker takes into the program. So SHERPA_ONNX_LIB_DIR points at the 90 MB /MD archive of the same release that has no
 # text to speech (plus three stand-in libraries for what that one lacks), which CI and app/README.md fetch themselves.
 sherpa-onnx-sys = "=1.13.8"
-# CREATE_NO_WINDOW for the child processes, in the form process-wrap takes it; and Media Foundation, whose Sink Writer
+# CREATE_NO_WINDOW for the child processes, in the form process-wrap takes it; the job object that counts what ffmpeg started
+# (Win32_System_JobObjects, with the Win32_Security that creating one names); and Media Foundation, whose Sink Writer
 # is the AAC encoder that writes audio.m4a (COM has to be started for it, and its DLLs are looked for when it is first
 # used: a Windows "N" edition has none unless the Media Feature Pack is installed, and a program that imports them
 # would not start there). The version is the one the app and process-wrap already build, so that no second copy of it
 # is built.
-windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_Media_MediaFoundation", "Win32_System_Com", "Win32_System_LibraryLoader", "Win32_System_Threading"] }
+windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_Media_MediaFoundation", "Win32_Security", "Win32_System_Com", "Win32_System_JobObjects", "Win32_System_LibraryLoader", "Win32_System_Threading"] }
 
 [target.'cfg(not(any(target_os = "macos", target_os = "windows")))'.dependencies]
 keyring = { version = "3.6.3", features = ["async-secret-service", "async-io", "crypto-rust"] }

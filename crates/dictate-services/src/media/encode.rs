@@ -15,6 +15,7 @@ use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 mod ffmpeg;
 #[cfg(target_os = "macos")]
@@ -87,35 +88,64 @@ fn system_encoder(out: &Path) -> Result<Box<dyn M4aSink>, EncodeError> {
     }
 }
 
-/// Puts the finished `.part` file in the place of `out`, which it replaces if there is one. Windows can refuse for a
-/// moment (a virus scanner has the new file open): it is tried again for a second.
-fn publish(part: &Path, out: &Path) -> io::Result<()> {
-    let mut retries = 0;
+/// How often a file that Windows will not let go of is tried again, and how long that goes on: 40 tries 50 ms apart, about two
+/// seconds.
+const RETRIES: u32 = 40;
+const PAUSE: Duration = Duration::from_millis(50);
+
+/// Whether a failure on a file is Windows saying "not now" rather than "no": a refusal (a virus scanner has the new file open), or
+/// a sharing or lock violation (error 32, 33: a program that was just ended still has it open). Only Windows is asked.
+fn is_busy(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::PermissionDenied || matches!(error.raw_os_error(), Some(32 | 33))
+}
+
+/// Whether Windows is saying "not now", on Windows; no other system has such a thing to wait out.
+fn is_busy_on_windows(error: &io::Error) -> bool {
+    cfg!(windows) && is_busy(error)
+}
+
+/// Does `attempt`, and again up to `retries` times, `pause` apart, for as long as it fails in a way that `busy` says is for a
+/// moment. The result of the last try is the result.
+fn retrying<T>(
+    mut attempt: impl FnMut() -> io::Result<T>,
+    busy: impl Fn(&io::Error) -> bool,
+    retries: u32,
+    pause: Duration,
+) -> io::Result<T> {
+    let mut tried_again = 0;
     loop {
-        match std::fs::rename(part, out) {
-            Err(e)
-                if cfg!(windows) && e.kind() == io::ErrorKind::PermissionDenied && retries < 20 =>
-            {
-                retries += 1;
-                std::thread::sleep(std::time::Duration::from_millis(50));
+        match attempt() {
+            Err(e) if tried_again < retries && busy(&e) => {
+                tried_again += 1;
+                std::thread::sleep(pause);
             }
             result => return result,
         }
     }
 }
 
+/// Puts the finished `.part` file in the place of `out`, which it replaces if there is one. Windows can refuse for a
+/// moment (a virus scanner has the new file open, or the program that wrote it is still being cleaned up): it is tried again for
+/// about two seconds.
+fn publish(part: &Path, out: &Path) -> io::Result<()> {
+    retrying(
+        || std::fs::rename(part, out),
+        is_busy_on_windows,
+        RETRIES,
+        PAUSE,
+    )
+}
+
 /// Removes the `.part` file of a sink that was not finished (it may not be there). Windows can refuse for a moment, while
-/// the program that wrote it is still being cleaned up or a virus scanner has the file open: it is tried again for a
-/// second.
+/// the program that wrote it is still being cleaned up or a virus scanner has the file open: it is tried again for about
+/// two seconds.
 fn remove_part(part: &Path) {
-    for _ in 0..20 {
-        match std::fs::remove_file(part) {
-            Err(e) if cfg!(windows) && e.kind() == io::ErrorKind::PermissionDenied => {
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
-            _ => return,
-        }
-    }
+    let _ = retrying(
+        || std::fs::remove_file(part),
+        is_busy_on_windows,
+        RETRIES,
+        PAUSE,
+    );
 }
 
 /// The file a sink writes to until it is finished: `audio.m4a` becomes `audio.m4a.<nonce>.part`, a name that no other sink
@@ -408,6 +438,86 @@ mod tests {
         let error = m4a_writer(&dir.path().join("audio.m4a"), None).err();
 
         assert_eq!(error, Some(EncodeError::Unavailable));
+    }
+
+    #[test]
+    fn a_sharing_violation_is_busy_as_a_refusal_is_and_nothing_else_is() {
+        // 32 is ERROR_SHARING_VIOLATION and 33 ERROR_LOCK_VIOLATION: what Windows says while a program that is being ended still has
+        // the file open.
+        for code in [32, 33] {
+            assert!(is_busy(&io::Error::from_raw_os_error(code)), "{code}");
+        }
+        assert!(is_busy(&io::Error::from(io::ErrorKind::PermissionDenied)));
+        assert!(!is_busy(&io::Error::from(io::ErrorKind::NotFound)));
+        assert!(!is_busy(&io::Error::from_raw_os_error(2)));
+    }
+
+    #[test]
+    fn a_busy_attempt_is_tried_again_until_it_works() {
+        let mut busy_for = 5;
+        let mut tries = 0;
+
+        let result = retrying(
+            || {
+                tries += 1;
+                if busy_for > 0 {
+                    busy_for -= 1;
+                    Err(io::Error::from_raw_os_error(32))
+                } else {
+                    Ok("done")
+                }
+            },
+            is_busy,
+            RETRIES,
+            Duration::ZERO,
+        );
+
+        assert_eq!(result.unwrap(), "done");
+        assert_eq!(tries, 6);
+    }
+
+    #[test]
+    fn an_attempt_that_stays_busy_is_given_up_after_the_retries_and_says_why() {
+        let mut tries = 0;
+
+        let result: io::Result<()> = retrying(
+            || {
+                tries += 1;
+                Err(io::Error::from_raw_os_error(33))
+            },
+            is_busy,
+            3,
+            Duration::ZERO,
+        );
+
+        assert_eq!(result.unwrap_err().raw_os_error(), Some(33));
+        assert_eq!(tries, 4, "the first try and three more");
+    }
+
+    #[test]
+    fn an_attempt_that_fails_for_another_reason_is_not_tried_again() {
+        let mut tries = 0;
+
+        let result: io::Result<()> = retrying(
+            || {
+                tries += 1;
+                Err(io::Error::from(io::ErrorKind::NotFound))
+            },
+            is_busy,
+            RETRIES,
+            Duration::ZERO,
+        );
+
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotFound);
+        assert_eq!(tries, 1);
+    }
+
+    #[test]
+    fn windows_is_given_about_two_seconds_to_let_go_of_a_file() {
+        let total = PAUSE * RETRIES;
+
+        assert!(total >= Duration::from_millis(1_900), "{total:?}");
+        assert!(total <= Duration::from_millis(2_500), "{total:?}");
     }
 
     #[test]

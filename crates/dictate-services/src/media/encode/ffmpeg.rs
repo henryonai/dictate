@@ -22,6 +22,8 @@ use process_wrap::std::{StdChildWrapper, StdCommandWrap};
 #[cfg(windows)]
 use windows::Win32::System::Threading::CREATE_NO_WINDOW;
 
+mod job;
+
 use super::super::decode::Tail;
 use super::super::tools;
 use super::{part_path, publish, remove_part, EncodeError, M4aSink, M4A_BITRATE, M4A_RATE};
@@ -79,11 +81,18 @@ pub(super) fn create(out: &Path, ffmpeg: &Path) -> Result<Box<dyn M4aSink>, Enco
         .stderr(Stdio::piped());
     // The leader of a process group (a job object on Windows): killing it reaches everything ffmpeg started.
     let mut command = StdCommandWrap::from(command);
-    // CreationFlags must come before JobObject, which adds its own flags to them.
+    // CreationFlags must come before JobObject, which adds its own flags to them. `Counted` goes between them: the program is
+    // suspended when it has its turn, and `wait` then has a job of our own to ask whether anything of ffmpeg is left.
     #[cfg(windows)]
-    command
-        .wrap(CreationFlags(CREATE_NO_WINDOW))
-        .wrap(JobObject);
+    let job = job::Job::new().ok();
+    #[cfg(windows)]
+    {
+        command.wrap(CreationFlags(CREATE_NO_WINDOW));
+        if let Some(job) = &job {
+            command.wrap(job::Counted(job.clone()));
+        }
+        command.wrap(JobObject);
+    }
     #[cfg(unix)]
     command.wrap(ProcessGroup::leader());
     let mut child = command
