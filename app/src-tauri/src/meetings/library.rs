@@ -265,7 +265,8 @@ impl Meetings {
     }
 
     /// Gives speakers new names in the transcript and the summary, and the new names are written in the log. Refused while
-    /// the recording has a job: it is writing the same files. With `resummarize` the summary is written again from the
+    /// the recording has a job: it is writing the same files. The recording's place is held for the writing, so that no job can
+    /// start in the middle of it, and given back before `resummarize` starts one: the summary is written again from the
     /// transcript with its new names.
     pub fn rename_speakers(
         &self,
@@ -274,11 +275,8 @@ impl Meetings {
         resummarize: bool,
     ) -> Result<Vec<(String, String)>, ErrorView> {
         let record = self.record(id).map_err(ErrorView::other)?;
-        if self.registry.is_running(id) {
-            return Err(ErrorView::busy());
-        }
-        let applied = record
-            .rename_speakers(names)
+        let applied = self
+            .while_held(id, || record.rename_speakers(names))?
             .map_err(|e| ErrorView::other(e.to_string()))?;
         if applied.is_empty() {
             return Ok(applied);
@@ -293,6 +291,14 @@ impl Meetings {
             }
         }
         Ok(applied)
+    }
+
+    /// Does `work`, which writes the files of the recording, with the recording's place held: no job can start in the middle of
+    /// it (it would read what is about to change, and write over what is changed). A recording that has a job, or is held,
+    /// says so, with a key, and `work` is not done. The place is given back as soon as `work` is over.
+    fn while_held<T>(&self, id: &str, work: impl FnOnce() -> T) -> Result<T, ErrorView> {
+        let _held = self.registry.hold(id).map_err(|_| ErrorView::busy())?;
+        Ok(work())
     }
 
     /// The Markdown of an export: the summary, then the transcript.
@@ -1190,6 +1196,73 @@ mod tests {
         rig.meetings.cancel(SCREEN);
         rig.ended(SCREEN);
         assert!(rig.meetings.rename_speakers(SCREEN, &names, false).is_ok());
+    }
+
+    #[test]
+    fn work_on_the_files_of_a_recording_holds_its_place_and_gives_it_back() {
+        let rig = Rig::new();
+        let busy = |error: ErrorView| (error.kind, error.key);
+
+        let inside = rig
+            .meetings
+            .while_held(SCREEN, || {
+                (
+                    rig.meetings.registry.is_running(SCREEN),
+                    rig.meetings.resummarize(SCREEN).map_err(busy),
+                    rig.meetings.while_held(SCREEN, || ()).map_err(busy),
+                )
+            })
+            .unwrap();
+
+        let refused = Err(("Other".to_owned(), "meetings.error.busy".to_owned()));
+        assert_eq!(inside, (true, refused.clone(), refused));
+        // Given back, whatever the work did: a job can start.
+        assert!(!rig.meetings.registry.is_running(SCREEN));
+        rig.meetings.resummarize(SCREEN).unwrap();
+        rig.ended(SCREEN);
+        // Another recording is not held up while this one is.
+        rig.meetings
+            .while_held(SCREEN, || rig.meetings.while_held(LINK, || ()))
+            .unwrap()
+            .unwrap();
+    }
+
+    #[test]
+    fn a_recording_that_has_a_job_is_not_held() {
+        let (backend, control) = held_at_audio();
+        let rig = Rig::with(backend, Fixture::new(), None);
+        rig.give_media(SCREEN);
+        rig.meetings.rerun(SCREEN).unwrap();
+        control.started.blocking_recv().unwrap();
+        let mut worked = false;
+
+        let refused = rig.meetings.while_held(SCREEN, || worked = true);
+
+        assert_eq!(refused.unwrap_err().key, "meetings.error.busy");
+        assert!(!worked, "the work was done anyway");
+        rig.meetings.cancel(SCREEN);
+        rig.ended(SCREEN);
+    }
+
+    #[test]
+    fn renaming_speakers_gives_the_recording_back_whatever_came_of_it() {
+        let rig = Rig::new();
+        let names = HashMap::from([("Speaker 1".to_owned(), "Lan".to_owned())]);
+
+        // Renamed, and summarized again at once: the job could not start with the place still held.
+        rig.meetings.rename_speakers(SCREEN, &names, true).unwrap();
+        rig.ended(SCREEN);
+        assert_eq!(rig.backend.calls(), ["summarize"]);
+        // Nothing to rename, and a recording that does not exist.
+        rig.meetings
+            .rename_speakers(SCREEN, &HashMap::new(), false)
+            .unwrap();
+        assert!(rig
+            .meetings
+            .rename_speakers("no such recording", &names, false)
+            .is_err());
+        assert!(!rig.meetings.registry.is_running(SCREEN));
+        assert!(!rig.meetings.registry.is_running("no such recording"));
     }
 
     // ---- exporting and reading

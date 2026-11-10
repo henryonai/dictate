@@ -69,6 +69,19 @@ pub fn system_clock() -> Clock {
     })
 }
 
+/// The place of a recording, held by [`Registry::hold`]: dropping it frees the recording for a job, and tells whoever waits for it.
+pub struct Hold {
+    guard: Option<JobGuard>,
+    inner: Arc<Inner>,
+}
+
+impl Drop for Hold {
+    fn drop(&mut self) {
+        drop(self.guard.take());
+        self.inner.ended.notify_waiters();
+    }
+}
+
 #[derive(Clone)]
 pub struct Registry {
     inner: Arc<Inner>,
@@ -153,6 +166,17 @@ impl Registry {
         Ok(())
     }
 
+    /// Takes the recording's place for work that is not a job but writes the files of one (the rename of speakers): no job of
+    /// the recording can start while the [`Hold`] lives, and nothing is told to the window. `AlreadyRunning` when the
+    /// recording has a job or is held.
+    pub fn hold(&self, id: &str) -> Result<Hold, AlreadyRunning> {
+        let guard = self.inner.jobs.start(Job::Meeting(id.to_owned()))?;
+        Ok(Hold {
+            guard: Some(guard),
+            inner: self.inner.clone(),
+        })
+    }
+
     /// Asks the job of the recording to stop. Whether there was one.
     pub fn cancel(&self, id: &str) -> bool {
         self.inner.jobs.cancel(&Job::Meeting(id.to_owned()))
@@ -163,7 +187,8 @@ impl Registry {
         lock(&self.inner.views).get(id).cloned()
     }
 
-    /// Whether the recording has a job that is running.
+    /// Whether the recording has a job that is running (or is held: the tests ask it).
+    #[cfg(test)]
     pub fn is_running(&self, id: &str) -> bool {
         self.inner.jobs.is_active(&Job::Meeting(id.to_owned()))
     }
@@ -970,6 +995,58 @@ mod tests {
         assert!(rig.registry.wait_idle(&spec.id, PATIENCE).await);
         assert!(!rig.registry.is_running(&spec.id));
         drop(control);
+    }
+
+    #[test]
+    fn a_held_recording_starts_no_job_and_is_free_again_when_the_hold_is_dropped() {
+        let rig = Rig::new(FakeBackend::new());
+        let spec = rig.recording("2026-11-09 10-00-00", "Weekly");
+
+        let hold = rig.registry.hold(&spec.id).unwrap();
+
+        assert!(rig.registry.is_running(&spec.id));
+        assert!(rig.registry.start(spec.clone(), StartAt::Audio).is_err());
+        assert!(rig.registry.hold(&spec.id).is_err(), "one hold at a time");
+        // Another recording is not held up.
+        assert!(rig.registry.hold("2026-11-09 11-00-00").is_ok());
+        drop(hold);
+        assert!(!rig.registry.is_running(&spec.id));
+        assert!(rig.registry.start(spec, StartAt::Audio).is_ok());
+    }
+
+    #[test]
+    fn a_recording_that_has_a_job_cannot_be_held() {
+        let (backend, control) = held_at_audio();
+        let rig = Rig::new(backend);
+        let spec = rig.recording("2026-11-09 10-00-00", "Weekly");
+        rig.registry.start(spec.clone(), StartAt::Audio).unwrap();
+
+        assert!(rig.registry.hold(&spec.id).is_err());
+
+        rig.registry.cancel(&spec.id);
+        drop(control);
+    }
+
+    #[tokio::test]
+    async fn waiting_for_a_recording_that_is_held_ends_when_the_hold_does() {
+        let rig = Rig::new(FakeBackend::new());
+        let spec = rig.recording("2026-11-09 10-00-00", "Weekly");
+        let hold = rig.registry.hold(&spec.id).unwrap();
+        assert!(
+            !rig.registry
+                .wait_idle(&spec.id, Duration::from_millis(20))
+                .await
+        );
+
+        let waiting = tokio::spawn({
+            let registry = rig.registry.clone();
+            let id = spec.id.clone();
+            async move { registry.wait_idle(&id, PATIENCE).await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        drop(hold);
+
+        assert!(waiting.await.unwrap());
     }
 
     // ---- the banners
