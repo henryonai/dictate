@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/svelte";
+import { fireEvent, render, screen, within } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api } from "../lib/api";
@@ -62,9 +62,16 @@ test("the field waits for the answer: it is disabled, with a spinner, and takes 
   expect(field()).toBeDisabled();
   expect(screen.getByRole("status", { name: "Working on the answer…" })).toBeInTheDocument();
 
-  // A second question is not sent while the first has no answer.
-  await user.keyboard("{Enter}");
+  // A second question is not sent while the first has no answer. The field is off, so a person can't type or press Enter in it; what
+  // is left is a form that is submitted all the same (a second Enter that comes before the field has been turned off).
+  const form = field().closest("form") as HTMLFormElement;
+  await fireEvent.input(field(), { target: { value: "Second?" } });
+  await fireEvent.submit(form);
   expect(api.meetingAsk).toHaveBeenCalledTimes(1);
+  // The second question was neither sent nor cleared from the field: the form did not take it up.
+  expect(field()).toHaveValue("Second?");
+  expect(screen.queryByText("Second?")).not.toBeInTheDocument();
+  await fireEvent.input(field(), { target: { value: "" } });
 
   answer("Nobody.");
   await screen.findByText("Nobody.");

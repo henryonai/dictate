@@ -11,15 +11,38 @@ const lines: LineView[] = [
   { start: 125, stamp: "02:05", speaker: "Speaker 1", text: "Then the hiring." },
 ];
 
+const scrollTo = vi.fn();
 const scrollIntoView = vi.fn();
 
+/** What jsdom has no layout to say: the list is 100 px high, a line is 20 px high and the first is 20 px down, with 30 px between them. */
+const LIST_HEIGHT = 100;
+const LINE_HEIGHT = 20;
+const geometry = {
+  offsetTop: Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetTop"),
+  offsetHeight: Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight"),
+  clientHeight: Object.getOwnPropertyDescriptor(Element.prototype, "clientHeight"),
+};
+
 beforeEach(() => {
-  // jsdom has no layout, so no scrolling: the call is what the window makes of a current line.
+  // jsdom has no layout, so no scrolling: the calls are what the window makes of a current line.
+  Element.prototype.scrollTo = scrollTo as unknown as typeof Element.prototype.scrollTo;
   Element.prototype.scrollIntoView = scrollIntoView;
+  Object.defineProperty(HTMLElement.prototype, "offsetTop", {
+    configurable: true,
+    get(this: HTMLElement) {
+      return 20 + Number(this.dataset.line ?? 0) * 30;
+    },
+  });
+  Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, get: () => LINE_HEIGHT });
+  Object.defineProperty(Element.prototype, "clientHeight", { configurable: true, get: () => LIST_HEIGHT });
 });
 
 afterEach(() => {
+  scrollTo.mockReset();
   scrollIntoView.mockReset();
+  Object.defineProperty(HTMLElement.prototype, "offsetTop", geometry.offsetTop!);
+  Object.defineProperty(HTMLElement.prototype, "offsetHeight", geometry.offsetHeight!);
+  Object.defineProperty(Element.prototype, "clientHeight", geometry.clientHeight!);
   vi.restoreAllMocks();
   setLanguage("en");
 });
@@ -84,13 +107,35 @@ test("a line that has no stamp has no button to seek with", () => {
   expect(within(rowOf("Loose words.")).queryByRole("button")).not.toBeInTheDocument();
 });
 
-test("transcript_highlights_current_line_while_playing: the last line that began (0.3 s early) is the current one, and it is scrolled to the centre", () => {
+test("transcript_highlights_current_line_while_playing: the last line that began (0.3 s early) is the current one", () => {
   show({ currentTime: 70, playing: true });
 
   expect(rowOf("First, the budget.")).toHaveAttribute("aria-current", "true");
   expect(rowOf("Let's start.")).not.toHaveAttribute("aria-current");
   expect(rowOf("Then the hiring.")).not.toHaveAttribute("aria-current");
-  expect(scrollIntoView).toHaveBeenCalledWith(expect.objectContaining({ block: "center" }));
+});
+
+test("the current line is brought to the middle of the list by scrolling the list itself, not the page around it", () => {
+  const view = show({ currentTime: 70, playing: true });
+
+  // The second line is 50 px down: its middle (60) goes to the middle of the list (50).
+  expect(scrollTo).toHaveBeenCalledExactlyOnceWith({ top: 50 - (LIST_HEIGHT - LINE_HEIGHT) / 2, behavior: "smooth" });
+  expect(scrollTo.mock.contexts[0]).toBe(view.container.querySelector(".list"));
+  // `scrollIntoView` would scroll every box around the line, the window's own columns too.
+  expect(scrollIntoView).not.toHaveBeenCalled();
+});
+
+test("a line near the top is not scrolled to a negative place", () => {
+  // The first line is 20 px down: it would be at -20 to be in the middle, which is no place to scroll to.
+  show({ currentTime: 0, playing: true });
+  expect(scrollTo).toHaveBeenCalledExactlyOnceWith({ top: 0, behavior: "smooth" });
+});
+
+test("a person who prefers less motion has the list moved at once", () => {
+  vi.stubGlobal("matchMedia", (query: string) => ({ matches: query.includes("reduce") }));
+  show({ currentTime: 70, playing: true });
+  expect(scrollTo).toHaveBeenCalledWith(expect.objectContaining({ behavior: "auto" }));
+  vi.unstubAllGlobals();
 });
 
 test("a line is current 0.3 s before it begins", () => {
@@ -107,7 +152,7 @@ test("nothing is highlighted or scrolled to while the player is paused", () => {
   show({ currentTime: 70, playing: false });
 
   expect(document.querySelector("[aria-current]")).toBeNull();
-  expect(scrollIntoView).not.toHaveBeenCalled();
+  expect(scrollTo).not.toHaveBeenCalled();
 });
 
 test("before the first line there is no current line", () => {
@@ -117,14 +162,14 @@ test("before the first line there is no current line", () => {
 
 test("it scrolls when the current line changes and not on each tick that leaves it", async () => {
   const view = show({ currentTime: 70, playing: true });
-  expect(scrollIntoView).toHaveBeenCalledTimes(1);
+  expect(scrollTo).toHaveBeenCalledTimes(1);
 
   await view.rerender({ currentTime: 80 });
-  expect(scrollIntoView).toHaveBeenCalledTimes(1);
+  expect(scrollTo).toHaveBeenCalledTimes(1);
 
   await view.rerender({ currentTime: 130 });
   expect(rowOf("Then the hiring.")).toHaveAttribute("aria-current", "true");
-  expect(scrollIntoView).toHaveBeenCalledTimes(2);
+  expect(scrollTo).toHaveBeenCalledTimes(2);
 });
 
 test("no transcript says so", () => {

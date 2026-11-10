@@ -16,6 +16,13 @@
 
   let question = $state("");
   let field: HTMLInputElement | undefined = $state();
+  let list: HTMLElement | undefined = $state();
+
+  // The newest question is in sight: the list goes to its end when one is added.
+  $effect(() => {
+    void entries.length;
+    if (list) list.scrollTop = list.scrollHeight;
+  });
 
   async function submit(event: SubmitEvent) {
     event.preventDefault();
@@ -34,7 +41,7 @@
   <h2 id="ask-title">{t("meetings.ask.title")}</h2>
 
   {#if entries.length > 0}
-    <ol class="entries">
+    <ol class="entries" bind:this={list}>
       {#each entries as entry, index (index)}
         <li>
           <p class="question">{entry.question}</p>
@@ -73,12 +80,23 @@
 </section>
 
 <style>
+  /* Pinned under the parts of the summary: the questions and their answers scroll in the room that they have (half of the pane at most),
+     and the field below them does not. */
   .ask {
-    margin-top: 16px;
+    display: flex;
+    flex: 0 1 auto;
+    flex-direction: column;
+    max-height: 50%;
+    min-height: 0;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
   }
   .entries {
+    flex: 0 1 auto;
+    min-height: 0;
     margin: 0 0 8px;
     padding: 0;
+    overflow-y: auto;
     list-style: none;
   }
   li {
@@ -95,6 +113,7 @@
   }
   form {
     display: flex;
+    flex: none;
     gap: 6px;
   }
   input {

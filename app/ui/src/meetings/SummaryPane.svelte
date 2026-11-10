@@ -64,95 +64,98 @@
 </script>
 
 <div class="pane">
-  {#if !summary}
-    <section class="none">
-      <p class="title">{t("meetings.summary.none")}</p>
-      {#if store.readiness?.ai === false}
-        <p class="hint">{t("meetings.summary.add_api")}</p>
-        <button type="button" onclick={() => store.openSettings("accounts")}>{t("meetings.errorcard.open_api")}</button>
-      {:else if store.readiness?.ai && detail.transcript.length > 0}
-        <button type="button" class="primary" onclick={() => store.resummarize(id)}>{t("meetings.summary.now")}</button>
+  <div class="sections">
+    {#if !summary}
+      <section class="none">
+        <p class="title">{t("meetings.summary.none")}</p>
+        {#if store.readiness?.ai === false}
+          <p class="hint">{t("meetings.summary.add_api")}</p>
+          <button type="button" onclick={() => store.openSettings("accounts")}>{t("meetings.errorcard.open_api")}</button>
+        {:else if store.readiness?.ai && detail.transcript.length > 0}
+          <button type="button" class="primary" onclick={() => store.resummarize(id)}>{t("meetings.summary.now")}</button>
+        {/if}
+      </section>
+    {:else}
+      {#if summary.summary}
+        <section>
+          <h2>{t("meetings.summary.summary")}</h2>
+          <Inline text={summary.summary} onseek={seek} />
+        </section>
       {/if}
-    </section>
-  {:else}
-    {#if summary.summary}
-      <section>
-        <h2>{t("meetings.summary.summary")}</h2>
-        <Inline text={summary.summary} onseek={seek} />
-      </section>
+
+      {#if summary.keyPoints}
+        <section>
+          <h2>{t("meetings.summary.key_points")}</h2>
+          <Inline text={summary.keyPoints} onseek={seek} />
+        </section>
+      {/if}
+
+      {#if summary.decisions.length > 0}
+        <section>
+          <h2>{t("meetings.summary.decisions")}</h2>
+          <ul class="bullets">
+            {#each summary.decisions as decision, index (index)}
+              <li><Inline text={decision} onseek={seek} /></li>
+            {/each}
+          </ul>
+        </section>
+      {/if}
+
+      {#if actions.length > 0}
+        <section>
+          <div class="head">
+            <h2>{t("meetings.summary.actions")}</h2>
+            <button type="button" class="small" onclick={copyChecklist}>{copied.on ? t("meetings.copied") : t("meetings.summary.copy_checklist")}</button>
+          </div>
+          <ul class="actions">
+            {#each actions as action (action.index)}
+              <li>
+                <label class:done={action.done}>
+                  <input type="checkbox" checked={action.done} onchange={(event) => toggle(action, event.currentTarget.checked)} />
+                  <span class="text"><Inline inline text={action.text} onseek={seek} /></span>
+                </label>
+                {#if action.owner}<span class="owner">{action.owner}</span>{/if}
+              </li>
+            {/each}
+          </ul>
+        </section>
+      {/if}
+
+      {#if summary.questions.length > 0}
+        <section>
+          <h2>{t("meetings.summary.questions")}</h2>
+          <ul class="bullets">
+            {#each summary.questions as question, index (index)}
+              <li><Inline text={question} onseek={seek} /></li>
+            {/each}
+          </ul>
+        </section>
+      {/if}
+
+      {#if summary.timeline.length > 0}
+        <section>
+          <h2>{t("meetings.summary.chapters")}</h2>
+          <div class="chapters">
+            {#each summary.timeline as mark, index (index)}
+              <button type="button" class="chip" disabled={!canSeek} onclick={() => onseek(mark.seconds)}>
+                <span class="stamp">{mark.label}</span>
+                {mark.text}
+              </button>
+            {/each}
+          </div>
+        </section>
+      {/if}
+
+      {#each summary.other as section, index (index)}
+        <section>
+          {#if section.heading}<h2>{section.heading}</h2>{/if}
+          <Inline text={section.body} onseek={seek} />
+        </section>
+      {/each}
     {/if}
+  </div>
 
-    {#if summary.keyPoints}
-      <section>
-        <h2>{t("meetings.summary.key_points")}</h2>
-        <Inline text={summary.keyPoints} onseek={seek} />
-      </section>
-    {/if}
-
-    {#if summary.decisions.length > 0}
-      <section>
-        <h2>{t("meetings.summary.decisions")}</h2>
-        <ul class="bullets">
-          {#each summary.decisions as decision, index (index)}
-            <li><Inline text={decision} onseek={seek} /></li>
-          {/each}
-        </ul>
-      </section>
-    {/if}
-
-    {#if actions.length > 0}
-      <section>
-        <div class="head">
-          <h2>{t("meetings.summary.actions")}</h2>
-          <button type="button" class="small" onclick={copyChecklist}>{copied.on ? t("meetings.copied") : t("meetings.summary.copy_checklist")}</button>
-        </div>
-        <ul class="actions">
-          {#each actions as action (action.index)}
-            <li>
-              <label class:done={action.done}>
-                <input type="checkbox" checked={action.done} onchange={(event) => toggle(action, event.currentTarget.checked)} />
-                <span class="text">{action.text}</span>
-              </label>
-              {#if action.owner}<span class="owner">{action.owner}</span>{/if}
-            </li>
-          {/each}
-        </ul>
-      </section>
-    {/if}
-
-    {#if summary.questions.length > 0}
-      <section>
-        <h2>{t("meetings.summary.questions")}</h2>
-        <ul class="bullets">
-          {#each summary.questions as question, index (index)}
-            <li><Inline text={question} onseek={seek} /></li>
-          {/each}
-        </ul>
-      </section>
-    {/if}
-
-    {#if summary.timeline.length > 0}
-      <section>
-        <h2>{t("meetings.summary.chapters")}</h2>
-        <div class="chapters">
-          {#each summary.timeline as mark, index (index)}
-            <button type="button" class="chip" disabled={!canSeek} onclick={() => onseek(mark.seconds)}>
-              <span class="stamp">{mark.label}</span>
-              {mark.text}
-            </button>
-          {/each}
-        </div>
-      </section>
-    {/if}
-
-    {#each summary.other as section, index (index)}
-      <section>
-        {#if section.heading}<h2>{section.heading}</h2>{/if}
-        <Inline text={section.body} onseek={seek} />
-      </section>
-    {/each}
-  {/if}
-
+  <!-- Under the parts that scroll, not among them: the field is always in reach. -->
   {#if detail.transcript.length > 0}
     <Ask {store} {id} onseek={seek} />
   {/if}
@@ -161,8 +164,19 @@
 <style>
   .pane {
     display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-height: 0;
+  }
+  /* The parts of the summary scroll; the questions under them do not. */
+  .sections {
+    display: flex;
+    flex: 1 1 auto;
     flex-direction: column;
     gap: 14px;
+    min-height: 0;
+    padding-bottom: 8px;
+    overflow-y: auto;
   }
   section h2 {
     margin-bottom: 4px;

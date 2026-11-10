@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
 
@@ -14,7 +14,8 @@ function sources(dir = src): { path: string; text: string }[] {
     const path = join(dir, entry.name);
     if (entry.isDirectory()) return sources(path);
     if (!/\.(svelte|ts)$/.test(entry.name) || /\.test\.ts$/.test(entry.name)) return [];
-    return [{ path: relative(src, path), text: readFileSync(path, "utf8") }];
+    // The path as `/` writes it on every system: Windows says `meetings\Inline.svelte`.
+    return [{ path: relative(src, path).split(sep).join("/"), text: readFileSync(path, "utf8") }];
   });
 }
 
@@ -27,6 +28,13 @@ test("no_raw_html: {@html} is in Inline.svelte only, once, and is given what ren
   expect(inline.text.match(/\{@html\s/g)).toHaveLength(1);
   expect(inline.text).toContain("{@html html}");
   expect(inline.text).toMatch(/const html = \$derived\(renderInline\(text\)\)/);
+});
+
+test("the paths of the sources are written with / on every system", () => {
+  const paths = sources().map(({ path }) => path);
+
+  expect(paths).toContain("meetings/Inline.svelte");
+  expect(paths.filter((path) => path.includes("\\"))).toEqual([]);
 });
 
 test("no_raw_html: nothing writes HTML to the page by other means", () => {

@@ -5,7 +5,16 @@
   //
   // The `{@html}` below is the only one in the window, and what it is given is only the output of `renderInline`, which escapes the
   // text first and makes no tag but `<strong>` and `<a href="#" data-seek="<seconds>">`. Never give it anything else.
-  let { text, onseek }: { text: string; onseek?: (seconds: number) => void } = $props();
+  let {
+    text,
+    onseek,
+    inline = false,
+  }: {
+    text: string;
+    onseek?: (seconds: number) => void;
+    /** Shown in a line of its own text (inside a label), as a `<span>`; else as a block, a `<div>`. */
+    inline?: boolean;
+  } = $props();
 
   const html = $derived(renderInline(text));
   let box: HTMLElement | undefined = $state();
@@ -43,7 +52,7 @@
   });
 </script>
 
-<div class="inline" bind:this={box}>{@html html}</div>
+<svelte:element this={inline ? "span" : "div"} class="inline" bind:this={box}>{@html html}</svelte:element>
 
 <style>
   .inline {

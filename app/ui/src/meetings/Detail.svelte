@@ -154,9 +154,11 @@
     background: var(--warn-bg);
     border-radius: 8px;
   }
+  /* The columns can be as narrow as 300 and 280 px: at the narrowest window (960 px) with the list open (280 px) the detail has 640 px
+     for them, less its scroll bar, and a gap. They grow in the proportions of 480 to 420 (layout.test.ts adds it up). */
   .split {
     display: grid;
-    grid-template-columns: minmax(340px, 480fr) minmax(320px, 420fr);
+    grid-template-columns: minmax(300px, 480fr) minmax(280px, 420fr);
     grid-template-rows: minmax(0, 1fr);
     flex: 1;
     gap: 16px;
@@ -168,18 +170,6 @@
     flex-direction: column;
     min-width: 0;
     min-height: 0;
-  }
-  .right {
-    overflow-y: auto;
-  }
-  @media (max-width: 860px) {
-    .split {
-      grid-template-columns: 1fr;
-      grid-template-rows: minmax(420px, 70vh) auto;
-    }
-    .right {
-      overflow-y: visible;
-    }
   }
   .none {
     margin: 0;

@@ -102,6 +102,53 @@ describe("renderInline", () => {
     expect(renderInline("2 ** 3")).toBe("2 ** 3");
   });
 
+  test("bold keeps the rule of a pair: the opening ** is followed by a non-space, the closing one follows a non-space", () => {
+    expect(renderInline("**a **b**")).toBe("<strong>a **b</strong>");
+    expect(renderInline("** a**")).toBe("** a**");
+    expect(renderInline("**a **")).toBe("**a **");
+    expect(renderInline("****")).toBe("****");
+    expect(renderInline("**a** **b**")).toBe("<strong>a</strong> <strong>b</strong>");
+    expect(renderInline("***a**")).toBe("<strong>*a</strong>");
+    expect(renderInline("**a**b**")).toBe("<strong>a</strong>b**");
+  });
+
+  test("bold in a heading and in a list item", () => {
+    // The heading begins with its line break, which a text that starts with it does not keep.
+    expect(renderInline("## **Budget** talk")).toBe("<strong><strong>Budget</strong> talk</strong>");
+    expect(renderInline("a\n## **Budget** talk")).toBe("a\n\n<strong><strong>Budget</strong> talk</strong>");
+    expect(renderInline("- [ ] **An** — send it")).toBe("☐ <strong>An</strong> — send it");
+    expect(renderInline("  - **x**")).toBe("      ◦  <strong>x</strong>");
+  });
+
+  test("a long text with many ** that never close renders in linear time", () => {
+    // 128 KB: each ** opens and none closes, which a pattern that looks for the closing one from each opener takes minutes over.
+    const unclosed = "**a ".repeat(32768);
+    const started = performance.now();
+
+    const html = renderInline(unclosed);
+
+    expect(performance.now() - started).toBeLessThan(1000);
+    expect(html).toBe(unclosed);
+  });
+
+  test("long texts of other shapes render in linear time too", () => {
+    const shapes = [
+      "**".repeat(65536),
+      "**a**".repeat(26000),
+      "a ** ".repeat(26000),
+      "[1:".repeat(43000),
+      "[11111111".repeat(14000),
+      "- [ ] **a ".repeat(13000),
+      `${" ".repeat(131072)}x`,
+      "# " + "**a ".repeat(32768),
+    ];
+    for (const shape of shapes) {
+      const started = performance.now();
+      renderInline(shape);
+      expect(performance.now() - started, shape.slice(0, 12)).toBeLessThan(1000);
+    }
+  });
+
   test("three newlines or more collapse to two", () => {
     expect(renderInline("a\n\n\n\nb")).toBe("a\n\nb");
   });

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import { t } from "../lib/i18n";
   import { needsLibav } from "../lib/player.svelte";
   import type { PlayerController } from "../lib/player.svelte";
@@ -11,9 +12,12 @@
   /** A system that can't decode the audio of a recording says which package it lacks. Asked once: the system doesn't change. */
   const libav = needsLibav();
 
+  // The effect depends on the element and on nothing else: `attach` reads the player's address, and an effect that followed it would
+  // attach again (and give the element its address again) at each swap, which the player does by itself.
   $effect(() => {
-    if (!element) return;
-    return player.attach(element);
+    const shown = element;
+    if (!shown) return;
+    return untrack(() => player.attach(shown));
   });
 </script>
 

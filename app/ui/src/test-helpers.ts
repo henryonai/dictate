@@ -321,7 +321,7 @@ export function fakeMedia(overrides: Partial<MediaView> = {}): MediaView {
 
 /**
  * A media element, as far as the player's logic looks at one: a position, whether it is paused, an address that resets the position
- * when it is set (as the load of a new address does), the three calls and the events. A test sends the events itself.
+ * and pauses it when it is set (as the load of a new address does), the three calls and the events. A test sends the events itself.
  */
 export class FakeMedia extends EventTarget {
   paused = true;
@@ -340,7 +340,9 @@ export class FakeMedia extends EventTarget {
   set src(address: string) {
     this.attributes.set("src", address);
     this.sources.push(address);
+    // The load of an address starts at 0 and, as the load algorithm says, leaves the element paused.
     this.currentTime = 0;
+    this.paused = true;
   }
 
   getAttribute(name: string): string | null {

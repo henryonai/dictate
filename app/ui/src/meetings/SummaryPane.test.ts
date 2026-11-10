@@ -104,6 +104,45 @@ test("action_tick_calls_set_task_and_strikes_through: a tick is written with the
   expect(done.closest("label")).not.toHaveClass("done");
 });
 
+test("the text of an action item is rendered as the other texts are: bold, and stamps that seek without ticking the item", async () => {
+  const user = userEvent.setup();
+  pane({
+    summary: fakeSummary({ actions: [{ index: 0, owner: "An", text: "Send **the budget** at [01:05]", done: false }] }),
+  });
+  const item = screen.getByRole("checkbox", { name: "Send the budget at [01:05]" });
+
+  expect(within(item.closest("label") as HTMLElement).getByText("the budget").tagName).toBe("STRONG");
+  await user.click(within(item.closest("label") as HTMLElement).getByRole("link", { name: "[01:05]" }));
+
+  expect(onseek).toHaveBeenCalledExactlyOnceWith(65);
+  expect(item).not.toBeChecked();
+  expect(api.meetingSetTask).not.toHaveBeenCalled();
+});
+
+test("an item with a stamp and no player has the stamp as plain text", () => {
+  pane({ summary: fakeSummary({ keyPoints: null, actions: [{ index: 0, owner: null, text: "Look at [01:05]", done: false }] }) }, false);
+  expect(screen.getByText("[01:05]")).toHaveAttribute("data-inert");
+});
+
+test("the questions are pinned below the parts of the summary, which scroll on their own", () => {
+  pane();
+
+  const scrolling = part("Key points").closest(".sections");
+  expect(scrolling).not.toBeNull();
+  for (const name of ["Summary", "Decisions", "Action items", "Open questions", "Chapters"]) {
+    expect(part(name).closest(".sections")).toBe(scrolling);
+  }
+  expect(part("Q&A").closest(".sections")).toBeNull();
+  expect(screen.getByRole("textbox", { name: "Ask about this recording" }).closest(".sections")).toBeNull();
+  expect(part("Q&A").parentElement).toBe(scrolling?.parentElement);
+});
+
+test("without a summary the questions are pinned the same", () => {
+  pane({ summary: null });
+  expect(screen.getByText("No summary yet").closest(".sections")).not.toBeNull();
+  expect(part("Q&A").closest(".sections")).toBeNull();
+});
+
 test("an item shows its owner as a capsule, and an item with no owner has none", () => {
   pane();
   expect(screen.getByText("An")).toHaveClass("owner");

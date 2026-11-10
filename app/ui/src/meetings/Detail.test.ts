@@ -56,6 +56,7 @@ beforeEach(() => {
   vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue();
   vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
   vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => {});
+  Element.prototype.scrollTo = vi.fn() as unknown as typeof Element.prototype.scrollTo;
   Element.prototype.scrollIntoView = scrollIntoView;
 });
 
@@ -309,6 +310,29 @@ test("a recording with no media has no choice to open it in another app", async 
   const { user } = await opened(whole({ media: null }));
   await user.click(button(MORE));
   expect(screen.queryByRole("button", { name: "Open video/audio in another app" })).not.toBeInTheDocument();
+});
+
+test("a recording whose file is gone has no choice to open it, even when its audio.m4a plays", async () => {
+  const { user } = await opened(whole({ mediaMissing: true, media: fakeMedia({ video: false }) }));
+  expect(document.querySelector("audio")).not.toBeNull();
+
+  await user.click(button(MORE));
+
+  expect(screen.queryByRole("button", { name: "Open video/audio in another app" })).not.toBeInTheDocument();
+  expect(button("Open folder")).toBeInTheDocument();
+});
+
+test("a recording whose file is gone can't be transcribed again from scratch: there is nothing to start from", async () => {
+  const gone = await opened(whole({ mediaMissing: true, media: null }));
+  await gone.user.click(button(MORE));
+  expect(button("Transcribe + summarize again from scratch")).toBeDisabled();
+  // The summary can still be made again from the transcript that is kept.
+  expect(button("Summarize again")).toBeEnabled();
+  gone.view.unmount();
+
+  const there = await opened();
+  await there.user.click(button(MORE));
+  expect(button("Transcribe + summarize again from scratch")).toBeEnabled();
 });
 
 test("the choices run their commands: summarize again, from scratch, the folder, the media", async () => {

@@ -25,6 +25,13 @@ function setup(now: MediaView | null = OLD) {
 /** Lets the calls that are waited for finish, with the clock where it is. */
 const settle = () => vi.advanceTimersByTimeAsync(0);
 
+/** A read of the address that the test answers when it chooses. */
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => (resolve = done));
+  return { promise, resolve };
+}
+
 beforeEach(() => {
   vi.useFakeTimers();
 });
@@ -336,6 +343,195 @@ describe("the element fails", () => {
     expect(fetchMedia).toHaveBeenCalledTimes(1);
     expect(element.sources).toEqual([OLD.url]);
     expect(player.failed).toBe(false);
+  });
+});
+
+describe("a play and an error that come together", () => {
+  /**
+   * The element was paused and has an error as it is played, in either order. The reads are held, and the test says what each finds.
+   * Which address the error is of is the one that was played then: it is not a failure when a read has since put another one in.
+   */
+  function together(first: "play" | "error") {
+    const { player } = setup();
+    const reads: ReturnType<typeof deferred<MediaView | null>>[] = [];
+    fetchMedia.mockImplementation(() => {
+      const read = deferred<MediaView | null>();
+      reads.push(read);
+      return read.promise;
+    });
+    element.currentTime = 42;
+    const play = () => {
+      element.paused = false;
+      element.emit("play");
+    };
+    const fail = () => element.emit("error");
+    if (first === "play") {
+      play();
+      fail();
+    } else {
+      fail();
+      play();
+    }
+    return { player, reads };
+  }
+
+  test.each(["play", "error"] as const)(
+    "%s first: a new address that is found is played from, once, and the error of the old one is no failure",
+    async (first) => {
+      const { player, reads } = together(first);
+      // One read of the address at a time.
+      expect(reads).toHaveLength(1);
+
+      reads[0].resolve(NEW);
+      await settle();
+
+      expect(player.failed).toBe(false);
+      expect(player.available).toBe(true);
+      expect(element.sources).toEqual([OLD.url, NEW.url]);
+      // The error is of the address that was just left: there is nothing to read for it.
+      expect(reads).toHaveLength(1);
+      element.emit("loadedmetadata");
+      expect(element.currentTime).toBe(42);
+      expect(element.play).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  test.each(["play", "error"] as const)(
+    "%s first: when the address is still the right one the error is a failure: a file that can't be played",
+    async (first) => {
+      const { player, reads } = together(first);
+
+      reads[0].resolve(OLD);
+      await settle();
+      if (first === "play") {
+        // The read of the play found nothing wrong; the error that came meanwhile is read for now.
+        expect(reads).toHaveLength(2);
+        reads[1].resolve(OLD);
+        await settle();
+      }
+
+      expect(reads).toHaveLength(first === "play" ? 2 : 1);
+      expect(player.failed).toBe(true);
+      expect(element.sources).toEqual([OLD.url]);
+    },
+  );
+
+  test("an error that is read for after a wrong address was swapped in is the failure of that one", async () => {
+    const { player, reads } = together("play");
+    reads[0].resolve(NEW);
+    await settle();
+    element.emit("loadedmetadata");
+
+    // The new address fails as well, and the server says it is the right one.
+    fetchMedia.mockImplementation(async () => NEW);
+    element.emit("error");
+    await settle();
+
+    expect(player.failed).toBe(true);
+  });
+});
+
+describe("a new address that the window brings", () => {
+  test("while an error is being read for, it is not failed by that error: the error was of the address before it", async () => {
+    const { player } = setup();
+    const read = deferred<MediaView | null>();
+    fetchMedia.mockImplementation(() => read.promise);
+    element.emit("error");
+
+    // The window read the detail again meanwhile, and it has the new address.
+    player.bind(ID, NEW);
+    read.resolve(NEW);
+    await settle();
+
+    expect(player.failed).toBe(false);
+    expect(player.available).toBe(true);
+    expect(element.sources).toEqual([OLD.url, NEW.url]);
+  });
+});
+
+describe("a second read while a swap is still loading", () => {
+  test("a second recovery goes to where the first was going, not to 0", async () => {
+    const { player } = setup();
+    element.playAt(42);
+    let n = 0;
+    fetchMedia.mockImplementation(async () => fakeMedia({ url: `http://127.0.0.1:${50000 + ++n}/tok/1` }));
+
+    element.emit("error");
+    await settle();
+    expect(element.src).toBe("http://127.0.0.1:50001/tok/1");
+    // The first new address has not loaded: the element is at 0 and paused. It fails too.
+    element.emit("error");
+    await settle();
+    expect(element.src).toBe("http://127.0.0.1:50002/tok/1");
+
+    element.emit("loadedmetadata");
+    expect(element.currentTime).toBe(42);
+    expect(player.currentTime).toBe(42);
+    expect(element.play).toHaveBeenCalledTimes(1);
+  });
+
+  test("a play of the controls that finds yet another address goes to where the seek was going", async () => {
+    const { player } = setup(NEW);
+    await player.seek(65);
+    expect(element.src).toBe(NEW.url);
+
+    // The controls play while that address is loading, and the server has moved again.
+    const NEWER = fakeMedia({ url: "http://127.0.0.1:63000/tok-c/1" });
+    fetchMedia.mockResolvedValue(NEWER);
+    element.emit("pause");
+    element.paused = false;
+    element.emit("play");
+    await settle();
+
+    expect(element.src).toBe(NEWER.url);
+    element.emit("loadedmetadata");
+    expect(element.currentTime).toBe(65);
+    expect(element.play).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("a different address gives the player another chance", () => {
+  test("after a failure a new address of the same recording clears it, and the player is back", async () => {
+    const { player } = setup(OLD);
+    element.emit("error");
+    await settle();
+    expect(player.failed).toBe(true);
+    expect(player.available).toBe(false);
+
+    player.bind(ID, NEW);
+
+    expect(player.failed).toBe(false);
+    expect(player.available).toBe(true);
+    expect(element.src).toBe(NEW.url);
+  });
+
+  test("the count of the addresses that failed starts again with it", async () => {
+    const { player } = setup();
+    let n = 0;
+    fetchMedia.mockImplementation(async () => fakeMedia({ url: `http://127.0.0.1:${50000 + ++n}/tok/1` }));
+    for (let i = 0; i < 10 && !player.failed; i += 1) {
+      element.emit("error");
+      await settle();
+    }
+    expect(player.failed).toBe(true);
+
+    player.bind(ID, fakeMedia({ url: "http://127.0.0.1:61000/tok/1" }));
+    expect(player.failed).toBe(false);
+    // A new run of addresses that fail has its whole count again: the next one is mended, not given up.
+    element.emit("error");
+    await settle();
+    expect(player.failed).toBe(false);
+    expect(element.src).toBe(`http://127.0.0.1:${50000 + n}/tok/1`);
+  });
+
+  test("the same address again clears nothing", async () => {
+    const { player } = setup(OLD);
+    element.emit("error");
+    await settle();
+
+    player.bind(ID, { ...OLD });
+
+    expect(player.failed).toBe(true);
   });
 });
 

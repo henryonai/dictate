@@ -54,7 +54,10 @@ export class PlayerController {
   private pending: { at: number; resume: boolean } | null = null;
   /** The element has been paused since the last time the address was looked at (it starts so: the first play counts). */
   private wasPaused = true;
-  private recovering = false;
+  /** The address is being read for a play or an error: one read at a time, so that two can't each swap in the same address. */
+  private reading = false;
+  /** An error or a wait that came while a read was on, and the address it was of: it is dealt with when that read is over. */
+  private queued: { fatal: boolean; url: string } | null = null;
   private recoveries = 0;
   private released = false;
 
@@ -82,10 +85,10 @@ export class PlayerController {
       this.url = "";
       return;
     }
-    // The same recording at another address: from where it was, and playing if it was.
-    const element = this.element;
-    const live = element !== null && !this.pending;
-    this.swap(url, live ? element.currentTime : this.currentTime, live && !element.paused);
+    // The same recording at another address: it has its chances again, and goes on from where it was, playing if it was.
+    this.recoveries = 0;
+    const { at, resume } = this.where();
+    this.swap(url, at, resume);
   }
 
   /** The element to drive. Gives back the function that lets it go. */
@@ -177,6 +180,7 @@ export class PlayerController {
     this.video = false;
     this.url = "";
     this.wasPaused = true;
+    this.queued = null;
     this.recoveries = 0;
     this.released = false;
   }
@@ -248,6 +252,7 @@ export class PlayerController {
   /** Plays the address from the start, and goes to `at` once it has loaded. */
   private swap(url: string, at: number, resume: boolean): void {
     this.url = url;
+    this.failed = false;
     this.released = false;
     this.pending = { at, resume };
     this.clearBackstop();
@@ -266,42 +271,75 @@ export class PlayerController {
     }
   }
 
-  /** A play after a pause: the address is looked at, and a new one is swapped in at the same position. */
-  private async verify(): Promise<void> {
+  /**
+   * Where a new address is to go back to, and whether it plays on: where the element is. An address that is still loading has the
+   * element at 0, so where that one was going is what counts.
+   */
+  private where(): { at: number; resume: boolean } {
+    if (this.pending) return this.pending;
     const element = this.element;
-    const fresh = await this.fresher();
-    if (!fresh || this.element !== element || !element || this.released) return;
-    this.swap(fresh.url, element.currentTime, !element.paused);
+    return element ? { at: element.currentTime, resume: !element.paused } : { at: this.currentTime, resume: false };
   }
 
   /**
-   * The element failed (`fatal`: it said so) or waited too long. A new address is played from where it was. With the address that is
-   * still the right one an error is a file that can't be played; a wait is nothing to do anything about.
+   * Reads the address the server gives now, and hands it to `react`, unless the player has moved on to another element or recording
+   * meanwhile. It is the one read at a time. What came while it was on (an error, a wait) is dealt with when it is over.
    */
-  private async recover(fatal: boolean): Promise<void> {
+  private async read(react: (media: MediaView | null) => void): Promise<void> {
     const element = this.element;
     const id = this.id;
-    if (!element || id === null || this.recovering || this.failed || this.released) return;
-    this.recovering = true;
-    let media: MediaView | null = null;
+    if (!element || id === null) return;
+    this.reading = true;
+    let media: MediaView | null;
     try {
       media = await this.fetchMedia(id);
     } catch {
       media = null;
-    } finally {
-      this.recovering = false;
     }
-    if (this.element !== element || this.id !== id || this.released) return;
-    if (media && media.url !== this.url) {
-      if (this.recoveries >= MAX_RECOVERIES) {
+    this.reading = false;
+    if (this.element === element && this.id === id && !this.released) react(media);
+    const queued = this.queued;
+    this.queued = null;
+    if (queued) void this.recover(queued.fatal, queued.url);
+  }
+
+  /** A play after a pause: the address is looked at, and a new one is swapped in at the same position. A read that is on does it. */
+  private async verify(): Promise<void> {
+    if (this.reading || this.released) return;
+    await this.read((media) => {
+      if (!media || media.url === this.url) return;
+      const { at, resume } = this.where();
+      this.swap(media.url, at, resume);
+    });
+  }
+
+  /**
+   * The element failed (`fatal`: it said so) or waited too long, with the address `failedUrl` (the one that is played now, unless it
+   * was an older error that came late). A new address is played from where it was. With the address that is still the right one an
+   * error is a file that can't be played; a wait is nothing to do anything about. An error of an address that has since been left
+   * is nothing at all: its failure is not the new address's.
+   */
+  private async recover(fatal: boolean, failedUrl: string = this.url): Promise<void> {
+    if (!this.element || this.id === null || this.failed || this.released || this.url !== failedUrl) return;
+    if (this.reading) {
+      this.queued = { fatal: fatal || (this.queued?.fatal ?? false), url: failedUrl };
+      return;
+    }
+    await this.read((media) => {
+      // A read that was on for a play may have swapped another address in: this error was of the one before it.
+      if (this.url !== failedUrl) return;
+      if (media && media.url !== failedUrl) {
+        if (this.recoveries >= MAX_RECOVERIES) {
+          this.failed = true;
+          return;
+        }
+        this.recoveries += 1;
+        const { at, resume } = this.where();
+        this.swap(media.url, at, resume);
+      } else if (fatal) {
         this.failed = true;
-        return;
       }
-      this.recoveries += 1;
-      this.swap(media.url, element.currentTime, !element.paused);
-    } else if (fatal) {
-      this.failed = true;
-    }
+    });
   }
 }
 

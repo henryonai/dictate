@@ -19,20 +19,49 @@ function seconds(stamp: string): number {
   return stamp.split(":").reduce((total, part) => total * 60 + Number(part), 0);
 }
 
-/** One line (already escaped) with its leading mark of a heading or a list made visible. */
+/** Whether the character is white space (or there is none): a `**` that touches it can't open or close a pair. */
+function blank(char: string): boolean {
+  return char === "" || /\s/.test(char);
+}
+
+/**
+ * Each `**` that opens (a non-space follows it) and the first `**` after it that closes (a non-space comes before it, and at least one
+ * character lies between them) make a `<strong>`. One pass over one line: a closing `**` is looked for once, and when there is none no
+ * later opener has one either, so a line of unpaired `**` is not searched again for each of them.
+ */
+function bold(line: string): string {
+  let out = "";
+  let done = 0;
+  let open = line.indexOf("**");
+  while (open !== -1) {
+    if (blank(line.charAt(open + 2))) {
+      open = line.indexOf("**", open + 2);
+      continue;
+    }
+    let close = line.indexOf("**", open + 3);
+    while (close !== -1 && blank(line.charAt(close - 1))) close = line.indexOf("**", close + 1);
+    if (close === -1) break;
+    out += `${line.slice(done, open)}<strong>${line.slice(open + 2, close)}</strong>`;
+    done = close + 2;
+    open = line.indexOf("**", done);
+  }
+  return out + line.slice(done);
+}
+
+/** One line (already escaped) with its leading mark of a heading or a list made visible, and its bold text. */
 function mark(line: string): string {
   const heading = /^(#{1,3}) +(.*)$/.exec(line);
   if (heading) {
-    const bold = `<strong>${heading[2]}</strong>`;
+    const title = `<strong>${bold(heading[2])}</strong>`;
     // `#` is the title: a bold line. `##` and `###` begin a part: after a line break.
-    return heading[1] === "#" ? bold : `\n${bold}`;
+    return heading[1] === "#" ? title : `\n${title}`;
   }
-  if (/^- \[ \] /.test(line)) return `☐ ${line.slice(6)}`;
-  if (/^- \[[xX]\] /.test(line)) return `☑ ${line.slice(6)}`;
-  if (line.startsWith("- ")) return `•  ${line.slice(2)}`;
+  if (/^- \[ \] /.test(line)) return `☐ ${bold(line.slice(6))}`;
+  if (/^- \[[xX]\] /.test(line)) return `☑ ${bold(line.slice(6))}`;
+  if (line.startsWith("- ")) return `•  ${bold(line.slice(2))}`;
   const nested = /^(?: {2,}|\t+)- (.*)$/.exec(line);
-  if (nested) return `      ◦  ${nested[1]}`;
-  return line;
+  if (nested) return `      ◦  ${bold(nested[1])}`;
+  return bold(line);
 }
 
 /**
@@ -45,7 +74,6 @@ export function renderInline(markdown: string): string {
     .split("\n")
     .map(mark)
     .join("\n")
-    .replace(/\*\*(?=\S)(.+?)(?<=\S)\*\*/g, "<strong>$1</strong>")
     .replace(STAMP, (stamp, time: string) => `<a href="#" data-seek="${seconds(time)}">${stamp}</a>`)
     .replace(/\n{3,}/g, "\n\n")
     .replace(/^\n+/, "");

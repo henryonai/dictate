@@ -47,11 +47,15 @@
 
   let list: HTMLElement | undefined = $state();
 
-  // The current line goes to the middle of the list when it changes, not on each reading of the position that leaves it where it is.
+  // The current line goes to the middle of the list when it changes, not on each reading of the position that leaves it where it is. The
+  // list is scrolled itself: `scrollIntoView` would scroll every box around the line as well.
   $effect(() => {
-    if (current < 0) return;
+    if (current < 0 || !list) return;
+    const line = list.querySelector<HTMLElement>(`[data-line="${current}"]`);
+    if (!line) return;
     const quiet = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-    list?.querySelector<HTMLElement>(`[data-line="${current}"]`)?.scrollIntoView({ block: "center", behavior: quiet ? "auto" : "smooth" });
+    const top = Math.max(0, line.offsetTop - (list.clientHeight - line.offsetHeight) / 2);
+    list.scrollTo({ top, behavior: quiet ? "auto" : "smooth" });
   });
 
   const copied = new Flash();
@@ -129,6 +133,7 @@
     font-size: 12px;
   }
   .list {
+    position: relative;
     flex: 1;
     min-height: 0;
     padding: 6px 4px;

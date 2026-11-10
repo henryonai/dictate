@@ -22,18 +22,20 @@
   const busy = $derived(row.live !== null);
   const hasTranscript = $derived((detail?.transcript.length ?? 0) > 0);
   const hasSpeakers = $derived((detail?.speakers.length ?? 0) > 0);
+  /** The original file is gone (`audio.m4a` may still play): there is nothing to open in another app, nor to transcribe again. */
+  const missing = $derived(detail?.mediaMissing === true);
 </script>
 
 <Menu text="⋯" label={t("meetings.more")} glyph>
   {#snippet children(pick)}
     {#if !busy}
       <button type="button" disabled={!hasTranscript} onclick={() => pick(() => store.resummarize(row.id))}>{t("meetings.menu.resummarize")}</button>
-      <button type="button" onclick={() => pick(() => store.rerun(row.id))}>{t("meetings.menu.rerun")}</button>
+      <button type="button" disabled={missing} onclick={() => pick(() => store.rerun(row.id))}>{t("meetings.menu.rerun")}</button>
       <button type="button" disabled={!hasSpeakers} onclick={() => pick(() => store.openRename())}>{t("meetings.menu.rename")}</button>
       <hr />
     {/if}
     <button type="button" onclick={() => pick(() => store.openFolder(row.id))}>{t("meetings.menu.folder")}</button>
-    {#if detail?.media}
+    {#if detail?.media && !missing}
       <button type="button" onclick={() => pick(() => store.openMedia(row.id))}>{t("meetings.menu.media")}</button>
     {/if}
     <button type="button" onclick={() => pick(() => store.showLog(row.id))}>{t("meetings.menu.log")}</button>
