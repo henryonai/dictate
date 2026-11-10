@@ -494,6 +494,20 @@ test("a link pasted while the log is open is not imported", async () => {
   expect(api.meetingsImportLink).not.toHaveBeenCalled();
 });
 
+test("a link pasted while the speaker sheet is open is not imported", async () => {
+  const user = userEvent.setup();
+  const speakers = [{ name: "Speaker 1", lines: 1, sample: { start: 0, stamp: "00:00", speaker: "Speaker 1", text: "Let's start." } }];
+  await open();
+  vi.mocked(api.meetingDetail).mockImplementation(async (id) => fakeDetail({ row: rows.find((row) => row.id === id) ?? fakeRow({ id }), speakers }));
+  await user.click(await screen.findByRole("button", { name: /Weekly planning/ }));
+  await user.click(await screen.findByRole("button", { name: "Rename speakers" }));
+  await screen.findByRole("dialog", { name: "Rename speakers" });
+
+  await paste("https://youtu.be/abc", screen.getByRole("dialog"));
+
+  expect(api.meetingsImportLink).not.toHaveBeenCalled();
+});
+
 test("a link pasted while the link dialog is open is not imported behind its back", async () => {
   const user = userEvent.setup();
   await open();

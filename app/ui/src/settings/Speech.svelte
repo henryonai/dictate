@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import type { Engine } from "../lib/api";
+  import { api, errorText } from "../lib/api";
+  import type { Engine, ToolsView } from "../lib/api";
   import { t } from "../lib/i18n";
   import { ModelList } from "../lib/models.svelte";
   import type { SettingsStore } from "../lib/settings-store.svelte";
@@ -36,6 +37,41 @@
   function percent(done: number, total: number): number {
     return Math.min(100, Math.round((done / total) * 100));
   }
+
+  // The tools that links need (yt-dlp downloads, ffmpeg reads what Dictate can't open itself). They are installed outside the app,
+  // so they are looked for again when the window gets the focus back.
+  let tools = $state.raw<ToolsView | null>(null);
+  let toolsError = $state("");
+
+  /** What `media_tools` says of each tool, in the order they are shown. */
+  const toolRows = $derived(
+    tools === null
+      ? []
+      : [
+          { name: "ffmpeg", version: tools.ffmpeg, command: tools.ffmpegCommand },
+          { name: "yt-dlp", version: tools.ytDlp, command: tools.ytDlpCommand },
+        ],
+  );
+
+  async function lookForTools() {
+    try {
+      tools = await api.mediaTools();
+      toolsError = "";
+    } catch (e) {
+      toolsError = errorText(e);
+    }
+  }
+
+  /** `ffmpeg ✓ 7.1`; a tool that is there and does not say its version has none to show. */
+  function found(name: string, version: string): string {
+    return version === "unknown" ? t("speech.tools.found_unknown", { name }) : t("speech.tools.found", { name, version });
+  }
+
+  onMount(() => {
+    void lookForTools();
+    window.addEventListener("focus", lookForTools);
+    return () => window.removeEventListener("focus", lookForTools);
+  });
 </script>
 
 <section class="group" aria-labelledby="speech-dictation">
@@ -76,9 +112,28 @@
   />
   <Toggle
     label={t("speech.diarize")}
+    hint={t("speech.diarize_hint")}
     checked={view.diarize}
     onchange={(checked) => store.update({ diarize: checked })}
   />
+  <div class="field" role="group" aria-labelledby="speech-tools">
+    <span id="speech-tools">{t("speech.tools")}</span>
+    <ul class="tools field-control">
+      {#each toolRows as tool (tool.name)}
+        <li>
+          {#if tool.version === null}
+            <span class="missing">{t("speech.tools.missing", { name: tool.name })}</span>
+            <span class="hint">{t("speech.tools.run")} <code>{tool.command}</code></span>
+          {:else}
+            <span>{found(tool.name, tool.version)}</span>
+          {/if}
+        </li>
+      {/each}
+    </ul>
+  </div>
+  {#if toolsError}
+    <p class="error">{toolsError}</p>
+  {/if}
 </section>
 
 <section class="group" aria-labelledby="speech-models">
@@ -151,6 +206,24 @@
 </section>
 
 <style>
+  .tools {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    text-align: right;
+  }
+  .tools .hint {
+    display: block;
+    margin: 0;
+  }
+  .tools code {
+    font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    user-select: text;
+    overflow-wrap: anywhere;
+  }
+  .missing {
+    color: var(--danger);
+  }
   .models {
     margin: 0;
     padding: 0;

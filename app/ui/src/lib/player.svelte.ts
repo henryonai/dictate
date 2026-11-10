@@ -135,6 +135,12 @@ export class PlayerController {
     this.play(element);
   }
 
+  /** Pauses it, and a new address that is still loading is not to play on when it has loaded. Heard only when there is a player. */
+  pause(): void {
+    if (this.pending) this.pending = { ...this.pending, resume: false };
+    if (this.element && !this.released) this.element.pause();
+  }
+
   /**
    * A new address that has not loaded is at 0, and would forget a position that it is given now: it is told to go there (and play)
    * when it has loaded, in place of where it was to go. True when it was so.

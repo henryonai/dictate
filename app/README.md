@@ -1,10 +1,10 @@
 # Dictate app
 
-The desktop app, for macOS, Windows and Linux: a tray icon and a Settings window. It is built with [Tauri 2](https://tauri.app): a Rust shell in `src-tauri/` and a Svelte 5 + TypeScript interface in `ui/`.
+The desktop app, for macOS, Windows and Linux: a tray icon, a Settings window and a Meetings window. It is built with [Tauri 2](https://tauri.app): a Rust shell in `src-tauri/` and a Svelte 5 + TypeScript interface in `ui/`.
 
 Dictation works: press the global shortcut (Ctrl+Alt+Space by default, ⌃⌥Space on the Mac; it can be changed in Settings), talk, and press it again (or hold it, in hold-to-talk mode): the text is written into the text field you were in, and a small chip by it lets you write it again in another style. With no text field to write into, or with the setting that writes into fields off, a card opens to edit and copy the text. Local Whisper (a model downloaded in Settings) turns the speech into text and shows it live while you talk; the transcription API and the AI edit are optional. Settings (language, AI provider, transcription service), API keys in the system's key store, the Whisper model downloads and the connection checks work. `dictate --toggle` (also when the app isn't running yet) does what pressing the shortcut once does, and so does the first item of the tray menu. The audio and the text of each dictation are kept in `Dictate/Dictations` in the system's local data folder (the tray menu opens it) when "Save recordings + transcripts" is on; a dictation that isn't saved leaves nothing behind. Audio goes to the transcription API only when that is the chosen engine. On a Wayland desktop the shortcut comes from the desktop's GlobalShortcuts portal (KDE Plasma, GNOME 48 and later, Hyprland); where there is none (Sway and other wlroots desktops), bind a shortcut in the desktop's own settings to run `dictate --toggle`.
 
-So far the app has only been run on macOS. Windows and Linux are compiled and tested by CI, but nobody has run the app there yet.
+The Meetings window (tray menu → **Meetings…**) imports audio and video files and links, and turns each into a transcript with the speakers told apart and, when an AI is set up, a summary: see [Meetings](#meetings). So far the app has only been run on macOS. Windows and Linux are compiled and tested by CI, but nobody has run the app there yet.
 
 ```
 app/
@@ -78,6 +78,43 @@ What the system lets dictation do differs, and what to do about it:
 **Windows.** Dictation pastes with Ctrl+V into the app that had the focus. An app that runs as administrator has more rights than Dictate, and Windows blocks input from a normal app into it: the text is copied and the card says so, then press Ctrl+V yourself. If the microphone only records silence, check Settings → Privacy & security → Microphone and let desktop apps use it.
 
 **Linux.** On X11 everything works. On Wayland no app may press keys in another one, so the paste needs a helper: install `wtype` (wlroots desktops such as Sway, and Hyprland) or `ydotool` (with its `ydotoold` daemon running); without either, the text is copied and the card says to press Ctrl+V. The shortcut comes from the desktop's GlobalShortcuts portal (KDE Plasma, GNOME 48 and later, Hyprland). When the desktop has none (Sway and other wlroots desktops), bind a key in the desktop's own settings to `dictate --toggle`, which does what the shortcut does.
+
+## Meetings
+
+The tray menu's **Meetings…** opens the library of recordings. Add one and Dictate transcribes it (local Whisper by default), separates the speakers (Speaker 1, 2…), and, when an AI is set up in Settings, writes a summary with key points, decisions, action items that you can tick and chapters that jump to that moment of the recording. You can ask a question about a recording, rename the speakers (in the transcript and the summary, without AI, or with a fresh summary), see the log of a job, export the Markdown and move a recording to the Trash. A job can be cancelled and tried again; a recording that the app closed on shows "Not finished processing" the next time.
+
+**Importing files and links.** Use the **Add file or link** menu (a file picker, or a link), drag files onto the window, or paste a link with ⌘V / Ctrl+V anywhere in the window. Audio and video of the usual formats work (mp4, mov, mkv, webm, m4a, mp3, wav, flac, ogg and more). **The files you add are not copied or moved**: the recording keeps the path of the original, so keep the file where it is. If it goes away the transcript and the summary stay, and the window says that the original file was moved or deleted.
+
+**yt-dlp and ffmpeg.** Links are downloaded with yt-dlp, and ffmpeg reads the formats that Dictate can't decode itself. Both are looked for on your `PATH` and in the usual package-manager folders (Homebrew, `/usr/local/bin`, `~/.local/bin` where pipx puts yt-dlp). Settings → Speech → **Tools for links** shows which were found, with their versions, and the command for the ones that are missing, which is the command of the system you run on:
+
+| | yt-dlp (also installs ffmpeg) | ffmpeg only |
+|---|---|---|
+| macOS | `brew install yt-dlp ffmpeg` | `brew install ffmpeg` |
+| Windows | `winget install yt-dlp.yt-dlp Gyan.FFmpeg` | `winget install Gyan.FFmpeg` |
+| Linux | `pipx install yt-dlp && sudo apt install ffmpeg` | `sudo apt install ffmpeg` |
+
+The error card of a recording that needs a missing tool has the same command with a **Copy install command** button.
+
+**Playback on Linux.** The window plays recordings with the system's web view, which has no AAC decoder without GStreamer's libav plugin: install `gstreamer1.0-libav` (and `gstreamer1.0-plugins-good`; the `.deb` that `pnpm tauri build` makes lists both as recommended packages, so `apt` installs them with it):
+
+```sh
+sudo apt install gstreamer1.0-libav gstreamer1.0-plugins-good
+```
+
+Without it the window says "Install gstreamer1.0-libav to play recordings." The transcript and the summary work all the same.
+
+**The library folder.** `Dictate Meetings` in the Documents folder of the system (Settings → General → **Open meetings folder**, and the same item of the tray menu, open it). Each recording is a folder named by its start time (`yyyy-MM-dd HH-mm-ss`, with ` (2)` if two share a second) that holds `meta.json`, `transcript.txt` (`[mm:ss] Speaker: text` paragraphs), `summary.md`, `tasks.json` (the action items that are ticked), `log.txt` and `audio.m4a`. This is the library that `dictate-mcp` serves to other apps. `DICTATE_MEETINGS_DIR` replaces the folder (a leading `~` is your home folder), for the app and for `dictate-mcp`: set it before starting either, for instance to try the app out without touching your own recordings:
+
+```sh
+DICTATE_MEETINGS_DIR=~/dictate-try pnpm tauri dev
+```
+
+**Audio and privacy.** Audio is sent to a service only when **File engine** (Settings → Speech) is **Transcription API** and one is set up. With local Whisper, the default, nothing of the audio leaves the computer. The AI that writes summaries and answers questions is sent text only (the transcript), never audio.
+
+**Speaker models and credits.** The first time speakers are separated, the app downloads two models (about 46 MB, once) into `Dictate/diarization-models` in the system's local data folder, and checks them by SHA-256. They run through [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (Apache-2.0), which the app links:
+
+- **pyannote segmentation 3.0**, MIT license, © CNRS ([model](https://huggingface.co/pyannote/segmentation-3.0)). It finds who talks when.
+- **NVIDIA NeMo TitaNet-small**, [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/), © NVIDIA ([the converted model](https://github.com/k2-fsa/sherpa-onnx/releases/tag/speaker-recongition-models)). It tells voices apart.
 
 ## Build it
 

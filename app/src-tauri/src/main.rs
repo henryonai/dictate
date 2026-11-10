@@ -570,6 +570,21 @@ mod tests {
         assert_eq!(labels, ["settings"]);
     }
 
+    #[test]
+    fn the_deb_recommends_the_gstreamer_packages_that_play_the_recordings() {
+        // WebKitGTK plays the audio of a recording (AAC in MP4) only with GStreamer's good plugins and libav. They are
+        // recommended, not required: the app runs without them and says which package to install.
+        let config: Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        assert_eq!(
+            config["bundle"]["linux"]["deb"]["recommends"],
+            json!(["gstreamer1.0-plugins-good", "gstreamer1.0-libav"])
+        );
+        assert!(
+            config["bundle"]["linux"]["deb"]["depends"].is_null(),
+            "a package that is only recommended is not a dependency"
+        );
+    }
+
     /// The names between quotes in the first list of strings after `marker`.
     fn quoted_after(source: &str, marker: &str, end: char) -> BTreeSet<String> {
         let from = source.find(marker).expect(marker) + marker.len();

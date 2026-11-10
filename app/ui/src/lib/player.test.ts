@@ -162,6 +162,47 @@ describe("seek", () => {
   });
 });
 
+describe("pause", () => {
+  test("pause stops what a seek started, and the player says it is not playing", async () => {
+    const { player } = setup();
+    await player.seek(65);
+    element.playAt(65);
+    vi.advanceTimersByTime(TICK_MS);
+    expect(player.playing).toBe(true);
+
+    player.pause();
+
+    expect(element.pause).toHaveBeenCalledTimes(1);
+    expect(player.playing).toBe(false);
+    expect(element.currentTime).toBe(65);
+  });
+
+  test("a pause while a new address is loading keeps it from playing when it has loaded", async () => {
+    const { player } = setup(NEW);
+    await player.seek(65);
+    expect(element.src).toBe(NEW.url);
+
+    player.pause();
+    element.emit("loadedmetadata");
+
+    // It goes to the second the seek asked for, and stays there.
+    expect(element.currentTime).toBe(65);
+    expect(element.play).not.toHaveBeenCalled();
+  });
+
+  test("a pause with no element, or after the player let go of the file, does nothing", () => {
+    const bare = new PlayerController(async () => OLD);
+    bare.bind(ID, OLD);
+    expect(() => bare.pause()).not.toThrow();
+
+    const { player } = setup();
+    player.release();
+    element.pause.mockClear();
+    player.pause();
+    expect(element.pause).not.toHaveBeenCalled();
+  });
+});
+
 describe("play with the controls after a pause", () => {
   test("a new port is swapped in, at the same position, and it plays on", async () => {
     setup(NEW);

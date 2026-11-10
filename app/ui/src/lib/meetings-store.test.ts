@@ -603,6 +603,19 @@ describe("what a person asks the window to do", () => {
     expect(store.modalOpen).toBe(false);
   });
 
+  test("a dialog is open while the speaker sheet is, so that a paste is not taken for the library", async () => {
+    await started();
+
+    store.openRename("Speaker 2");
+    expect(store.modalOpen).toBe(true);
+    store.closeRename();
+    expect(store.modalOpen).toBe(false);
+
+    // The sheet as a whole (no speaker named) is a dialog too.
+    store.openRename();
+    expect(store.modalOpen).toBe(true);
+  });
+
   test("the list can be hidden and shown", async () => {
     await started();
     expect(store.sidebarOpen).toBe(true);
@@ -787,6 +800,31 @@ describe("what the detail's menus do", () => {
     store.openRename();
     store.closeRename();
     expect(store.renameFor).toBeNull();
+  });
+
+  test("the speakers get their new names with the choice to summarize again, and null says that it was done", async () => {
+    await started();
+
+    const failure = await store.renameSpeakers(ID, { "Speaker 1": "An" }, true);
+
+    expect(failure).toBeNull();
+    expect(api.meetingRenameSpeakers).toHaveBeenCalledWith(ID, { "Speaker 1": "An" }, true);
+    expect(store.notice).toBe("");
+  });
+
+  test("a rename that was refused is given back as the view that says why, and is not a notice: the sheet shows it", async () => {
+    await started();
+    const busy = fakeError({ key: "meetings.error.busy", detail: null });
+    vi.mocked(api.meetingRenameSpeakers).mockRejectedValueOnce(busy);
+
+    expect(await store.renameSpeakers(ID, { "Speaker 1": "An" }, false)).toEqual(busy);
+    expect(store.notice).toBe("");
+
+    // Anything else that a failed call is made of is an error of no kind in particular.
+    vi.mocked(api.meetingRenameSpeakers).mockRejectedValueOnce("The IPC is gone.");
+    expect(await store.renameSpeakers(ID, { "Speaker 1": "An" }, false)).toEqual(
+      fakeError({ detail: "The IPC is gone." }),
+    );
   });
 });
 

@@ -103,7 +103,12 @@ export function stubApi() {
     { id: "custom", models: [], key_url: null },
   ]);
   vi.spyOn(api, "openMeetingsFolder").mockResolvedValue();
-  vi.spyOn(api, "mediaTools").mockResolvedValue({ ffmpeg: null, ytDlp: null });
+  vi.spyOn(api, "mediaTools").mockResolvedValue({
+    ffmpeg: null,
+    ytDlp: null,
+    ffmpegCommand: "brew install ffmpeg",
+    ytDlpCommand: "brew install yt-dlp ffmpeg",
+  });
   // Not a Mac: no permissions, so no section.
   vi.spyOn(api, "permissionsStatus").mockResolvedValue({ microphone: "not_needed", accessibility: "not_needed" });
   vi.spyOn(api, "requestPermission").mockResolvedValue();

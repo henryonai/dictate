@@ -111,10 +111,15 @@ export interface DictationLanguages {
   others: string[];
 }
 
-/** Which tools of the system are installed, with the version each says it is; `null` for one that is not. */
+/**
+ * Which tools of the system are installed, with the version each says it is (`null` for one that is not; "unknown" for one that is
+ * there and says nothing sensible), and the command that installs each on this system.
+ */
 export interface ToolsView {
   ffmpeg: string | null;
   ytDlp: string | null;
+  ffmpegCommand: string;
+  ytDlpCommand: string;
 }
 
 export interface TranscribePresetView {

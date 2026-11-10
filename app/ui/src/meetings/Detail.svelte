@@ -11,6 +11,7 @@
   import ExportMenu from "./ExportMenu.svelte";
   import Player from "./Player.svelte";
   import Progress from "./Progress.svelte";
+  import SpeakerSheet from "./SpeakerSheet.svelte";
   import SummaryPane from "./SummaryPane.svelte";
   import Transcript from "./Transcript.svelte";
 
@@ -45,6 +46,15 @@
 
   /** Something to show beside each other: a transcript, a summary or a player. */
   const hasBody = $derived(detail !== null && (detail.transcript.length > 0 || detail.summary !== null || detail.media !== null));
+
+  /** The speakers can be renamed: there are some, and nothing is at work on the recording. */
+  const renameable = $derived(detail !== null && detail.speakers.length > 0 && !row?.live);
+
+  // The sheet that renames them is open while the store says so. When the recording stops being one that it can be of (a job started
+  // on it, or its transcript was made again with no speakers) it is let go of: a dialog with nothing in it would hold the window.
+  $effect(() => {
+    if (store.renameFor !== null && detail && !renameable) store.closeRename();
+  });
 
   const copied = new Flash();
   $effect(() => () => copied.clear());
@@ -101,6 +111,9 @@
           </div>
         </div>
       {/if}
+    {/if}
+    {#if store.renameFor !== null && detail && renameable}
+      <SpeakerSheet {store} {detail} {player} />
     {/if}
   </article>
 {:else}

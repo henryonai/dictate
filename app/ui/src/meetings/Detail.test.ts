@@ -403,7 +403,7 @@ test("View log opens the log, and closing it gives the focus back to the button 
 
 // ---- Speakers
 
-test("the name of a speaker, the button of the transcript and the choice of the menu ask to rename; Task 13's sheet answers", async () => {
+test("the name of a speaker, the button of the transcript and the choice of the menu ask to rename, and the sheet answers", async () => {
   const { user } = await opened();
   const line = screen.getByText("First, the budget.").closest("[data-line]") as HTMLElement;
 
@@ -418,6 +418,82 @@ test("the name of a speaker, the button of the transcript and the choice of the 
   await user.click(button(MORE));
   await user.click(button("Rename speakers…"));
   expect(store.renameFor).toEqual({ speaker: null });
+});
+
+/** The two speakers of the transcript of `fakeDetail`, as the Rust side lists them. */
+const TWO_SPEAKERS = [
+  { name: "Speaker 1", lines: 1, sample: { start: 0, stamp: "00:00", speaker: "Speaker 1", text: "Let's start." } },
+  { name: "Speaker 2", lines: 1, sample: { start: 65, stamp: "01:05", speaker: "Speaker 2", text: "First, the budget." } },
+];
+
+test("the sheet opens on the speaker whose name was clicked, and Esc closes it and gives the focus back to that name", async () => {
+  const { user } = await opened(whole({ speakers: TWO_SPEAKERS }));
+  const line = screen.getByText("First, the budget.").closest("[data-line]") as HTMLElement;
+  const name = within(line).getByRole("button", { name: "Speaker 2" });
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+  await user.click(name);
+
+  const sheet = await screen.findByRole("dialog", { name: "Rename speakers" });
+  expect(within(sheet).getByRole("textbox", { name: "New name for Speaker 2" })).toHaveFocus();
+  expect(within(sheet).getAllByRole("listitem")).toHaveLength(2);
+
+  await user.keyboard("{Escape}");
+
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(store.renameFor).toBeNull();
+  expect(name).toHaveFocus();
+});
+
+test("giving the names changes the recording: the sheet closes, and the transcript read again has them", async () => {
+  const { user } = await opened(whole({ speakers: TWO_SPEAKERS }));
+  await user.click(button("Rename speakers"));
+  const sheet = await screen.findByRole("dialog", { name: "Rename speakers" });
+  expect(within(sheet).getByRole("textbox", { name: "New name for Speaker 1" })).toHaveFocus();
+
+  await user.type(within(sheet).getByRole("textbox", { name: "New name for Speaker 1" }), "An");
+  await user.click(within(sheet).getByRole("button", { name: "Rename" }));
+
+  await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  expect(api.meetingRenameSpeakers).toHaveBeenCalledExactlyOnceWith(ID, { "Speaker 1": "An" }, false);
+  // The Rust side says that the library changed: the detail is read again, with what it wrote.
+  vi.mocked(api.meetingDetail).mockResolvedValue(
+    whole({
+      speakers: [{ ...TWO_SPEAKERS[0], name: "An" }, TWO_SPEAKERS[1]],
+      transcript: [
+        { start: 0, stamp: "00:00", speaker: "An", text: "Let's start." },
+        { start: 65, stamp: "01:05", speaker: "Speaker 2", text: "First, the budget." },
+      ],
+    }),
+  );
+  events.emitChanged();
+  expect(await screen.findByRole("button", { name: "An" })).toBeInTheDocument();
+});
+
+test("Listen in the sheet seeks the player of the window, and closing the sheet stops the sample", async () => {
+  const { user } = await opened(whole({ speakers: TWO_SPEAKERS }));
+  await user.click(button("Rename speakers"));
+  const sheet = await screen.findByRole("dialog", { name: "Rename speakers" });
+
+  await user.click(within(sheet).getByRole("button", { name: "Listen to Speaker 2 from 01:05" }));
+
+  await vi.waitFor(() => expect(video().currentTime).toBe(65));
+  expect(HTMLMediaElement.prototype.play).toHaveBeenCalled();
+  vi.mocked(HTMLMediaElement.prototype.pause).mockClear();
+  await user.click(within(sheet).getByRole("button", { name: "Cancel" }));
+  expect(HTMLMediaElement.prototype.pause).toHaveBeenCalledTimes(1);
+});
+
+test("a sheet is let go of when its recording starts to work, so that no dialog is left open with nothing in it", async () => {
+  await opened(whole({ speakers: TWO_SPEAKERS }));
+  store.openRename();
+  await screen.findByRole("dialog", { name: "Rename speakers" });
+
+  events.emitJob(fakeJob({ id: ID, step: "summary" }));
+
+  await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  expect(store.renameFor).toBeNull();
+  expect(store.modalOpen).toBe(false);
 });
 
 test("a transcript of live captions has no speakers to rename", async () => {

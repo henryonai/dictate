@@ -48,7 +48,7 @@ export class MeetingsStore {
   sidebarOpen = $state(true);
   /**
    * The rename of speakers that was asked for: the speaker whose name was clicked, or null for the sheet as a whole. The sheet is
-   * Task 13's; it is open while this is set and clears it when it closes.
+   * open while this is set and clears it when it closes.
    */
   renameFor = $state<{ speaker: string | null } | null>(null);
   /** The questions asked of each recording, with the answers: in memory only, lost when the window closes. */
@@ -64,7 +64,7 @@ export class MeetingsStore {
   private readonly onFocus = () => void this.refreshReadiness();
 
   /** A dialog is open over the window: what is pasted or dropped on the window is not for the library then. */
-  modalOpen = $derived(this.logFor !== null || this.linkDialogOpen);
+  modalOpen = $derived(this.logFor !== null || this.linkDialogOpen || this.renameFor !== null);
 
   /** The rows with the jobs that were heard laid on them. */
   items = $derived.by(() => this.rows.map((row) => withJob(row, this.jobs[row.id])));
@@ -258,6 +258,20 @@ export class MeetingsStore {
     return (this.asks.get(id) ?? []).some((qa) => qa.answer === null && qa.error === null);
   }
 
+  /**
+   * Gives speakers new names (`names`: old to new) in the transcript and the summary, and with `resummarize` has the summary written
+   * again from the transcript with them. Null when it was done; else why not, as a view: the sheet that asked says it in itself and
+   * stays open, so it is not a notice.
+   */
+  async renameSpeakers(id: string, names: Record<string, string>, resummarize: boolean): Promise<ErrorView | null> {
+    try {
+      await api.meetingRenameSpeakers(id, names, resummarize);
+      return null;
+    } catch (e) {
+      return asErrorView(e);
+    }
+  }
+
   /** Ticks or unticks an action item (`index` is the one of its `ActionView`). False when it could not be written: the notice says why. */
   async setTask(id: string, index: number, done: boolean): Promise<boolean> {
     try {
@@ -373,7 +387,7 @@ export class MeetingsStore {
     this.logFor = null;
   }
 
-  /** Asks for the rename of the speakers (of one speaker, when it is named): Task 13's sheet answers it. */
+  /** Asks for the rename of the speakers (focused on one speaker, when it is named): the speaker sheet answers it. */
   openRename(speaker?: string): void {
     this.renameFor = { speaker: speaker ?? null };
   }

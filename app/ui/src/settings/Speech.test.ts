@@ -1,14 +1,25 @@
-import { render, screen, within } from "@testing-library/svelte";
+import { fireEvent, render, screen, within } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api } from "../lib/api";
-import type { ModelView } from "../lib/api";
+import type { ModelView, ToolsView } from "../lib/api";
 import { setLanguage } from "../lib/i18n";
 import { freezeTime, loadedStore, passTime, stubApi } from "../test-helpers";
 import Speech from "./Speech.svelte";
 
 const tiny: ModelView = { id: "tiny", size_mb: 75, downloaded: false, recommended: false };
 const small: ModelView = { id: "small", size_mb: 466, downloaded: true, recommended: true };
+
+/** The tools as the Rust side says them on a Mac: ffmpeg is installed, yt-dlp is not. */
+function tools(overrides: Partial<ToolsView> = {}): ToolsView {
+  return {
+    ffmpeg: "7.1",
+    ytDlp: null,
+    ffmpegCommand: "brew install ffmpeg",
+    ytDlpCommand: "brew install yt-dlp ffmpeg",
+    ...overrides,
+  };
+}
 
 let backend: ReturnType<typeof stubApi>;
 
@@ -235,4 +246,94 @@ test("has no test with a WAV file any more: the meetings window transcribes file
 
   expect(screen.queryByLabelText("Path to a WAV file")).not.toBeInTheDocument();
   expect(screen.queryByRole("heading", { name: "Test with a WAV file" })).not.toBeInTheDocument();
+});
+
+test("diarize_hint_says_46_mb: the switch says what the first use downloads", async () => {
+  render(Speech, { store: await loadedStore() });
+
+  expect(screen.getByText("The first time, a speaker separation model (about 46 MB) is downloaded too.")).toBeInTheDocument();
+});
+
+test("the hint of the speaker separation is Vietnamese in Vietnamese", async () => {
+  render(Speech, { store: await loadedStore({ ui_language: "vi" }) });
+
+  expect(screen.getByText("Lần đầu dùng sẽ tải thêm model tách người nói, khoảng 46 MB.")).toBeInTheDocument();
+});
+
+test("speech_settings_show_tool_status_and_install_command: what is there with its version, and what is missing with the command", async () => {
+  vi.mocked(api.mediaTools).mockResolvedValue(tools());
+  render(Speech, { store: await loadedStore() });
+
+  const group = await screen.findByRole("group", { name: "Tools for links" });
+  expect(await within(group).findByText("ffmpeg ✓ 7.1")).toBeInTheDocument();
+  expect(within(group).getByText("yt-dlp ✗ missing")).toBeInTheDocument();
+  expect(within(group).getByText("brew install yt-dlp ffmpeg")).toBeInTheDocument();
+  // ffmpeg is there: nothing to install for it.
+  expect(within(group).queryByText("brew install ffmpeg")).not.toBeInTheDocument();
+  expect(api.mediaTools).toHaveBeenCalled();
+});
+
+test("each tool that is missing has its own command, for the system the app runs on", async () => {
+  vi.mocked(api.mediaTools).mockResolvedValue(
+    tools({ ffmpeg: null, ffmpegCommand: "sudo apt install ffmpeg", ytDlpCommand: "pipx install yt-dlp && sudo apt install ffmpeg" }),
+  );
+  render(Speech, { store: await loadedStore() });
+
+  const group = await screen.findByRole("group", { name: "Tools for links" });
+  expect(await within(group).findByText("ffmpeg ✗ missing")).toBeInTheDocument();
+  expect(within(group).getByText("yt-dlp ✗ missing")).toBeInTheDocument();
+  expect(within(group).getByText("sudo apt install ffmpeg")).toBeInTheDocument();
+  expect(within(group).getByText("pipx install yt-dlp && sudo apt install ffmpeg")).toBeInTheDocument();
+});
+
+test("two tools that are there show their versions and no command", async () => {
+  vi.mocked(api.mediaTools).mockResolvedValue(tools({ ytDlp: "2025.01.15" }));
+  render(Speech, { store: await loadedStore() });
+
+  const group = await screen.findByRole("group", { name: "Tools for links" });
+  expect(await within(group).findByText("yt-dlp ✓ 2025.01.15")).toBeInTheDocument();
+  expect(within(group).getByText("ffmpeg ✓ 7.1")).toBeInTheDocument();
+  expect(within(group).queryByText(/Run:/)).not.toBeInTheDocument();
+  expect(group.querySelector("code")).toBeNull();
+});
+
+test("a tool that is there and does not say its version is there, with no version", async () => {
+  vi.mocked(api.mediaTools).mockResolvedValue(tools({ ffmpeg: "unknown", ytDlp: "unknown" }));
+  render(Speech, { store: await loadedStore() });
+
+  const group = await screen.findByRole("group", { name: "Tools for links" });
+  expect(await within(group).findByText("ffmpeg ✓")).toBeInTheDocument();
+  expect(within(group).getByText("yt-dlp ✓")).toBeInTheDocument();
+});
+
+test("the tools are asked again when the window gets the focus back, as a tool is installed in another window", async () => {
+  vi.mocked(api.mediaTools).mockResolvedValue(tools());
+  render(Speech, { store: await loadedStore() });
+  const group = await screen.findByRole("group", { name: "Tools for links" });
+  expect(await within(group).findByText("yt-dlp ✗ missing")).toBeInTheDocument();
+
+  vi.mocked(api.mediaTools).mockResolvedValue(tools({ ytDlp: "2025.01.15" }));
+  await fireEvent.focus(window);
+
+  expect(await within(group).findByText("yt-dlp ✓ 2025.01.15")).toBeInTheDocument();
+  expect(group.querySelector("code")).toBeNull();
+});
+
+test("tools that can't be looked up say why, and the rest of the page is still there", async () => {
+  vi.mocked(api.mediaTools).mockRejectedValue("Could not look for the tools.");
+  render(Speech, { store: await loadedStore() });
+
+  expect(await screen.findByText("Could not look for the tools.")).toBeInTheDocument();
+  expect(screen.queryByText(/✗ missing/)).not.toBeInTheDocument();
+  expect(await screen.findByRole("listitem", { name: "Small" })).toBeInTheDocument();
+});
+
+test("the tools are in Vietnamese in Vietnamese", async () => {
+  vi.mocked(api.mediaTools).mockResolvedValue(tools());
+  render(Speech, { store: await loadedStore({ ui_language: "vi" }) });
+
+  const group = await screen.findByRole("group", { name: "Công cụ cho link" });
+  expect(await within(group).findByText("ffmpeg ✓ 7.1")).toBeInTheDocument();
+  expect(within(group).getByText("yt-dlp ✗ thiếu")).toBeInTheDocument();
+  expect(within(group).getByText("Chạy:")).toBeInTheDocument();
 });

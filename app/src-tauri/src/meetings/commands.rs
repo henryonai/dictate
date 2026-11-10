@@ -10,7 +10,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use dictate_services::media::tools::{self, Tools};
+use dictate_services::media::tools::{self, Tool, Tools};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_dialog::DialogExt;
@@ -46,12 +46,17 @@ pub struct Readiness {
     pub language: tray::Lang,
 }
 
-/// Which of the tools of the system are installed, with their versions.
+/// Which of the tools of the system are installed, with their versions, and what installs each on this system: Settings shows the
+/// command of a tool that is missing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolsView {
     pub ffmpeg: Option<String>,
     pub yt_dlp: Option<String>,
+    /// The command that installs ffmpeg with the usual package manager of this system.
+    pub ffmpeg_command: String,
+    /// The same for yt-dlp (which on some systems installs ffmpeg with it).
+    pub yt_dlp_command: String,
 }
 
 /// What the settings and the saved keys say, and the language of the UI. The key flags are read once if that has not been done
@@ -76,6 +81,8 @@ pub async fn tools_view(tools: &Tools) -> ToolsView {
             Some(path) => Some(version_of(path, "--version", yt_dlp_version).await),
             None => None,
         },
+        ffmpeg_command: tools::install_command(Tool::Ffmpeg).to_owned(),
+        yt_dlp_command: tools::install_command(Tool::YtDlp).to_owned(),
     }
 }
 
@@ -383,6 +390,7 @@ pub async fn media_tools() -> Result<ToolsView, String> {
 
 #[cfg(test)]
 mod tests {
+    use dictate_services::media::tools::{install_command, Tool};
     use dictate_services::secrets::{Account, MemoryStore};
     use dictate_services::settings::{SettingsStore, UiLanguage};
     use dictate_services::whisper::models::{self, ModelDir};
@@ -462,9 +470,19 @@ mod tests {
         let json = serde_json::to_value(ToolsView {
             ffmpeg: Some("7.1".into()),
             yt_dlp: None,
+            ffmpeg_command: "install ffmpeg".into(),
+            yt_dlp_command: "install yt-dlp".into(),
         })
         .unwrap();
-        assert_eq!(json, serde_json::json!({ "ffmpeg": "7.1", "ytDlp": null }));
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "ffmpeg": "7.1",
+                "ytDlp": null,
+                "ffmpegCommand": "install ffmpeg",
+                "ytDlpCommand": "install yt-dlp",
+            })
+        );
     }
 
     #[test]
@@ -506,12 +524,13 @@ mod tests {
         })
         .await;
         assert_eq!(
-            both,
-            ToolsView {
-                ffmpeg: Some("6.1.1".into()),
-                yt_dlp: Some("2025.01.15".into())
-            }
+            (both.ffmpeg.as_deref(), both.yt_dlp.as_deref()),
+            (Some("6.1.1"), Some("2025.01.15"))
         );
+        // Each tool comes with the command that installs it on this system, the one that the error cards show too: the page
+        // offers it for a tool that is missing.
+        assert_eq!(both.ffmpeg_command, install_command(Tool::Ffmpeg));
+        assert_eq!(both.yt_dlp_command, install_command(Tool::YtDlp));
 
         // One that is missing is none; one that is there and says nothing sensible is "unknown".
         let silent = script(dir.path(), "silent", "exit 0", "exit /b 0");
@@ -521,11 +540,8 @@ mod tests {
         })
         .await;
         assert_eq!(
-            view,
-            ToolsView {
-                ffmpeg: None,
-                yt_dlp: Some("unknown".into())
-            }
+            (view.ffmpeg.as_deref(), view.yt_dlp.as_deref()),
+            (None, Some("unknown"))
         );
         let view = tools_view(&Tools {
             ffmpeg: Some(dir.path().join("no such program")),
