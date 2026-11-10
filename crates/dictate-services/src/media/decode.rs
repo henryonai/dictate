@@ -601,7 +601,7 @@ impl Drop for FfmpegPipe {
 /// What ffmpeg printed to stderr: the first lines and the last lines of it. The cause of a failure is usually in
 /// the first, and the last say what came of it (with `-v error` ffmpeg prints a line per thing that went wrong).
 #[derive(Default)]
-pub(super) struct Tail {
+pub(crate) struct Tail {
     first: Vec<String>,
     last: VecDeque<String>,
     /// Lines were left out between `first` and `last`.
@@ -611,7 +611,7 @@ pub(super) struct Tail {
 }
 
 impl Tail {
-    pub(super) fn read(stderr: impl Read) -> Tail {
+    pub(crate) fn read(stderr: impl Read) -> Tail {
         let mut tail = Tail::default();
         let mut reader = BufReader::new(stderr);
         let mut line = Vec::new();
@@ -645,7 +645,7 @@ impl Tail {
         self.last.push_back(line);
     }
 
-    pub(super) fn text(&self) -> String {
+    pub(crate) fn text(&self) -> String {
         let mut lines: Vec<&str> = self.first.iter().map(String::as_str).collect();
         if self.cut {
             lines.push("...");
