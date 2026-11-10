@@ -1,5 +1,5 @@
-//! The sources of a recording that belong to the system: the microphone, the sound that the system plays, and (on
-//! macOS, where the two come from one stream) the screen.
+//! The sources of a recording that belong to the system: the microphone, the sound that the system plays, and the screen
+//! (on macOS the screen and the system's sound come from one stream; on Windows the screen is the Graphics Capture API).
 //!
 //! What a source does for the session, whichever it is:
 //! - It is started on the session's thread by [`Capturer::start`], and stopped on that same thread: a microphone of some
@@ -34,6 +34,9 @@ pub mod mic;
 /// macOS too.
 #[cfg(unix)]
 pub mod parec_linux;
+/// The screen of Windows, through the Graphics Capture API. What it lists and how it ends is plain code, built (and its
+/// tests run) on every system; the capture itself is for Windows.
+pub mod windows;
 
 /// A display or a window that can be recorded, as the picker lists it.
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -62,8 +65,14 @@ pub fn list_sources() -> Result<Sources, StartError> {
     macos::list_sources()
 }
 
+/// What can be recorded on this system, for the picker. It asks the system, which may take a moment.
+#[cfg(windows)]
+pub fn list_sources() -> Result<Sources, StartError> {
+    windows::list_sources()
+}
+
 /// What can be recorded on this system, for the picker.
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", windows)))]
 pub fn list_sources() -> Result<Sources, StartError> {
     Err(not_available_yet())
 }
@@ -89,7 +98,7 @@ impl Capturer for OsCapturer {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", windows)))]
 fn not_available_yet() -> StartError {
     StartError::Source("not available yet".into())
 }
@@ -127,7 +136,15 @@ fn start_screen(
     macos::start(Track::Screen, options, tx)
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
+fn start_screen(
+    options: &RecordOptions,
+    tx: Sender<SourceEvent>,
+) -> Result<Box<dyn RunningSource>, StartError> {
+    windows::start(options, tx)
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 fn start_screen(
     _options: &RecordOptions,
     _tx: Sender<SourceEvent>,
@@ -281,7 +298,7 @@ mod tests {
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", windows)))]
     fn options() -> crate::record::RecordOptions {
         use crate::record::{quality::Quality, Mode};
         crate::record::RecordOptions {
@@ -292,9 +309,9 @@ mod tests {
         }
     }
 
-    /// The screen of Windows and Linux is not there yet. (That of macOS is, and its tests are in `macos`: they start no
-    /// capture, which would need the permission of whoever runs them.)
-    #[cfg(not(target_os = "macos"))]
+    /// The screen of Linux is not there yet. (That of macOS and that of Windows are, and their tests are in `macos` and
+    /// `windows`: they start no capture, which would need the permission of whoever runs them.)
+    #[cfg(not(any(target_os = "macos", windows)))]
     #[test]
     fn os_capturer_reports_unavailable_tracks_as_errors_not_panics() {
         use crate::record::Capturer;

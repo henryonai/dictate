@@ -93,6 +93,10 @@ sherpa-onnx-sys = "=1.13.8"
 # would not start there). The version is the one the app and process-wrap already build, so that no second copy of it
 # is built.
 windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_Media_MediaFoundation", "Win32_Security", "Win32_System_Com", "Win32_System_JobObjects", "Win32_System_LibraryLoader", "Win32_System_Threading"] }
+# The screen and the windows of a recording, through the Windows Graphics Capture API (record::capture::windows). Pinned to
+# 1.5.0: 2.x needs Rust 1.88 (let chains), and 1.5.0 builds with 1.85 and uses the same `windows` 0.61 as the entry above,
+# so no other copy of it is built. A move up is a decision with its changelog read: the crate has a single maintainer.
+windows-capture = "=1.5.0"
 
 [target.'cfg(not(any(target_os = "macos", target_os = "windows")))'.dependencies]
 keyring = { version = "3.6.3", features = ["async-secret-service", "async-io", "crypto-rust"] }

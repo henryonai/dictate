@@ -140,6 +140,17 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --all --locked
+      # An experiment: can the Windows runner record its own screen? Its tests of the screen are ignored (they record the machine they
+      # run on); this one records the primary monitor for three seconds with Graphics Capture and encodes it with the ffmpeg above.
+      # GitHub's runners have a desktop session, which Graphics Capture needs, but whether it gives a picture there is not known:
+      # until it is, a red result of this step tells what happened and does not fail the job. When it passes for a while it becomes a
+      # step that fails the job (drop continue-on-error).
+      - name: Record the primary monitor (Windows, an experiment)
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        env:
+          DICTATE_TEST_SCREEN: "1"
+        run: cargo test -p dictate-services --lib --locked -- --ignored --nocapture windows_records_three_seconds_of_the_primary_monitor
       # Speaker separation on the real models. It is the only run of sherpa-onnx next to whisper.cpp on each system: on
       # Linux the static build aborted here with "free(): invalid pointer", and this step keeps that from coming back
       # unseen. The two models (46 MB) are cached under the SHA-256 of each: a new model is a new key. They are

@@ -163,6 +163,34 @@ describe("the speaker models of a folder that has a Vietnamese name", () => {
   });
 });
 
+describe("the recording of the screen, tried on the Windows runner", () => {
+  const TEST = "windows_records_three_seconds_of_the_primary_monitor";
+  const experiment = () => stepsOf("test").find((step) => step.includes(TEST));
+
+  test("a step of the test job runs the real recording test, on Windows only, and its result fails nothing", () => {
+    const step = experiment();
+    expect(step).toBeDefined();
+    expect(step).toContain("if: runner.os == 'Windows'");
+    // Whether a runner can capture its own screen is not known yet: until it is, a red result is information and not a failure.
+    expect(step).toContain("continue-on-error: true");
+    expect(step).toMatch(/DICTATE_TEST_SCREEN: "?1"?\n/);
+    // The test is ignored: it runs only when it is asked for, and by its name.
+    expect(step).toMatch(/cargo test .*-- .*--ignored .*windows_records_three_seconds_of_the_primary_monitor/);
+  });
+
+  test("it comes after the tests that do fail the job, so that its result does not hide theirs", () => {
+    const step = experiment();
+    expect(step).toBeDefined();
+    const main = job("test").indexOf("run: cargo test --all --locked");
+    expect(main).toBeGreaterThan(-1);
+    expect(job("test").indexOf(step as string)).toBeGreaterThan(main);
+  });
+
+  test("the test that the step names is in the code: a name that matches nothing runs nothing, and passes", () => {
+    expect(read("crates/dictate-services/src/record/capture/windows.rs")).toContain(`fn ${TEST}()`);
+  });
+});
+
 describe("no espeak-ng (GPL-3.0) in what the app ships", () => {
   const SCRIPT = "scripts/check-no-espeak.sh";
 
