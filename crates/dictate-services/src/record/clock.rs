@@ -40,6 +40,11 @@ impl ActiveClock {
 
     /// How much of the recording has gone by at `at`: `None` while the clock is paused (whatever `at` is) and for
     /// an instant before the start.
+    ///
+    /// Only right for an `at` that is at or after the latest resume. An instant from inside a pause that is over is
+    /// taken as if the clock had never stopped, minus the whole pause (so, early on, as an instant that came
+    /// before the pause). So what a source stamped, which can be from before a pause that has ended by the time it
+    /// is looked at, must not be given as it is: `session::gate::Gate::place` cuts it to start at the resume.
     pub fn active_at(&self, at: Instant) -> Option<Duration> {
         if self.is_paused() || at < self.start {
             return None;

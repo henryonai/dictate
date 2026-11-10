@@ -1,12 +1,130 @@
 //! Recording the screen: the audio of a recording as separate stems on the recording's own clock, the mix of
 //! them into the one `audio.m4a` that the rest of the app works from, the quality of the video, and the video itself,
-//! which goes through ffmpeg.
+//! which goes through ffmpeg. `session` runs all of it: it starts the sources of the system, puts what they deliver
+//! in the stems and the video, and ends with the one file that goes to the meetings pipeline.
+
+use std::sync::mpsc::Sender;
+use std::time::Instant;
+
+use serde::{Deserialize, Serialize};
 
 pub mod clock;
+/// Scripted sources for the tests of the session, and of whatever runs one: with the `test-support` feature.
+#[cfg(any(test, feature = "test-support"))]
+pub mod fakes;
+pub mod marker;
 pub mod mix;
 pub mod quality;
+pub mod session;
 pub mod stem;
 pub mod video;
+
+use quality::Quality;
+use video::Frame;
+
+/// What is recorded.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Mode {
+    /// A whole display; `None` is the main one.
+    Screen { display: Option<String> },
+    /// One window, by the id the system's list of windows gave.
+    Window { id: String },
+    /// Sound only.
+    Audio,
+}
+
+impl Mode {
+    /// Whether this mode has a video.
+    pub(crate) fn has_video(&self) -> bool {
+        !matches!(self, Mode::Audio)
+    }
+}
+
+/// What the user chose for a recording.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct RecordOptions {
+    pub mode: Mode,
+    pub quality: Quality,
+    /// The microphone.
+    pub mic: bool,
+    /// What the system plays.
+    pub system_audio: bool,
+}
+
+/// One source of a recording: the capture that delivers it is started and stopped on its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Track {
+    Mic,
+    System,
+    Screen,
+}
+
+/// What a source tells the session, through the channel `Capturer::start` is given.
+pub enum SourceEvent {
+    /// A buffer of sound. `at` is when its first sample was captured (not when it arrived: the time a capture
+    /// callback gets a buffer is later by the latency of the device), and `rate` is the same for every buffer
+    /// of a track.
+    Audio {
+        track: Track,
+        at: Instant,
+        rate: u32,
+        mono: Vec<f32>,
+    },
+    /// The screen as it is now.
+    Frame(Frame),
+    /// The source is over without being asked to stop.
+    Ended { track: Track, reason: EndReason },
+}
+
+/// Why a source ended by itself.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
+pub enum EndReason {
+    WindowClosed,
+    DisplayGone,
+    DeviceLost(String),
+    PermissionRevoked,
+    Failed(String),
+}
+
+/// Why a recording could not begin.
+#[derive(Debug, PartialEq)]
+pub enum StartError {
+    /// Sound only, with the microphone and the system's audio both off.
+    NothingToRecord,
+    NeedsScreenPermission,
+    /// A screen mode without ffmpeg to encode the video.
+    NeedsFfmpeg,
+    /// ffmpeg has no video encoder that works here.
+    NoVideoEncoder,
+    PortalUnavailable,
+    PortalCancelled,
+    WindowGone,
+    /// A source that could not start; the text is what it said.
+    Source(String),
+    /// The recording's folder could not be written.
+    Io(String),
+}
+
+/// A source that is delivering.
+pub trait RunningSource: Send {
+    /// Ends the capture. It returns when the source has stopped sending.
+    fn stop(self: Box<Self>);
+}
+
+/// Starts the sources of a recording: the part of it that is different on every system.
+pub trait Capturer: Send + Sync {
+    /// Starts one track, which sends what it captures to `tx` until it is stopped. Called on the session's thread;
+    /// the source it returns is stopped on that same thread.
+    fn start(
+        &self,
+        track: Track,
+        options: &RecordOptions,
+        tx: Sender<SourceEvent>,
+    ) -> Result<Box<dyn RunningSource>, StartError>;
+}
 
 /// Probes for the tests of the recording's files.
 #[cfg(test)]
@@ -27,23 +145,112 @@ pub(crate) mod test_support {
             .output()
             .expect("ffmpeg could not be run");
         let stderr = String::from_utf8_lossy(&output.stderr);
-        last_time(&stderr).unwrap_or_else(|| panic!("no time= in what ffmpeg said: {stderr}"))
+        super::video::last_time(&stderr)
+            .unwrap_or_else(|| panic!("no time= in what ffmpeg said: {stderr}"))
     }
 
-    /// The last `time=hh:mm:ss.ff` of ffmpeg's progress lines, in seconds.
-    fn last_time(stderr: &str) -> Option<f64> {
-        let after = &stderr[stderr.rfind("time=")? + "time=".len()..];
-        let clock = after.split_whitespace().next()?;
-        let mut parts = clock.split(':');
-        let hours: f64 = parts.next()?.parse().ok()?;
-        let minutes: f64 = parts.next()?.parse().ok()?;
-        let seconds: f64 = parts.next()?.parse().ok()?;
-        Some(hours * 3600.0 + minutes * 60.0 + seconds)
+    // --- Files of a recording, for the tests of what is done with them ---
+
+    use crate::record::stem::StemWriter;
+    use crate::record::video::{pick_codec, probe_seconds, VideoCodec, VideoEncoder};
+    use crate::record::{fakes, quality::Quality};
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    /// The size of the frames of the test videos.
+    pub const SIZE: (u32, u32) = (320, 180);
+
+    /// The codec of this machine's ffmpeg.
+    pub fn codec_of(ffmpeg: &Path) -> VideoCodec {
+        let codec = pick_codec(ffmpeg)
+            .expect("this ffmpeg has none of the encoders in ENCODER_ORDER that work");
+        eprintln!("encoder: {}", codec.encoder);
+        codec
+    }
+
+    /// A frame of the test videos, different from the one before it, so that an encoder has something to spend its
+    /// bits on.
+    pub fn moving_frame(n: u32) -> Vec<u8> {
+        let mut bgra = Vec::with_capacity((SIZE.0 * SIZE.1 * 4) as usize);
+        for y in 0..SIZE.1 {
+            for x in 0..SIZE.0 {
+                bgra.extend([(x + n * 7) as u8, (y * 2 + n * 3) as u8, (n * 5) as u8, 255]);
+            }
+        }
+        bgra
+    }
+
+    /// `folder/video.<ext>` of `seconds` of the Standard quality: a video that was finished.
+    pub fn encode_video(folder: &Path, ffmpeg: &Path, seconds: u32) -> PathBuf {
+        let spec = Quality::Standard.spec();
+        let codec = codec_of(ffmpeg);
+        let mut encoder = VideoEncoder::start(folder, SIZE, &spec, &codec, ffmpeg).unwrap();
+        for n in 0..spec.fps * seconds {
+            encoder.push(&moving_frame(n)).unwrap();
+        }
+        encoder.finish().unwrap()
+    }
+
+    /// The `video.<ext>.<nonce>.part` that an encoder leaves when the program stops: 45 frames at 15 fps are pushed, and
+    /// ffmpeg is waited for until the first fragment is in the file (a fragment ends where the next keyframe is, every
+    /// 2 s: so the first 2 s of the 3 that were pushed are in it, and the last 1 s is not). Returns the part.
+    ///
+    /// What is waited for is what recovery needs, the part being readable for 2 s, and not a pause in the growth of the
+    /// file: on a machine that is busy ffmpeg can take longer than any pause to write the first fragment.
+    pub fn cut_off_video(folder: &Path, ffmpeg: &Path) -> PathBuf {
+        let spec = Quality::Standard.spec();
+        let codec = codec_of(ffmpeg);
+        let mut encoder = VideoEncoder::start(folder, SIZE, &spec, &codec, ffmpeg).unwrap();
+        for n in 0..45u8 {
+            let shade = 100 + n;
+            let frame = [shade, 255 - shade, shade / 2, 255].repeat((SIZE.0 * SIZE.1) as usize);
+            encoder.push(&frame).unwrap();
+        }
+        let parts = || -> Vec<PathBuf> {
+            fs::read_dir(folder)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .filter(|path| {
+                    let name = path.file_name().unwrap().to_string_lossy();
+                    name.starts_with("video.") && name.ends_with(".part")
+                })
+                .collect()
+        };
+        let give_up = std::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            let readable = parts()
+                .first()
+                .and_then(|part| probe_seconds(part, ffmpeg))
+                .is_some_and(|seconds| seconds >= 1.9);
+            if readable {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < give_up,
+                "ffmpeg did not write the first fragment"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        drop(encoder);
+        let mut parts = parts();
+        assert_eq!(parts.len(), 1, "a dropped encoder leaves its .part");
+        parts.remove(0)
+    }
+
+    /// A stem of a tone, `seconds` long, finished.
+    pub fn tone_stem(folder: &Path, name: &str, hz: f32, seconds: f32) -> PathBuf {
+        let path = folder.join(name);
+        let mut stem = StemWriter::create(&path, 48_000).unwrap();
+        let samples = fakes::sine(hz, 48_000, 0, (48_000.0 * seconds) as usize);
+        stem.push(Duration::ZERO, &samples).unwrap();
+        stem.finish().unwrap();
+        path
     }
 
     #[cfg(test)]
     mod tests {
-        use super::*;
+        use crate::record::video::last_time;
 
         #[test]
         fn the_last_time_of_the_progress_is_the_length() {

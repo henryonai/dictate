@@ -11,7 +11,7 @@ use std::ffi::OsString;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{ChildStdin, ExitStatus, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -288,6 +288,62 @@ fn works_within(ffmpeg: &Path, codec: &VideoCodec, limit: Duration) -> bool {
     }
 }
 
+/// ffmpeg, and how it ended once it has. It is shared by the encoder and the `AbortHandle`s of it, and is never
+/// waited for twice: a process group that has been waited for may be another program's now, and is not killed.
+struct Running {
+    child: Box<dyn StdChildWrapper>,
+    status: Option<ExitStatus>,
+}
+
+type SharedProcess = Arc<Mutex<Running>>;
+
+/// A thread that panicked with the process locked has not changed it in a way that matters here.
+fn lock(process: &SharedProcess) -> MutexGuard<'_, Running> {
+    process.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+impl Running {
+    /// How ffmpeg ended, if it has.
+    fn poll(&mut self) -> io::Result<Option<ExitStatus>> {
+        if self.status.is_none() {
+            self.status = self.child.try_wait()?;
+        }
+        Ok(self.status)
+    }
+
+    /// Kills ffmpeg and what it started, if it has not ended.
+    fn kill(&mut self) {
+        if self.status.is_none() {
+            // It may be gone already, which is fine.
+            let _ = self.child.start_kill();
+        }
+    }
+
+    /// Makes ffmpeg end, if it has not, and waits for it and for what it started to be gone.
+    fn end(&mut self) -> io::Result<ExitStatus> {
+        if let Some(status) = self.status {
+            return Ok(status);
+        }
+        self.kill();
+        let status = self.child.wait()?;
+        self.status = Some(status);
+        Ok(status)
+    }
+}
+
+/// Ends the ffmpeg of a `VideoEncoder` from another thread. A `push` waits for ffmpeg to take the frame, and that
+/// goes on for ever when ffmpeg has stopped reading (a hardware encoder that hangs): it ends only when ffmpeg is gone.
+#[derive(Clone)]
+pub struct AbortHandle(SharedProcess);
+
+impl AbortHandle {
+    /// Kills ffmpeg and what it started. A `push` that waits on it fails; `finish` says it did not end well. Nothing
+    /// happens when ffmpeg has ended already.
+    pub fn abort(&self) {
+        lock(&self.0).kill();
+    }
+}
+
 /// How long `finish` waits for ffmpeg to write the end of the file.
 const FINISH_LIMIT: Duration = Duration::from_secs(30);
 
@@ -296,13 +352,11 @@ const FINISH_LIMIT: Duration = Duration::from_secs(30);
 /// A `VideoEncoder` that is dropped without `finish` kills ffmpeg (and what it started) and leaves the `.part` file
 /// as it was: what is in it can be played up to the last fragment.
 pub struct VideoEncoder {
-    child: Box<dyn StdChildWrapper>,
+    process: SharedProcess,
     /// `None` once the end of the frames has been told to ffmpeg.
     stdin: Option<ChildStdin>,
     /// The thread that reads what ffmpeg says; it ends when ffmpeg does.
     stderr: Option<JoinHandle<Tail>>,
-    /// How ffmpeg ended, once it has (it is never waited for twice).
-    status: Option<ExitStatus>,
     /// `video.mp4` or `video.webm`, what the `.part` becomes.
     out: PathBuf,
     part: PathBuf,
@@ -331,11 +385,13 @@ impl VideoEncoder {
             ..
         } = spawn(ffmpeg, arguments(size, spec, codec, &part))?;
         Ok(VideoEncoder {
-            child,
+            process: Arc::new(Mutex::new(Running {
+                child,
+                status: None,
+            })),
             stdin: Some(stdin),
             // What ffmpeg prints is read all the time, whatever the video does: a program that fills the pipe stops.
             stderr: Some(std::thread::spawn(move || Tail::read(stderr))),
-            status: None,
             out,
             part,
             size,
@@ -375,6 +431,11 @@ impl VideoEncoder {
         Ok(())
     }
 
+    /// A handle that ends ffmpeg from another thread, for the encoder that is stuck in `push`.
+    pub fn abort_handle(&self) -> AbortHandle {
+        AbortHandle(self.process.clone())
+    }
+
     /// How many frames ffmpeg has been given.
     pub fn frames(&self) -> u64 {
         self.frames
@@ -396,11 +457,9 @@ impl VideoEncoder {
         let give_up = Instant::now() + limit;
         // Polled, not waited for: a program that does not end must not hold the recording for ever.
         let status = loop {
-            match self.child.try_wait() {
-                Ok(Some(status)) => {
-                    self.status = Some(status);
-                    break status;
-                }
+            let polled = lock(&self.process).poll();
+            match polled {
+                Ok(Some(status)) => break status,
                 Ok(None) if Instant::now() < give_up => {
                     std::thread::sleep(Duration::from_millis(10))
                 }
@@ -430,15 +489,7 @@ impl VideoEncoder {
     /// Ends ffmpeg and everything it started, if it is still running, and waits for them to be gone.
     fn end(&mut self) -> io::Result<ExitStatus> {
         drop(self.stdin.take());
-        if let Some(status) = self.status {
-            // It has been waited for already, and its process group may be another one's now: it is not killed.
-            return Ok(status);
-        }
-        // It may be gone already, which is fine: it is waited for either way.
-        let _ = self.child.start_kill();
-        let status = self.child.wait()?;
-        self.status = Some(status);
-        Ok(status)
+        lock(&self.process).end()
     }
 
     /// What ffmpeg said, once it has ended (it is made to end here, if it has not).
@@ -558,14 +609,31 @@ fn file_argument(path: &Path) -> OsString {
     argument
 }
 
+/// How long `mux` waits for ffmpeg: copying the streams of a recording takes seconds, and this is for the one that
+/// is stuck.
+const MUX_LIMIT: Duration = Duration::from_secs(10 * 60);
+
 /// Puts the audio under the video: `folder/recording.mp4` (or `.webm`), with the video as it is and the audio of
-/// `audio` (the `audio.m4a`, or the `recording.wav` of a system that had no AAC encoder).
+/// `audio` (the `audio.m4a`, or the `recording.wav` of a system that had no AAC encoder). ffmpeg is given ten
+/// minutes at most (`mux_within`).
 pub fn mux(
     video: &Path,
     audio: &Path,
     folder: &Path,
     container: Container,
     ffmpeg: &Path,
+) -> Result<PathBuf, EncodeError> {
+    mux_within(video, audio, folder, container, ffmpeg, MUX_LIMIT)
+}
+
+/// `mux`, with ffmpeg given `limit` to end: it and what it started are killed after that, and there is no file.
+pub fn mux_within(
+    video: &Path,
+    audio: &Path,
+    folder: &Path,
+    container: Container,
+    ffmpeg: &Path,
+    limit: Duration,
 ) -> Result<PathBuf, EncodeError> {
     let out = folder.join(format!("recording.{}", container.extension()));
     let part = part_path(&out);
@@ -578,10 +646,29 @@ pub fn mux(
     // ffmpeg is told not to read, and has nothing to read.
     drop(stdin);
     let stderr = std::thread::spawn(move || Tail::read(stderr));
-    let status = child.wait();
-    if status.is_err() {
-        let _ = child.start_kill();
-    }
+    let give_up = Instant::now() + limit;
+    // Polled, not waited for: a program that does not end must not hold the recording for ever.
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) if Instant::now() < give_up => std::thread::sleep(Duration::from_millis(10)),
+            Ok(None) => {
+                let _ = child.start_kill();
+                let _ = child.wait();
+                let _ = stderr.join();
+                remove_part(&part);
+                return Err(EncodeError::Failed(format!(
+                    "ffmpeg did not finish putting the audio under the video in {} s",
+                    limit.as_secs_f32()
+                )));
+            }
+            Err(e) => {
+                let _ = child.start_kill();
+                let _ = child.wait();
+                break Err(e);
+            }
+        }
+    };
     let tail = stderr.join().map(|tail| tail.text()).unwrap_or_default();
     match status {
         Ok(status) if status.success() => {
@@ -601,6 +688,67 @@ pub fn mux(
             )))
         }
     }
+}
+
+/// How long `probe_seconds` waits for ffmpeg.
+const PROBE_SECONDS_LIMIT: Duration = Duration::from_secs(30);
+
+/// How long the video in `video` is, in seconds: what ffmpeg reaches when it reads the file to its end without
+/// decoding it (it copies the packets to nowhere), which is as far as the video can be played. A file that was cut
+/// off gives the length of what is in it. `None` when ffmpeg cannot be run, cannot read the file, or does not end
+/// within 30 s.
+pub fn probe_seconds(video: &Path, ffmpeg: &Path) -> Option<f64> {
+    probe_within(video, ffmpeg, PROBE_SECONDS_LIMIT)
+}
+
+fn probe_within(video: &Path, ffmpeg: &Path, limit: Duration) -> Option<f64> {
+    let mut args = words(&["-hide_banner", "-nostdin", "-i"]);
+    args.push(file_argument(video));
+    args.extend(words(&["-map", "0:v", "-c", "copy", "-f", "null", "-"]));
+    let Process {
+        mut child,
+        stdin,
+        mut stderr,
+        ..
+    } = spawn(ffmpeg, args).ok()?;
+    drop(stdin);
+    // What ffmpeg says is read all the time; only the end of it is kept, where the last `time=` is.
+    let said = std::thread::spawn(move || {
+        let mut kept = Vec::new();
+        let mut chunk = [0u8; 4096];
+        while let Ok(n @ 1..) = io::Read::read(&mut stderr, &mut chunk) {
+            kept.extend_from_slice(&chunk[..n]);
+            if kept.len() > 16 * 1024 {
+                kept.drain(..kept.len() - 8 * 1024);
+            }
+        }
+        String::from_utf8_lossy(&kept).into_owned()
+    });
+    let give_up = Instant::now() + limit;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if Instant::now() < give_up => std::thread::sleep(Duration::from_millis(10)),
+            _ => {
+                let _ = child.start_kill();
+                let _ = child.wait();
+                let _ = said.join();
+                return None;
+            }
+        }
+    }
+    last_time(&said.join().ok()?)
+}
+
+/// The last `time=hh:mm:ss.ff` of ffmpeg's progress lines, in seconds.
+pub(crate) fn last_time(stderr: &str) -> Option<f64> {
+    let after = &stderr[stderr.rfind("time=")? + "time=".len()..];
+    let clock = after.split_whitespace().next()?;
+    let mut parts = clock.split(':');
+    let hours: f64 = parts.next()?.parse().ok()?;
+    let minutes: f64 = parts.next()?.parse().ok()?;
+    let seconds: f64 = parts.next()?.parse().ok()?;
+    Some(hours * 3600.0 + minutes * 60.0 + seconds)
 }
 
 /// The arguments of ffmpeg for `mux`, ending with the name of the file it writes. The video is copied as it is.
@@ -1597,5 +1745,131 @@ mod tests {
 
         let seconds = audio_seconds(&recording, &ffmpeg);
         assert!((seconds - 3.0).abs() <= 0.1, "{seconds} s of audio");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_abort_frees_a_push_that_is_blocked_on_an_ffmpeg_that_does_not_read() {
+        let dir = tempfile::tempdir().unwrap();
+        // It never reads what it is sent: the pipe fills up, and a push waits for ever.
+        let fake = script(dir.path(), "fake-ffmpeg", "sleep 60", "");
+        let codec = VideoCodec {
+            encoder: "mpeg4",
+            container: Container::Mp4,
+        };
+        let mut encoder =
+            VideoEncoder::start(dir.path(), SIZE, &Quality::Small.spec(), &codec, &fake).unwrap();
+        let abort = encoder.abort_handle();
+        let (done, ended) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let frame = vec![0u8; (SIZE.0 * SIZE.1 * 4) as usize];
+            let mut result = Ok(());
+            for _ in 0..1000 {
+                result = encoder.push(&frame);
+                if result.is_err() {
+                    break;
+                }
+            }
+            let _ = done.send(result);
+        });
+        assert!(
+            ended.recv_timeout(Duration::from_millis(500)).is_err(),
+            "the push should be stuck"
+        );
+
+        abort.abort();
+
+        let result = ended
+            .recv_timeout(Duration::from_secs(20))
+            .expect("the push was not freed");
+        assert!(result.is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_abort_after_the_encoder_has_finished_does_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = recording_ffmpeg(dir.path());
+        let codec = VideoCodec {
+            encoder: "mpeg4",
+            container: Container::Mp4,
+        };
+        let mut encoder =
+            VideoEncoder::start(dir.path(), (4, 2), &Quality::Small.spec(), &codec, &fake).unwrap();
+        let abort = encoder.abort_handle();
+        encoder.push(&[0; 32]).unwrap();
+        let video = encoder.finish().unwrap();
+
+        abort.abort();
+
+        assert_eq!(fs::read_to_string(video).unwrap(), "made\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_mux_that_does_not_end_is_killed_and_leaves_no_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = script(
+            dir.path(),
+            "fake-ffmpeg",
+            r#"for a; do last=$a; done; echo half > "${last#file:}"; sleep 60"#,
+            "",
+        );
+        let started = Instant::now();
+
+        let error = mux_within(
+            Path::new("video.mp4"),
+            Path::new("audio.m4a"),
+            dir.path(),
+            Container::Mp4,
+            &fake,
+            Duration::from_millis(300),
+        )
+        .unwrap_err();
+
+        let EncodeError::Failed(message) = error else {
+            panic!("{error:?}")
+        };
+        assert!(message.contains("did not finish"), "{message}");
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "{:?}",
+            started.elapsed()
+        );
+        let files: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("recording."))
+            .collect();
+        assert!(files.is_empty(), "{files:?}");
+    }
+
+    #[test]
+    fn the_length_of_a_video_is_read_without_decoding_it() {
+        let Some(ffmpeg) = real_ffmpeg() else { return };
+        let dir = tempfile::tempdir().unwrap();
+        let codec = codec_of(&ffmpeg);
+        let video = encode(dir.path(), &codec, &ffmpeg, 3);
+
+        let seconds = probe_seconds(&video, &ffmpeg).expect("a length");
+
+        assert!((seconds - 3.0).abs() <= 0.2, "{seconds} s");
+        assert_eq!(
+            probe_seconds(&dir.path().join("missing.mp4"), &ffmpeg),
+            None
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_probe_that_does_not_end_gives_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = script(dir.path(), "fake-ffmpeg", "sleep 60", "");
+        let started = Instant::now();
+
+        let seconds = probe_within(Path::new("video.mp4"), &fake, Duration::from_millis(300));
+
+        assert_eq!(seconds, None);
+        assert!(started.elapsed() < Duration::from_secs(20));
     }
 }
