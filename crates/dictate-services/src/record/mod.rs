@@ -8,6 +8,7 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
+pub mod capture;
 pub mod clock;
 /// Scripted sources for the tests of the session, and of whatever runs one: with the `test-support` feature.
 #[cfg(any(test, feature = "test-support"))]

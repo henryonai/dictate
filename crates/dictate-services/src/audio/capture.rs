@@ -1,7 +1,9 @@
-//! Recording from the default microphone.
+//! Recording from the default microphone, or from another device of the system (an output device is recorded as what it
+//! plays, which is how a recording takes the system's own sound on Windows).
 
 use std::fmt;
 use std::sync::mpsc::Sender;
+use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{ErrorKind, FromSample, Sample, SampleFormat, SizedSample};
@@ -13,6 +15,17 @@ pub enum CaptureEvent {
     Samples(Vec<f32>),
     /// The recording has a problem; whoever listens decides what to do about it. `Silent` comes once while the
     /// stream goes on delivering buffers; `Stream` means the stream has broken off.
+    Error(CaptureError),
+}
+
+/// What a stream reports to whoever started it, in the terms of the stream: [`CaptureEvent`] is this for dictation,
+/// which has no use for the time of a buffer, and a recording sends it on as it is.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Report {
+    /// One buffer of audio, mono, at the rate of the stream. `at` is when its first sample was captured, which is
+    /// not when the system handed the buffer over: that is later, by as much as the buffer is long.
+    Samples { at: Instant, mono: Vec<f32> },
+    /// The same as [`CaptureEvent::Error`].
     Error(CaptureError),
 }
 
@@ -111,20 +124,34 @@ fn stream_error_ends_recording(kind: ErrorKind) -> bool {
     )
 }
 
-/// What the callback of the system's audio thread does with one buffer: make it mono, send it on, and watch for
-/// a microphone that only delivers silence. It has no locks and does not log, as it runs in real time.
-struct Tap {
+/// When the first sample of a buffer of `frames` frames at `rate` Hz was captured, if the buffer was handed over at
+/// `arrived`, the moment after its last sample was.
+pub(crate) fn began(arrived: Instant, frames: usize, rate: u32) -> Instant {
+    let nanos = (frames as u64).saturating_mul(1_000_000_000) / u64::from(rate.max(1));
+    // A clock that has not run for as long as the buffer is would be taken back past its start (a panic on some
+    // systems): the buffer is then stamped with the time it arrived.
+    arrived
+        .checked_sub(Duration::from_nanos(nanos))
+        .unwrap_or(arrived)
+}
+
+/// What the callback of the system's audio thread does with one buffer: make it mono, stamp it, send it on, and watch
+/// for a microphone that only delivers silence. It has no locks and does not log, as it runs in real time.
+pub(crate) struct Tap<R> {
     channels: usize,
-    tx: Sender<CaptureEvent>,
+    rate: u32,
+    report: R,
     watch: SilenceWatch,
     silence_reported: bool,
 }
 
-impl Tap {
-    fn new(channels: usize, rate: u32, tx: Sender<CaptureEvent>) -> Self {
+impl<R: FnMut(Report)> Tap<R> {
+    /// A callback for a stream of `channels` channels at `rate` Hz, which hands what it makes to `report`.
+    pub(crate) fn new(channels: usize, rate: u32, report: R) -> Self {
         Tap {
             channels,
-            tx,
+            rate,
+            report,
             watch: SilenceWatch::new(rate),
             silence_reported: false,
         }
@@ -134,26 +161,49 @@ impl Tap {
     where
         f32: FromSample<T>,
     {
+        self.push_at(data, Instant::now());
+    }
+
+    /// `push` for a buffer that arrived at `arrived`.
+    pub(crate) fn push_at<T: Copy>(&mut self, data: &[T], arrived: Instant)
+    where
+        f32: FromSample<T>,
+    {
         let mono = downmix(data, self.channels);
         let silent = !self.silence_reported && self.watch.feed(&mono);
-        // A closed channel means nobody listens any more: the recording is being stopped.
-        let _ = self.tx.send(CaptureEvent::Samples(mono));
+        let at = began(arrived, mono.len(), self.rate);
+        // A listener that is gone is not told: the recording is being stopped.
+        (self.report)(Report::Samples { at, mono });
         if silent {
             self.silence_reported = true;
-            let _ = self.tx.send(CaptureEvent::Error(CaptureError::Silent));
+            (self.report)(Report::Error(CaptureError::Silent));
         }
     }
 }
 
 /// The callback for errors of the stream: forwards the first one that ends the recording. A backend that lost its
 /// device may report it again with every callback, and the listener needs to hear of it only once.
-fn error_handler(tx: Sender<CaptureEvent>) -> impl FnMut(cpal::Error) + Send + 'static {
+fn error_handler(
+    mut report: impl FnMut(Report) + Send + 'static,
+) -> impl FnMut(cpal::Error) + Send + 'static {
     let mut reported = false;
     move |e: cpal::Error| {
         if !reported && stream_error_ends_recording(e.kind()) {
             reported = true;
-            let _ = tx.send(CaptureEvent::Error(CaptureError::Stream(e.to_string())));
+            report(Report::Error(CaptureError::Stream(e.to_string())));
         }
+    }
+}
+
+/// The reporter of dictation: what a stream reports becomes a [`CaptureEvent`] on `tx`, without the stamps.
+fn dictation_reports(tx: Sender<CaptureEvent>) -> impl FnMut(Report) + Clone + Send + 'static {
+    move |report| {
+        let event = match report {
+            Report::Samples { mono, .. } => CaptureEvent::Samples(mono),
+            Report::Error(error) => CaptureEvent::Error(error),
+        };
+        // A closed channel means nobody listens any more: the recording is being stopped.
+        let _ = tx.send(event);
     }
 }
 
@@ -165,7 +215,28 @@ fn start_error(e: &cpal::Error) -> CaptureError {
     }
 }
 
-/// A running recording from the default microphone. Dropping it, or [`stop`](Capture::stop), ends it.
+/// The default microphone of the system, and the format it delivers in.
+pub fn default_input() -> Result<(cpal::Device, cpal::SupportedStreamConfig), CaptureError> {
+    let device = cpal::default_host()
+        .default_input_device()
+        .ok_or(CaptureError::NoDevice)?;
+    let supported = device.default_input_config().map_err(|e| start_error(&e))?;
+    Ok((device, supported))
+}
+
+/// The default output device of the system (where its sound goes), and the format it mixes in, to be given to
+/// [`Capture::start_device`] to record what it plays: loopback, which Windows (WASAPI) has and macOS from 14.6 does too.
+pub fn default_output() -> Result<(cpal::Device, cpal::SupportedStreamConfig), CaptureError> {
+    let device = cpal::default_host()
+        .default_output_device()
+        .ok_or(CaptureError::NoDevice)?;
+    let supported = device
+        .default_output_config()
+        .map_err(|e| start_error(&e))?;
+    Ok((device, supported))
+}
+
+/// A running recording from a device, the default microphone for dictation. Dropping it, or [`stop`](Capture::stop), ends it.
 pub struct Capture {
     stream: cpal::Stream,
     rate: u32,
@@ -177,21 +248,34 @@ impl Capture {
     ///
     /// A stream that breaks later (the microphone is unplugged) arrives as `CaptureEvent::Error`.
     pub fn start(tx: Sender<CaptureEvent>) -> Result<Capture, CaptureError> {
-        let device = cpal::default_host()
-            .default_input_device()
-            .ok_or(CaptureError::NoDevice)?;
-        let supported = device.default_input_config().map_err(|e| start_error(&e))?;
+        let (device, supported) = default_input()?;
+        Capture::start_device(&device, supported, dictation_reports(tx))
+    }
+
+    /// Opens `device` in the format `supported` (the device's own, from `default_input_config`, or from
+    /// `default_output_config` for an output device, which is then recorded as what it plays: loopback, on the systems
+    /// that have it) and hands what it delivers to `report`, which is called on the audio thread of the system and
+    /// so must not block: [`Report::Samples`] for each buffer, mono and stamped with when it was captured, and
+    /// [`Report::Error`] for a stream that breaks.
+    ///
+    /// The format of the stream is the one it was opened with for as long as it runs: `supported.sample_rate()` is the
+    /// rate of every buffer. Reads 32-bit float, 16-bit and unsigned 16-bit samples.
+    pub fn start_device(
+        device: &cpal::Device,
+        supported: cpal::SupportedStreamConfig,
+        report: impl FnMut(Report) + Clone + Send + 'static,
+    ) -> Result<Capture, CaptureError> {
         let rate = supported.sample_rate();
-        let tap = Tap::new(usize::from(supported.channels()), rate, tx.clone());
-        let on_error = error_handler(tx);
+        let tap = Tap::new(usize::from(supported.channels()), rate, report.clone());
+        let on_error = error_handler(report);
         let config = supported.config();
         let stream = match supported.sample_format() {
-            SampleFormat::F32 => open::<f32>(&device, config, tap, on_error),
-            SampleFormat::I16 => open::<i16>(&device, config, tap, on_error),
-            SampleFormat::U16 => open::<u16>(&device, config, tap, on_error),
+            SampleFormat::F32 => open::<f32, _>(device, config, tap, on_error),
+            SampleFormat::I16 => open::<i16, _>(device, config, tap, on_error),
+            SampleFormat::U16 => open::<u16, _>(device, config, tap, on_error),
             other => {
                 return Err(CaptureError::Stream(format!(
-                    "the microphone delivers {other} samples, which are not supported"
+                    "the device delivers {other} samples, which are not supported"
                 )))
             }
         }
@@ -212,15 +296,16 @@ impl Capture {
 }
 
 /// Builds the input stream for samples of type `T`.
-fn open<T>(
+fn open<T, R>(
     device: &cpal::Device,
     config: cpal::StreamConfig,
-    mut tap: Tap,
+    mut tap: Tap<R>,
     on_error: impl FnMut(cpal::Error) + Send + 'static,
 ) -> Result<cpal::Stream, cpal::Error>
 where
     T: SizedSample,
     f32: FromSample<T>,
+    R: FnMut(Report) + Send + 'static,
 {
     device.build_input_stream(
         config,
@@ -336,7 +421,7 @@ mod tests {
     #[test]
     fn a_lost_device_is_sent_as_a_stream_error() {
         let (tx, rx) = mpsc::channel();
-        let mut on_error = error_handler(tx);
+        let mut on_error = error_handler(dictation_reports(tx));
         on_error(cpal::Error::with_message(
             ErrorKind::DeviceNotAvailable,
             "unplugged",
@@ -350,7 +435,7 @@ mod tests {
     #[test]
     fn only_the_first_stream_error_is_sent() {
         let (tx, rx) = mpsc::channel();
-        let mut on_error = error_handler(tx);
+        let mut on_error = error_handler(dictation_reports(tx));
         // A backend that has lost its device can report it on every callback.
         on_error(cpal::Error::with_message(
             ErrorKind::DeviceNotAvailable,
@@ -372,7 +457,7 @@ mod tests {
     #[test]
     fn an_ignored_error_does_not_use_up_the_one_that_is_sent() {
         let (tx, rx) = mpsc::channel();
-        let mut on_error = error_handler(tx);
+        let mut on_error = error_handler(dictation_reports(tx));
         on_error(cpal::Error::new(ErrorKind::Xrun));
         on_error(cpal::Error::with_message(
             ErrorKind::DeviceNotAvailable,
@@ -389,7 +474,7 @@ mod tests {
     #[test]
     fn a_buffer_overrun_is_not_sent() {
         let (tx, rx) = mpsc::channel();
-        let mut on_error = error_handler(tx);
+        let mut on_error = error_handler(dictation_reports(tx));
         on_error(cpal::Error::new(ErrorKind::Xrun));
         assert!(rx.try_recv().is_err());
     }
@@ -416,7 +501,7 @@ mod tests {
     #[test]
     fn the_callback_sends_mono_buffers() {
         let (tx, rx) = mpsc::channel();
-        let mut tap = Tap::new(2, 16_000, tx);
+        let mut tap = Tap::new(2, 16_000, dictation_reports(tx));
         tap.push(&[0.5_f32, 0.25, 0.1, 0.3]);
         assert_eq!(
             rx.try_recv().unwrap(),
@@ -428,7 +513,7 @@ mod tests {
     #[test]
     fn the_callback_reports_a_silent_microphone_once() {
         let (tx, rx) = mpsc::channel();
-        let mut tap = Tap::new(2, 16_000, tx);
+        let mut tap = Tap::new(2, 16_000, dictation_reports(tx));
         // 2 s of stereo i16 silence in 20 ms buffers (320 frames).
         for _ in 0..100 {
             tap.push(&[0_i16; 640]);
@@ -449,7 +534,7 @@ mod tests {
     #[test]
     fn the_callback_keeps_quiet_but_not_silent_audio() {
         let (tx, rx) = mpsc::channel();
-        let mut tap = Tap::new(1, 16_000, tx);
+        let mut tap = Tap::new(1, 16_000, dictation_reports(tx));
         let mut hiss = [0_i16; 320];
         hiss[7] = 1;
         for _ in 0..100 {
@@ -458,11 +543,93 @@ mod tests {
         assert!(rx.try_iter().all(|e| matches!(e, CaptureEvent::Samples(_))));
     }
 
+    /// What a `Tap` reports, collected: the reporter to give it, and where to look.
+    fn collected() -> (
+        impl FnMut(Report) + Clone + Send + 'static,
+        mpsc::Receiver<Report>,
+    ) {
+        let (tx, rx) = mpsc::channel();
+        (
+            move |report| {
+                let _ = tx.send(report);
+            },
+            rx,
+        )
+    }
+
+    /// When each buffer of `rx` was captured.
+    fn stamps(rx: &mpsc::Receiver<Report>) -> Vec<Instant> {
+        rx.try_iter()
+            .map(|report| match report {
+                Report::Samples { at, .. } => at,
+                other => panic!("not a buffer: {other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn each_buffer_is_stamped_with_when_its_first_sample_was_captured() {
+        let (report, rx) = collected();
+        let mut tap = Tap::new(1, 48_000, report);
+        let start = Instant::now();
+        // A microphone hands over 20 ms buffers, each one when its last sample has been taken.
+        for n in 1..=3 {
+            tap.push_at(&[0.1_f32; 960], start + Duration::from_millis(20) * n);
+        }
+        assert_eq!(
+            stamps(&rx),
+            [
+                start,
+                start + Duration::from_millis(20),
+                start + Duration::from_millis(40)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_buffer_lasts_by_its_frames_and_not_by_its_samples() {
+        let (report, rx) = collected();
+        // 1 920 samples of stereo are 960 frames: 20 ms at 48 kHz.
+        let mut tap = Tap::new(2, 48_000, report);
+        let arrived = Instant::now();
+        tap.push_at(&[0.1_f32; 1_920], arrived);
+        assert_eq!(stamps(&rx), [arrived - Duration::from_millis(20)]);
+    }
+
+    #[test]
+    fn a_buffer_that_arrives_late_is_stamped_late() {
+        // Nothing was delivered for a while (a system that plays no sound): the time of the buffer is when it was made,
+        // and not where the last one ended.
+        let (report, rx) = collected();
+        let mut tap = Tap::new(1, 48_000, report);
+        let start = Instant::now();
+        tap.push_at(&[0.1_f32; 960], start + Duration::from_millis(20));
+        tap.push_at(&[0.1_f32; 960], start + Duration::from_secs(5));
+        assert_eq!(
+            stamps(&rx),
+            [
+                start,
+                start + Duration::from_secs(5) - Duration::from_millis(20)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_buffer_longer_than_the_clock_has_run_does_not_stamp_before_it() {
+        // `Instant` cannot go back further than the start of its clock on every system, and `Instant - Duration`
+        // panics when it would.
+        let arrived = Instant::now();
+        assert!(began(arrived, usize::MAX / 2, 1) <= arrived);
+        assert_eq!(began(arrived, 0, 48_000), arrived);
+        // A rate of 0 is not a division by zero.
+        assert!(began(arrived, 960, 0) <= arrived);
+    }
+
     #[test]
     fn the_callback_survives_a_closed_channel() {
         let (tx, rx) = mpsc::channel();
         drop(rx);
-        let mut tap = Tap::new(1, 16_000, tx);
+        let mut tap = Tap::new(1, 16_000, dictation_reports(tx));
         tap.push(&[0.1_f32; 64]);
     }
 
