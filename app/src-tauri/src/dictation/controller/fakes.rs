@@ -340,6 +340,12 @@ impl Platform for FakePlatform {
             *lock(&self.pending_prompt) = Some(done);
         }
     }
+
+    fn screen_recording(&self) -> Permission {
+        Permission::NotNeeded
+    }
+
+    fn request_screen_recording(&self) {}
 }
 
 // ---- the clipboard and the keys ---------------------------------------------------------------------------------

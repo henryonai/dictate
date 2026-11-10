@@ -666,6 +666,30 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_macos_bundle_names_the_screen_in_its_info() {
+        // Without the reason in Info.plist macOS ends an app that records the screen. Read as every system checks it out.
+        for info in as_checked_out(include_str!("../Info.plist")) {
+            assert!(
+                plist_in_one_line(&info).contains(
+                    "<key>NSScreenCaptureUsageDescription</key><string>Dictate records your screen and the sound of your computer for meetings you choose to record.</string>"
+                ),
+                "{info:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_minimum_macos_is_13() {
+        // The system's audio is recorded with ScreenCaptureKit, which has it from macOS 13 (the Swift bridge of the crate needs
+        // 12.3, and audio 13.0).
+        let config: Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        assert_eq!(
+            config["bundle"]["macOS"]["minimumSystemVersion"],
+            json!("13.0")
+        );
+    }
+
     /// What the settings window may ask of the opener plugin, from the capability file.
     fn opener_permissions() -> Vec<Value> {
         let capability: Value =

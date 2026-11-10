@@ -206,6 +206,12 @@ impl Platform for WindowsPlatform {
     fn request_microphone(&self, done: Box<dyn FnOnce(bool) + Send>) {
         done(true);
     }
+
+    fn screen_recording(&self) -> Permission {
+        Permission::NotNeeded
+    }
+
+    fn request_screen_recording(&self) {}
 }
 
 // ---- The foreground window -----------------------------------------------------------------------------------

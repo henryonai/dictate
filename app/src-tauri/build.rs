@@ -80,6 +80,12 @@ fn main() {
         println!("cargo::rustc-link-arg=-Wl,-rpath,$ORIGIN");
         println!("cargo::rustc-link-arg=-Wl,-rpath,$ORIGIN/..");
     }
+    // macOS: the program and its tests load the Swift runtime of the system (the screen is recorded through a ScreenCaptureKit
+    // bridge written in Swift, which `dictate-services` links). The bridge's own build script gives this run path only to the
+    // binaries of its own package, which has none, and neither does `dictate-services`' reach this package.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        println!("cargo::rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
+    }
     tauri_build::try_build(
         tauri_build::Attributes::new()
             .app_manifest(tauri_build::AppManifest::new().commands(COMMANDS)),

@@ -124,6 +124,13 @@ pub trait Platform: Send + Sync {
     fn microphone(&self) -> Permission;
     /// Asks for the microphone, which shows the system's prompt the first time, and calls `done` with the answer.
     fn request_microphone(&self, done: Box<dyn FnOnce(bool) + Send>);
+    /// Whether the app may record the screen and the sound of the system, which is one permission on macOS (Screen Recording).
+    /// macOS cannot say that it was never asked, so until it is granted this says `Denied`, never `NotDetermined`.
+    #[expect(dead_code, reason = "the commands and the recorder do not ask yet")]
+    fn screen_recording(&self) -> Permission;
+    /// Shows the system's prompt for Screen Recording (macOS only). It is shown once; after that only System Settings grants it.
+    #[expect(dead_code, reason = "the commands and the recorder do not ask yet")]
+    fn request_screen_recording(&self);
 }
 
 /// The platform layer of the running app, made once at the start and kept in the app's state: the controller and the

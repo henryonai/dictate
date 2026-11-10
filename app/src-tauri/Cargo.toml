@@ -61,7 +61,7 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std"
 objc2-application-services = { version = "0.3.2", default-features = false, features = ["std", "libc", "objc2", "HIServices", "AXUIElement", "AXError", "AXValue"] }
 objc2-av-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "AVCaptureDevice", "AVMediaFormat"] }
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "objc2", "CFArray", "CFBase", "CFCGTypes", "CFDictionary", "CFNumber", "CFString"] }
-objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGEvent", "CGEventSource", "CGEventTypes", "CGRemoteOperation"] }
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGEvent", "CGEventSource", "CGEventTypes", "CGRemoteOperation", "CGWindow"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSData", "NSString"] }
 # The bubble is a non-activating panel, which Tauri's own window flags can't make. Pinned: this is the release that was checked with Rust 1.85.
 tauri-nspanel = "=2.1.1"

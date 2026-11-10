@@ -1,5 +1,5 @@
-//! The sources of a recording that belong to the system: the microphone, and the sound that the system plays. The
-//! screen is another module's.
+//! The sources of a recording that belong to the system: the microphone, the sound that the system plays, and (on
+//! macOS, where the two come from one stream) the screen.
 //!
 //! What a source does for the session, whichever it is:
 //! - It is started on the session's thread by [`Capturer::start`], and stopped on that same thread: a microphone of some
@@ -15,6 +15,8 @@
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 
+use serde::Serialize;
+
 use crate::audio::capture::{Capture, CaptureError, Report};
 
 use super::{
@@ -24,11 +26,47 @@ use super::{
 /// Windows records what the default output device plays through the same calls as a microphone. That is all this is,
 /// so it is built on every system, to be checked on all of them.
 pub mod loopback_windows;
+/// The screen and the system's audio of macOS: one ScreenCaptureKit stream.
+#[cfg(target_os = "macos")]
+pub mod macos;
 pub mod mic;
 /// The Linux way to hear the system's audio: a `parec` child. It is plain Unix code, built (and its tests run) on
 /// macOS too.
 #[cfg(unix)]
 pub mod parec_linux;
+
+/// A display or a window that can be recorded, as the picker lists it.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct SourceInfo {
+    /// What `Mode::Screen::display` or `Mode::Window::id` takes to name it: the system's own number for it, as text.
+    pub id: String,
+    /// What the picker shows.
+    pub name: String,
+    /// The application that owns a window.
+    pub app: Option<String>,
+}
+
+/// What the system offers to record.
+#[derive(Serialize, Clone, Debug, PartialEq, Default)]
+pub struct Sources {
+    /// The main display first.
+    pub displays: Vec<SourceInfo>,
+    pub windows: Vec<SourceInfo>,
+    /// The system asks the person for the display or the window (a portal on Linux), and no list of ours is needed.
+    pub picker_is_the_system: bool,
+}
+
+/// What can be recorded on this system, for the picker. It asks the system, which may take a moment.
+#[cfg(target_os = "macos")]
+pub fn list_sources() -> Result<Sources, StartError> {
+    macos::list_sources()
+}
+
+/// What can be recorded on this system, for the picker.
+#[cfg(not(target_os = "macos"))]
+pub fn list_sources() -> Result<Sources, StartError> {
+    Err(not_available_yet())
+}
 
 /// The sources of a recording on this system.
 pub struct OsCapturer {
@@ -40,34 +78,60 @@ impl Capturer for OsCapturer {
     fn start(
         &self,
         track: Track,
-        _options: &RecordOptions,
+        options: &RecordOptions,
         tx: Sender<SourceEvent>,
     ) -> Result<Box<dyn RunningSource>, StartError> {
         match track {
             Track::Mic => mic::start(tx),
-            Track::System => start_system_audio(tx),
-            Track::Screen => Err(not_available_yet()),
+            Track::System => start_system_audio(options, tx),
+            Track::Screen => start_screen(options, tx),
         }
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn not_available_yet() -> StartError {
     StartError::Source("not available yet".into())
 }
 
 #[cfg(windows)]
-fn start_system_audio(tx: Sender<SourceEvent>) -> Result<Box<dyn RunningSource>, StartError> {
+fn start_system_audio(
+    _options: &RecordOptions,
+    tx: Sender<SourceEvent>,
+) -> Result<Box<dyn RunningSource>, StartError> {
     loopback_windows::start(tx)
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
-fn start_system_audio(tx: Sender<SourceEvent>) -> Result<Box<dyn RunningSource>, StartError> {
+fn start_system_audio(
+    _options: &RecordOptions,
+    tx: Sender<SourceEvent>,
+) -> Result<Box<dyn RunningSource>, StartError> {
     parec_linux::start(tx)
 }
 
-/// The system's audio of macOS comes with the screen capture.
+/// The system's audio of macOS comes with the screen capture, from the same stream.
 #[cfg(target_os = "macos")]
-fn start_system_audio(_tx: Sender<SourceEvent>) -> Result<Box<dyn RunningSource>, StartError> {
+fn start_system_audio(
+    options: &RecordOptions,
+    tx: Sender<SourceEvent>,
+) -> Result<Box<dyn RunningSource>, StartError> {
+    macos::start(Track::System, options, tx)
+}
+
+#[cfg(target_os = "macos")]
+fn start_screen(
+    options: &RecordOptions,
+    tx: Sender<SourceEvent>,
+) -> Result<Box<dyn RunningSource>, StartError> {
+    macos::start(Track::Screen, options, tx)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn start_screen(
+    _options: &RecordOptions,
+    _tx: Sender<SourceEvent>,
+) -> Result<Box<dyn RunningSource>, StartError> {
     Err(not_available_yet())
 }
 
@@ -212,14 +276,15 @@ mod real_audio {
 mod tests {
     use super::*;
     use crate::audio::capture::Tap;
-    use crate::record::quality::Quality;
     use crate::record::stem::StemWriter;
-    use crate::record::{Capturer, Mode, RecordOptions, StartError, Track};
+    use crate::record::{StartError, Track};
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
-    fn options() -> RecordOptions {
-        RecordOptions {
+    #[cfg(not(target_os = "macos"))]
+    fn options() -> crate::record::RecordOptions {
+        use crate::record::{quality::Quality, Mode};
+        crate::record::RecordOptions {
             mode: Mode::Audio,
             quality: Quality::Standard,
             mic: true,
@@ -227,25 +292,19 @@ mod tests {
         }
     }
 
+    /// The screen of Windows and Linux is not there yet. (That of macOS is, and its tests are in `macos`: they start no
+    /// capture, which would need the permission of whoever runs them.)
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn os_capturer_reports_unavailable_tracks_as_errors_not_panics() {
+        use crate::record::Capturer;
         let capturer = OsCapturer { ffmpeg: None };
-        let unavailable = Some(StartError::Source("not available yet".into()));
 
         let (tx, _rx) = mpsc::channel();
         assert_eq!(
             capturer.start(Track::Screen, &options(), tx).err(),
-            unavailable
+            Some(StartError::Source("not available yet".into()))
         );
-        // The system's audio of macOS comes with its screen capture.
-        #[cfg(target_os = "macos")]
-        {
-            let (tx, _rx) = mpsc::channel();
-            assert_eq!(
-                capturer.start(Track::System, &options(), tx).err(),
-                unavailable
-            );
-        }
     }
 
     /// How many samples the stem has after what a track delivered (a buffer each at the instants given, which are

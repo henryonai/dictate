@@ -14,17 +14,31 @@
 //!
 //! The run path: tests are built into `target/<profile>/deps`, hence `$ORIGIN/..`. A build script's link arguments
 //! reach only the binaries of its own package, so `sherpa-onnx-sys` cannot set this up for the packages that use it.
+//!
+//! macOS only: the Swift bridge of ScreenCaptureKit needs two things of the build that its own build script gives only to its own
+//! binaries, of which a library has none. The folder of the Swift libraries is added to the search path of the linker
+//! (`build_swift.rs`), so that a machine with the Command Line Tools and no Xcode links; unlike a link argument, a search path
+//! reaches the binaries of the packages that use this one. And the run path `/usr/lib/swift` (where the system has the Swift
+//! runtime, `libswift_Concurrency` among it) is given to the binaries of this package; the app's build script does the same.
 
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 
 #[path = "build_support.rs"]
 mod build_support;
+#[path = "build_swift.rs"]
+mod build_swift;
 
 fn main() {
     println!("cargo::rerun-if-changed=build.rs");
     println!("cargo::rerun-if-changed=build_support.rs");
+    println!("cargo::rerun-if-changed=build_swift.rs");
     println!("cargo::rerun-if-env-changed=SHERPA_ONNX_LIB_DIR");
+    println!("cargo::rerun-if-env-changed=DEVELOPER_DIR");
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        add_swift_libraries_to_the_search_path();
+        println!("cargo::rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
+    }
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
         println!("cargo::rustc-link-arg=-Wl,-rpath,$ORIGIN/..");
         println!("cargo::rustc-link-arg=-Wl,-rpath,$ORIGIN");
@@ -36,6 +50,25 @@ fn main() {
             .nth(3)
             .expect("OUT_DIR is inside target/<profile>");
         copy_shared_libraries(&sherpa_lib_dir(), profile_dir);
+    }
+}
+
+/// Adds the folder of the Swift toolchain's libraries to the linker's search path: the one of the developer directory that `xcode-select -p`
+/// names (it honours DEVELOPER_DIR). A machine where that cannot be asked is left to the build script of `screencapturekit`, which
+/// warns about it.
+fn add_swift_libraries_to_the_search_path() {
+    let Ok(output) = std::process::Command::new("xcode-select")
+        .arg("-p")
+        .output()
+    else {
+        return;
+    };
+    if !output.status.success() {
+        return;
+    }
+    let developer_dir = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    if let Some(dir) = build_swift::swift_lib_dir(&developer_dir, Path::is_dir) {
+        println!("cargo::rustc-link-search=native={}", dir.display());
     }
 }
 

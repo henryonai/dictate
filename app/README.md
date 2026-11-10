@@ -25,7 +25,7 @@ Every system needs:
 
 On top of that:
 
-- **macOS:** the Xcode Command Line Tools (`xcode-select --install`) and CMake (`brew install cmake`).
+- **macOS:** the Xcode Command Line Tools with the macOS 13 SDK or newer (`xcode-select --install`) and CMake (`brew install cmake`). The screen and the system's audio of a recording come from ScreenCaptureKit, through a Swift bridge that the `screencapturekit` crate builds with `swift build` (the Command Line Tools have it; the first build takes a minute or so longer for it). The app runs on macOS 13 or later.
 - **Windows 10 or 11:** the [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with the "Desktop development with C++" workload, CMake and LLVM (for libclang), and the WebView2 runtime, which Windows 11 has already. CMake and LLVM can come from winget, one command each:
 
   ```sh

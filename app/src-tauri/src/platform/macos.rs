@@ -34,6 +34,7 @@ use objc2_core_foundation::{
 };
 use objc2_core_graphics::{
     CGEvent, CGEventField, CGEventFlags, CGEventSource, CGEventSourceStateID, CGEventTapLocation,
+    CGPreflightScreenCaptureAccess, CGRequestScreenCaptureAccess,
 };
 use objc2_foundation::{NSArray, NSData, NSString};
 
@@ -175,6 +176,18 @@ impl Platform for MacPlatform {
             finish(&done, false);
         }
     }
+
+    fn screen_recording(&self) -> Permission {
+        // Asking does not prompt, and the answer can be behind by one launch of the app after the permission was granted.
+        screen_permission_from(CGPreflightScreenCaptureAccess())
+    }
+
+    fn request_screen_recording(&self) {
+        let _ = self.app.run_on_main_thread(|| {
+            // Shows the prompt, once for each build of the app, and says whether the permission is granted already.
+            let _ = CGRequestScreenCaptureAccess();
+        });
+    }
 }
 
 /// What waits for the answer to a request for the microphone.
@@ -193,6 +206,15 @@ fn permission_from(status: AVAuthorizationStatus) -> Permission {
         AVAuthorizationStatus::NotDetermined => Permission::NotDetermined,
         // A restriction (parental controls, a profile) is a no that the user can't change.
         _ => Permission::Denied,
+    }
+}
+
+/// `CGPreflightScreenCaptureAccess` says yes or no, and no is also what it says before the user was ever asked.
+fn screen_permission_from(granted: bool) -> Permission {
+    if granted {
+        Permission::Granted
+    } else {
+        Permission::Denied
     }
 }
 
@@ -1087,6 +1109,13 @@ mod tests {
             permission_from(AVAuthorizationStatus::NotDetermined),
             Permission::NotDetermined
         );
+    }
+
+    #[test]
+    fn the_screen_recording_check_is_granted_or_denied_and_never_not_determined() {
+        // `CGPreflightScreenCaptureAccess` says yes or no, and no is also the answer before the user was ever asked.
+        assert_eq!(screen_permission_from(true), Permission::Granted);
+        assert_eq!(screen_permission_from(false), Permission::Denied);
     }
 
     #[test]
