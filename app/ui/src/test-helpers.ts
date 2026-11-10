@@ -396,6 +396,7 @@ export function stubMeetingsApi(rows: MeetingRow[] = []) {
   const jobListeners = new Set<(job: JobView) => void>();
   const changedListeners = new Set<() => void>();
   const dropListeners = new Set<(event: FileDropEvent) => void>();
+  const hiddenListeners = new Set<() => void>();
   const listener = <T>(set: Set<T>) => async (handler: T) => {
     set.add(handler);
     return () => {
@@ -429,11 +430,16 @@ export function stubMeetingsApi(rows: MeetingRow[] = []) {
   vi.spyOn(api, "onMeetingJob").mockImplementation(listener(jobListeners));
   vi.spyOn(api, "onMeetingsChanged").mockImplementation(listener(changedListeners));
   vi.spyOn(api, "onFileDrop").mockImplementation(listener(dropListeners));
+  vi.spyOn(api, "onMeetingsHidden").mockImplementation(listener(hiddenListeners));
 
   return {
     emitJob: (job: JobView) => jobListeners.forEach((handler) => handler(job)),
     emitChanged: () => changedListeners.forEach((handler) => handler()),
     emitDrop: (event: FileDropEvent) => dropListeners.forEach((handler) => handler(event)),
+    /** The window was closed (hidden). */
+    emitHidden: () => hiddenListeners.forEach((handler) => handler()),
+    /** How many listeners of the window being closed are on now (it is not in `listening`: only the detail listens to it). */
+    hiddenListeners: () => hiddenListeners.size,
     /** How many listeners of each event are on now. */
     listening: () => ({ jobs: jobListeners.size, changed: changedListeners.size, drops: dropListeners.size }),
     setReadiness: (readiness: Readiness) => vi.mocked(api.meetingsReadiness).mockResolvedValue(readiness),

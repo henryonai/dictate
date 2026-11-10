@@ -266,6 +266,19 @@ test("the meetings-changed event tells that the list changed, until it is remove
   expect(heard).toBe(1);
 });
 
+test("the meetings-hidden event tells that the window was closed, until it is removed", async () => {
+  recordCalls();
+  let heard = 0;
+  const stop = await api.onMeetingsHidden(() => (heard += 1));
+
+  await emit("meetings-hidden");
+  expect(heard).toBe(1);
+
+  stop();
+  await emit("meetings-hidden");
+  expect(heard).toBe(1);
+});
+
 describe("the files dropped on the window", () => {
   const position = { x: 10, y: 20 };
 

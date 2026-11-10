@@ -484,6 +484,47 @@ test("Listen in the sheet seeks the player of the window, and closing the sheet 
   expect(HTMLMediaElement.prototype.pause).toHaveBeenCalledTimes(1);
 });
 
+test("closing the window pauses the player: a hidden web view goes on playing", async () => {
+  await opened();
+  vi.mocked(HTMLMediaElement.prototype.pause).mockClear();
+
+  events.emitHidden();
+
+  expect(HTMLMediaElement.prototype.pause).toHaveBeenCalledTimes(1);
+});
+
+test("a document that is hidden pauses the player too, and one that is shown again does not", async () => {
+  await opened();
+  const hide = (hidden: boolean) => {
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => hidden });
+    document.dispatchEvent(new Event("visibilitychange"));
+  };
+  try {
+    vi.mocked(HTMLMediaElement.prototype.pause).mockClear();
+    hide(false);
+    expect(HTMLMediaElement.prototype.pause).not.toHaveBeenCalled();
+
+    hide(true);
+    expect(HTMLMediaElement.prototype.pause).toHaveBeenCalledTimes(1);
+  } finally {
+    // jsdom has `hidden` on the prototype: the own property that was put over it goes.
+    Reflect.deleteProperty(document, "hidden");
+  }
+});
+
+test("the detail stops listening for the window being closed when it goes away", async () => {
+  const { view } = await opened();
+  await vi.waitFor(() => expect(events.hiddenListeners()).toBe(1));
+  vi.mocked(HTMLMediaElement.prototype.pause).mockClear();
+
+  view.unmount();
+  await vi.waitFor(() => expect(events.hiddenListeners()).toBe(0));
+  events.emitHidden();
+  document.dispatchEvent(new Event("visibilitychange"));
+
+  expect(HTMLMediaElement.prototype.pause).not.toHaveBeenCalled();
+});
+
 test("a sheet is let go of when its recording starts to work, so that no dialog is left open with nothing in it", async () => {
   await opened(whole({ speakers: TWO_SPEAKERS }));
   store.openRename();

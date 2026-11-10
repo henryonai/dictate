@@ -1,9 +1,12 @@
 //! The meetings window: made the first time it is asked for, shown again after that.
 //!
 //! Closing it hides it (the `on_window_event` of the app does that for every window), so that its list and what is selected in
-//! it are as they were when it comes back, and the app stays in the tray.
+//! it are as they were when it comes back, and the app stays in the tray. A hidden web view goes on playing, so the page is told
+//! (`meetings-hidden`) and pauses its player.
 
-use tauri::{AppHandle, Manager, Runtime, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{
+    AppHandle, Emitter, Manager, Runtime, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+};
 
 /// The label of the window: the capability file `meetings.json` names it.
 pub const LABEL: &str = "meetings";
@@ -16,6 +19,20 @@ const WIDTH: f64 = 1240.0;
 const HEIGHT: f64 = 780.0;
 const MIN_WIDTH: f64 = 960.0;
 const MIN_HEIGHT: f64 = 600.0;
+
+/// The event that tells the page its window was closed. Closing only hides the window, and a hidden web view goes on playing:
+/// the page pauses the player on this.
+pub const HIDDEN_EVENT: &str = "meetings-hidden";
+
+/// A window was hidden by a request to close it: when it is the meetings window, its page is told so.
+pub fn window_hidden<R: Runtime>(app: &AppHandle<R>, label: &str) {
+    if label != LABEL {
+        return;
+    }
+    if let Err(e) = app.emit_to(LABEL, HIDDEN_EVENT, ()) {
+        log::warn!("Could not tell the meetings page that its window was closed: {e}");
+    }
+}
 
 /// Shows the meetings window and brings it to the front, making it when there is none yet.
 pub fn show<R: Runtime>(app: &AppHandle<R>) {
@@ -49,8 +66,11 @@ fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<WebviewWindow<R>> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
     use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
-    use tauri::App;
+    use tauri::{App, Listener};
 
     use super::*;
 
@@ -83,6 +103,26 @@ mod tests {
             1
         );
         assert_eq!(windows.len(), 1);
+    }
+
+    #[test]
+    fn closing_the_meetings_window_tells_its_page_and_no_other_window_does() {
+        let app = app();
+        let handle = app.handle();
+        show(handle);
+        let window = handle.get_webview_window(LABEL).expect("the window");
+        let heard = Arc::new(AtomicUsize::new(0));
+        let count = heard.clone();
+        window.listen(HIDDEN_EVENT, move |_| {
+            count.fetch_add(1, Ordering::SeqCst);
+        });
+
+        // The settings window is hidden by the same handler: the meetings page has no news of it.
+        window_hidden(handle, "settings");
+        assert_eq!(heard.load(Ordering::SeqCst), 0);
+
+        window_hidden(handle, LABEL);
+        assert_eq!(heard.load(Ordering::SeqCst), 1);
     }
 
     #[test]

@@ -456,6 +456,11 @@ export const api = {
    */
   onMeetingsChanged: (handler: () => void) => listen("meetings-changed", () => handler()),
   /**
+   * The window was closed, which only hides it: a hidden web view goes on playing, so the page pauses its player. Resolves with the
+   * function that stops listening.
+   */
+  onMeetingsHidden: (handler: () => void) => listen("meetings-hidden", () => handler()),
+  /**
    * Files dragged over this window: entering, leaving and the drop with the paths. It needs only the permission to listen to
    * events. Resolves with the function that stops listening.
    */

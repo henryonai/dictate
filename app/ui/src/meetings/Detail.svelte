@@ -1,5 +1,6 @@
 <script lang="ts">
   import { untrack } from "svelte";
+  import { api, errorText } from "../lib/api";
   import { formatDuration } from "../lib/days";
   import { Flash } from "../lib/flash.svelte";
   import { currentLanguage, t } from "../lib/i18n";
@@ -29,6 +30,26 @@
   $effect(() => {
     const shown = detail;
     untrack(() => player.bind(shown?.row.id ?? null, shown?.media ?? null));
+  });
+
+  // Closing the window only hides it, and a hidden web view goes on playing, with no control on screen. The Rust side says when the
+  // window was closed (`meetings-hidden`: no engine is asked to fire `visibilitychange` for that), and a document that is hidden says
+  // so itself where the engine does: both pause the player.
+  $effect(() => {
+    const stop = api
+      .onMeetingsHidden(() => player.pause())
+      .catch((e: unknown) => {
+        store.notify(errorText(e));
+        return () => {};
+      });
+    const onVisibility = () => {
+      if (document.hidden) player.pause();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      void stop.then((stopListening) => stopListening());
+    };
   });
 
   const seek = (seconds: number) => void player.seek(seconds);

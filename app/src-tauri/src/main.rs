@@ -87,6 +87,8 @@ fn main() {
                 }
                 // A floating window hidden like this is not shown any more, and the next state shows it again.
                 panel::window_closed(window.app_handle(), window.label());
+                // A hidden web view goes on playing: the meetings page pauses its player.
+                meetings::window::window_hidden(window.app_handle(), window.label());
             }
         })
         .invoke_handler(tauri::generate_handler![
