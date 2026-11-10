@@ -652,7 +652,9 @@ mod tests {
     use super::*;
     use crate::media::decode::MonoDecoder;
     use crate::media::encode::m4a_writer;
-    use crate::media::test_support::{read_all, real_ffmpeg, script};
+    #[cfg(unix)]
+    use crate::media::test_support::script;
+    use crate::media::test_support::{read_all, real_ffmpeg};
     use crate::record::quality::Quality;
     use crate::record::test_support::video_seconds;
     use std::fs;
@@ -917,7 +919,8 @@ mod tests {
     }
 
     /// A stand-in for ffmpeg that lists `names` for `-encoders`, and for anything else (the probe of an encoder)
-    /// reads its input and ends with the status that `probe` is: a shell command.
+    /// does what `probe` says: a shell command.
+    #[cfg(unix)]
     fn listing_ffmpeg(dir: &Path, names: &[&str], probe: &str) -> PathBuf {
         let listing = listing(names);
         script(
@@ -926,7 +929,7 @@ mod tests {
             &format!(
                 "case \"$*\" in\n\"-hide_banner -encoders\")\ncat <<'EOF'\n{listing}EOF\n;;\n*)\n{probe}\n;;\nesac"
             ),
-            "exit /b 1",
+            "",
         )
     }
 
