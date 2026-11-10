@@ -20,6 +20,8 @@ use process_wrap::std::ProcessGroup;
 use process_wrap::std::{CreationFlags, JobObject};
 use process_wrap::std::{StdChildWrapper, StdCommandWrap};
 #[cfg(windows)]
+use std::sync::Arc;
+#[cfg(windows)]
 use windows::Win32::System::Threading::CREATE_NO_WINDOW;
 
 mod job;
@@ -72,6 +74,10 @@ fn arguments(part: &Path) -> Vec<OsString> {
 
 /// Starts ffmpeg writing `out`.
 pub(super) fn create(out: &Path, ffmpeg: &Path) -> Result<Box<dyn M4aSink>, EncodeError> {
+    Ok(Box::new(start(out, ffmpeg)?))
+}
+
+fn start(out: &Path, ffmpeg: &Path) -> Result<FfmpegSink, EncodeError> {
     let part = part_path(out);
     let mut command = tools::command(ffmpeg);
     command
@@ -104,7 +110,7 @@ pub(super) fn create(out: &Path, ffmpeg: &Path) -> Result<Box<dyn M4aSink>, Enco
         let _ = child.wait();
         return Err(EncodeError::Failed("could not talk to ffmpeg".into()));
     };
-    Ok(Box::new(FfmpegSink {
+    Ok(FfmpegSink {
         child,
         stdin: Some(stdin),
         // What ffmpeg prints is read all the time, whatever the audio does: a program that fills the pipe stops.
@@ -115,7 +121,9 @@ pub(super) fn create(out: &Path, ffmpeg: &Path) -> Result<Box<dyn M4aSink>, Enco
         out: out.to_owned(),
         part,
         published: false,
-    }))
+        #[cfg(windows)]
+        job,
+    })
 }
 
 /// A running ffmpeg and the end of its standard input that the blocks are written to.
@@ -135,6 +143,10 @@ struct FfmpegSink {
     part: PathBuf,
     /// The `.part` file has become `out`.
     published: bool,
+    /// The job that ffmpeg and what it started are in, to be asked how many of them are left (`None` when it could not be made).
+    #[cfg(windows)]
+    #[cfg_attr(not(test), allow(dead_code))]
+    job: Option<Arc<job::Job>>,
 }
 
 impl FfmpegSink {
@@ -428,10 +440,18 @@ mod tests {
                 started.display()
             ),
         );
-        let sink = create(&out, &fake).unwrap();
+        let sink = start(&out, &fake).unwrap();
+        // For the message of a failure: what the job of the sink holds, before the sink is dropped and after.
+        #[cfg(windows)]
+        let job = sink.job.clone();
         wait_for("the fake ffmpeg to start its own program", || {
             started.exists()
         });
+        #[cfg(windows)]
+        let before = job.as_ref().map_or_else(
+            || "the job could not be made".to_owned(),
+            |job| job.describe(),
+        );
 
         drop(sink);
 
@@ -449,9 +469,22 @@ mod tests {
         }
         // Long enough for the program of the fake to have written the file, had it been left running.
         std::thread::sleep(Duration::from_secs(6));
+        // On Windows a failure says what the job held before the drop (the fake's own `cmd.exe` and its `ping` and, if the program
+        // that `start /b` makes was in the job, a `cmd.exe` with a `ping` more) and what is left of it now. `IsProcessInJob` of that
+        // program is not asked: `start /b` does not say its id.
+        #[cfg(windows)]
+        let report = format!(
+            "; in the job before the drop, {before}; now, {}",
+            job.as_ref().map_or_else(
+                || "the job could not be made".to_owned(),
+                |job| job.describe()
+            )
+        );
+        #[cfg(not(windows))]
+        let report = "";
         assert!(
             !late.exists(),
-            "a program that ffmpeg started is still running"
+            "a program that ffmpeg started is still running{report}"
         );
     }
 }

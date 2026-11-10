@@ -38,10 +38,19 @@ mod windows_job {
     use std::time::Duration;
 
     use process_wrap::std::{StdChildWrapper, StdCommandWrap, StdCommandWrapper};
+    #[cfg(test)]
+    use windows::core::PWSTR;
     use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    #[cfg(test)]
+    use windows::Win32::System::JobObjects::JobObjectBasicProcessIdList;
     use windows::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicAccountingInformation,
         QueryInformationJobObject, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+    };
+    #[cfg(test)]
+    use windows::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
     };
 
     use super::poll_until;
@@ -86,6 +95,80 @@ mod windows_job {
             }
             .map_err(io::Error::other)?;
             Ok(info.ActiveProcesses)
+        }
+    }
+
+    #[cfg(test)]
+    impl Job {
+        /// What is in the job, for a test that fails: how many processes are active, and the id and the program of each.
+        pub(crate) fn describe(&self) -> String {
+            let active = self
+                .active_processes()
+                .map_or_else(|e| format!("unknown ({e})"), |active| active.to_string());
+            let members = self.process_ids().map_or_else(
+                |e| format!("unknown ({e})"),
+                |ids| {
+                    ids.iter()
+                        .map(|id| format!("{id} {}", image_name(*id)))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                },
+            );
+            format!("{active} active processes in the job: [{members}]")
+        }
+
+        fn process_ids(&self) -> io::Result<Vec<u32>> {
+            #[repr(C)]
+            struct IdList {
+                assigned: u32,
+                listed: u32,
+                ids: [usize; 64],
+            }
+            let mut list = IdList {
+                assigned: 0,
+                listed: 0,
+                ids: [0; 64],
+            };
+            // SAFETY: `list` is the size that is told, and lives through the call.
+            unsafe {
+                QueryInformationJobObject(
+                    Some(self.0),
+                    JobObjectBasicProcessIdList,
+                    (&raw mut list).cast::<c_void>(),
+                    std::mem::size_of::<IdList>() as u32,
+                    None,
+                )
+            }
+            .map_err(io::Error::other)?;
+            let listed = (list.listed as usize).min(list.ids.len());
+            Ok(list.ids[..listed].iter().map(|id| *id as u32).collect())
+        }
+    }
+
+    /// The name of the program of a process, as far as it can be had: a process that has ended has none.
+    #[cfg(test)]
+    fn image_name(id: u32) -> String {
+        // SAFETY: the handle is closed before this returns, and the buffer is the size that is told.
+        unsafe {
+            let Ok(process) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, id) else {
+                return "(gone)".to_owned();
+            };
+            let mut buffer = [0u16; 520];
+            let mut length = buffer.len() as u32;
+            let named = QueryFullProcessImageNameW(
+                process,
+                PROCESS_NAME_WIN32,
+                PWSTR(buffer.as_mut_ptr()),
+                &mut length,
+            );
+            let _ = CloseHandle(process);
+            match named {
+                Ok(()) => {
+                    let path = String::from_utf16_lossy(&buffer[..length as usize]);
+                    path.rsplit('\\').next().unwrap_or("?").to_owned()
+                }
+                Err(_) => "(unnamed)".to_owned(),
+            }
         }
     }
 
@@ -151,6 +234,39 @@ mod windows_job {
                 || !matches!(self.job.active_processes(), Ok(active) if active > 0),
             );
             Ok(status)
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::process::{Command, Stdio};
+
+        #[test]
+        fn a_job_counts_the_processes_in_it_until_they_end() {
+            let job = Job::new().unwrap();
+            assert_eq!(job.active_processes().unwrap(), 0);
+            // One program, which has nothing of its own to leave behind when it is killed.
+            let mut child = Command::new("ping")
+                .args(["-n", "30", "127.0.0.1"])
+                .stdout(Stdio::null())
+                .spawn()
+                .unwrap();
+            job.assign(HANDLE(child.as_raw_handle().cast())).unwrap();
+
+            assert_eq!(job.active_processes().unwrap(), 1);
+            assert!(
+                job.describe().to_lowercase().contains("ping"),
+                "{}",
+                job.describe()
+            );
+
+            child.kill().unwrap();
+            child.wait().unwrap();
+            let emptied = poll_until(Duration::from_secs(3), Duration::from_millis(20), || {
+                job.active_processes().unwrap() == 0
+            });
+            assert!(emptied, "{}", job.describe());
         }
     }
 }
