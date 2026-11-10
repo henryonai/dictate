@@ -50,6 +50,17 @@ fn a_program_with_the_data_path_variable_of_espeak_ng_in_it_fails() {
     assert_eq!(code(&output), 1, "{}", stderr(&output));
     assert!(stderr(&output).contains("dictate"), "{}", stderr(&output));
     assert!(stderr(&output).contains("espeak-ng"), "{}", stderr(&output));
+    // The log says what it found, so that a failure can be understood without the file.
+    assert!(
+        stderr(&output).contains("ESPEAK_DATA_PATH"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(
+        !stderr(&output).contains("espeak_ng_"),
+        "only the marker that matched is named: {}",
+        stderr(&output)
+    );
 }
 
 #[test]
@@ -57,7 +68,36 @@ fn a_program_with_a_function_of_espeak_ng_in_it_fails() {
     let dir = tempfile::tempdir().unwrap();
     let program = binary(dir.path(), "libsherpa.so", b"\0_espeak_ng_InitializePath\0");
 
-    assert_eq!(code(&run(&[&program])), 1);
+    let output = run(&[&program]);
+
+    assert_eq!(code(&output), 1);
+    // The marker, and the whole name of the function that it is the start of.
+    assert!(
+        stderr(&output).contains("espeak_ng_InitializePath"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(
+        !stderr(&output).contains("ESPEAK_DATA_PATH"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn a_program_with_both_markers_names_both() {
+    let dir = tempfile::tempdir().unwrap();
+    let program = binary(
+        dir.path(),
+        "dictate.exe",
+        b"\0ESPEAK_DATA_PATH\0espeak_ng_Terminate\0",
+    );
+
+    let output = run(&[&program]);
+
+    assert_eq!(code(&output), 1);
+    assert!(stderr(&output).contains("ESPEAK_DATA_PATH"));
+    assert!(stderr(&output).contains("espeak_ng_Terminate"));
 }
 
 #[test]

@@ -9,18 +9,22 @@
 //! script again). Each copy gets the time of its source, which is older than this run, so that it does not make the
 //! next build run the script again.
 //!
+//! The folder that the libraries come from is SHERPA_ONNX_LIB_DIR, which Linux requires: the library that `sherpa-onnx-sys` would
+//! fetch by itself has espeak-ng (GPL-3.0) in it. `scripts/fetch-sherpa-onnx-no-tts.sh` fetches the one that has none.
+//!
 //! The run path: tests are built into `target/<profile>/deps`, hence `$ORIGIN/..`. A build script's link arguments
 //! reach only the binaries of its own package, so `sherpa-onnx-sys` cannot set this up for the packages that use it.
 
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 
-/// The version of `sherpa-onnx-sys` in Cargo.toml (pinned with `=`): its build script unpacks the archive into a
-/// folder named after it.
-const SHERPA_ONNX_VERSION: &str = "1.13.8";
+#[path = "build_support.rs"]
+mod build_support;
 
 fn main() {
     println!("cargo::rerun-if-changed=build.rs");
+    println!("cargo::rerun-if-changed=build_support.rs");
+    println!("cargo::rerun-if-env-changed=SHERPA_ONNX_LIB_DIR");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
         println!("cargo::rustc-link-arg=-Wl,-rpath,$ORIGIN/..");
         println!("cargo::rustc-link-arg=-Wl,-rpath,$ORIGIN");
@@ -31,35 +35,21 @@ fn main() {
             .ancestors()
             .nth(3)
             .expect("OUT_DIR is inside target/<profile>");
-        copy_shared_libraries(&sherpa_lib_dir(&out_dir), profile_dir);
+        copy_shared_libraries(&sherpa_lib_dir(), profile_dir);
     }
 }
 
-/// The folder that `sherpa-onnx-sys` links from, found the way its build script finds it: `SHERPA_ONNX_LIB_DIR` when it
-/// is set, otherwise the `lib` folder of the unpacked archive in `<target>/sherpa-onnx-prebuilt`.
-fn sherpa_lib_dir(out_dir: &Path) -> PathBuf {
-    println!("cargo::rerun-if-env-changed=SHERPA_ONNX_LIB_DIR");
-    if let Some(dir) = std::env::var_os("SHERPA_ONNX_LIB_DIR") {
-        return PathBuf::from(dir);
+/// The folder that `sherpa-onnx-sys` links from: SHERPA_ONNX_LIB_DIR, which is required on Linux. Without it the build script of that
+/// crate downloads the archive with espeak-ng (GPL-3.0) in it, so the build stops here instead and says how to get the one that has
+/// none (`build_support.rs`). That crate's script has run by now (it comes first) and has downloaded it; nothing is linked from it.
+fn sherpa_lib_dir() -> PathBuf {
+    let lib_dir = std::env::var_os("SHERPA_ONNX_LIB_DIR");
+    let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+    if let Some(message) = build_support::missing_lib_dir_message(&arch, lib_dir.as_deref()) {
+        eprintln!("\n{message}\n");
+        std::process::exit(1);
     }
-    let target_dir = std::env::var_os("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .or_else(|| {
-            out_dir
-                .ancestors()
-                .find(|dir| dir.file_name() == Some("target".as_ref()))
-                .map(Path::to_path_buf)
-        })
-        .unwrap_or_else(|| out_dir.to_path_buf());
-    let archive = match std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
-        Ok("x86_64") => "linux-x64-shared-lib",
-        Ok("aarch64") => "linux-aarch64-shared-cpu-lib",
-        other => panic!("sherpa-onnx has no shared Linux build for {other:?}"),
-    };
-    target_dir
-        .join("sherpa-onnx-prebuilt")
-        .join(format!("sherpa-onnx-v{SHERPA_ONNX_VERSION}-{archive}"))
-        .join("lib")
+    PathBuf::from(lib_dir.expect("checked just above"))
 }
 
 /// Copies every `.so` file of `lib_dir` into `dest_dir`, as `sherpa-onnx-sys` does, unless the same copy is there.

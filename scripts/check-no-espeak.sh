@@ -17,7 +17,7 @@
 # functions (`OfflineSpeakerDiarization`) and a bare "espeak" in some text are not matches.
 #
 # Exit status: 0 when no file has any, 1 when a file has, 2 when it was not asked about a file that is there (a path that is
-# misspelled must not make the check pass on nothing). The files that have some are named on stderr.
+# misspelled must not make the check pass on nothing). The files that have some are named on stderr, with what was found in them.
 
 set -u
 
@@ -34,9 +34,17 @@ for file in "$@"; do
     missing=1
     continue
   fi
+  # What matched, for the log: the first match of each marker (the whole name of a function, not only the start of it).
   # LC_ALL=C: the bytes of a program are not text in any language, and a locale may refuse some of them.
-  if LC_ALL=C grep -a -q -e 'ESPEAK_DATA_PATH' -e 'espeak_ng_' -- "$file"; then
-    echo "espeak-ng (GPL-3.0) is in $file" >&2
+  matched=""
+  for pattern in 'ESPEAK_DATA_PATH' 'espeak_ng_[A-Za-z0-9_]*'; do
+    hit="$(LC_ALL=C grep -a -o -m 1 -e "$pattern" -- "$file" | head -n 1 || true)"
+    if [ -n "$hit" ]; then
+      matched="${matched:+$matched, }$hit"
+    fi
+  done
+  if [ -n "$matched" ]; then
+    echo "espeak-ng (GPL-3.0) is in $file: found $matched" >&2
     found=1
   else
     echo "no espeak-ng in $file"
