@@ -2,6 +2,8 @@
 //! read it (`tests/linux_sherpa_setup.rs` includes it): a build script has no tests of its own.
 
 use std::ffi::OsStr;
+use std::fmt::Display;
+use std::path::Path;
 
 /// The release that `sherpa-onnx-sys` is pinned to (Cargo.toml).
 const RELEASE: &str = "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8";
@@ -43,4 +45,14 @@ pub fn missing_lib_dir_message(arch: &str, lib_dir: Option<&OsStr>) -> Option<St
              what you build with it. app/README.md, \"On Linux\", has the details."
         ),
     })
+}
+
+/// The message to stop a build on Linux with when `lib_dir` (SHERPA_ONNX_LIB_DIR) can't be read: `error` is why. The likely cause
+/// is a folder that is not the `lib` folder of the unpacked archive without text to speech.
+pub fn unreadable_lib_dir_message(lib_dir: &Path, error: &dyn Display) -> String {
+    format!(
+        "the sherpa-onnx libraries are not in {} ({error}): SHERPA_ONNX_LIB_DIR must name the `lib` folder of the no-tts archive \
+         (scripts/fetch-sherpa-onnx-no-tts.sh prints it)",
+        lib_dir.display()
+    )
 }

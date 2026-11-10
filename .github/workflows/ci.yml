@@ -27,7 +27,7 @@ jobs:
   test:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    # A cold Windows run took about 21 of the 30 minutes before sherpa-onnx; its 117 MB library comes on top.
+    # A cold Windows run took about 21 of the 30 minutes before sherpa-onnx; its 90 MB library comes on top.
     timeout-minutes: ${{ matrix.os == 'windows-latest' && 45 || 30 }}
     strategy:
       fail-fast: false

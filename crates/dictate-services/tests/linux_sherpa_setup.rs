@@ -11,7 +11,7 @@ use std::ffi::OsStr;
 #[path = "../build_support.rs"]
 mod build_support;
 
-use build_support::missing_lib_dir_message;
+use build_support::{missing_lib_dir_message, unreadable_lib_dir_message};
 
 #[test]
 fn a_build_that_has_the_folder_is_told_nothing() {
@@ -88,4 +88,27 @@ fn another_processor_is_told_the_same_as_aarch64() {
         "{message}"
     );
     assert!(message.contains("SHERPA_ONNX_ENABLE_TTS=OFF"), "{message}");
+}
+
+#[test]
+fn a_folder_that_cannot_be_read_says_which_one_and_what_it_has_to_be() {
+    let message = unreadable_lib_dir_message(
+        std::path::Path::new("/somewhere/lib"),
+        &"No such file or directory (os error 2)",
+    );
+
+    assert!(message.contains("/somewhere/lib"), "{message}");
+    assert!(
+        message.contains("No such file or directory (os error 2)"),
+        "{message}"
+    );
+    // What SHERPA_ONNX_LIB_DIR has to be, and where the script that prints it is.
+    assert!(message.contains("SHERPA_ONNX_LIB_DIR"), "{message}");
+    assert!(message.contains("`lib` folder"), "{message}");
+    assert!(
+        message.contains("scripts/fetch-sherpa-onnx-no-tts.sh"),
+        "{message}"
+    );
+    // The constant that the old text asked about is gone.
+    assert!(!message.contains("SHERPA_ONNX_VERSION"), "{message}");
 }

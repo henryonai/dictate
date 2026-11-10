@@ -54,12 +54,8 @@ fn sherpa_lib_dir() -> PathBuf {
 
 /// Copies every `.so` file of `lib_dir` into `dest_dir`, as `sherpa-onnx-sys` does, unless the same copy is there.
 fn copy_shared_libraries(lib_dir: &Path, dest_dir: &Path) {
-    let entries = fs::read_dir(lib_dir).unwrap_or_else(|e| {
-        panic!(
-            "the sherpa-onnx libraries are not in {} ({e}); does SHERPA_ONNX_VERSION in build.rs match Cargo.toml?",
-            lib_dir.display()
-        )
-    });
+    let entries = fs::read_dir(lib_dir)
+        .unwrap_or_else(|e| panic!("{}", build_support::unreadable_lib_dir_message(lib_dir, &e)));
     let mut copied = 0;
     for entry in entries {
         let source = entry.expect("reading the sherpa-onnx lib folder").path();
