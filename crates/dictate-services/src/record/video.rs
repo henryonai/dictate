@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use process_wrap::std::StdChildWrapper;
 
-use super::quality::QualitySpec;
+use super::quality::{Quality, QualitySpec};
 use crate::media::decode::Tail;
 use crate::media::encode::ffmpeg::{spawn, Process};
 use crate::media::encode::{part_path, publish, remove_part, EncodeError, M4A_BITRATE};
@@ -168,7 +168,14 @@ pub const ENCODER_ORDER: &[&str] = &[
 #[cfg(not(any(target_os = "macos", windows)))]
 pub const ENCODER_ORDER: &[&str] = &["libvpx-vp9", "libopenh264", "libx264", "mpeg4"];
 
-/// The first of `ENCODER_ORDER` that this ffmpeg has, or `None` when it has none (or cannot be run).
+/// The first of `ENCODER_ORDER` that this ffmpeg has and that works, or `None` when there is none (or ffmpeg cannot
+/// be run).
+///
+/// What ffmpeg lists (`-encoders`) is what it was built with, not what the machine can do: `h264_nvenc` is listed with
+/// no NVIDIA card, `h264_mf` on a Windows "N" edition without the Media Feature Pack. So each listed encoder is tried,
+/// in the order of the list, with two small frames written to nowhere (`works`), and the first that ends well is the
+/// pick. That is a process started per candidate (a few at most; each is over in a fraction of a second, and one that
+/// hangs is given up after 10 s), so the caller should keep the result and not ask again for every recording.
 pub fn pick_codec(ffmpeg: &Path) -> Option<VideoCodec> {
     let output = tools::command(ffmpeg)
         .args(["-hide_banner", "-encoders"])
@@ -179,11 +186,19 @@ pub fn pick_codec(ffmpeg: &Path) -> Option<VideoCodec> {
     if !output.status.success() {
         return None;
     }
-    pick_from_list(&String::from_utf8_lossy(&output.stdout))
+    let listed = candidates(&String::from_utf8_lossy(&output.stdout));
+    first_working(listed, |codec| works(ffmpeg, codec))
 }
 
-/// `pick_codec` for the output of `ffmpeg -hide_banner -encoders`.
+/// `pick_codec` for the output of `ffmpeg -hide_banner -encoders`, by what is listed alone: the first of
+/// `ENCODER_ORDER` that is there.
 pub fn pick_from_list(encoders_output: &str) -> Option<VideoCodec> {
+    candidates(encoders_output).into_iter().next()
+}
+
+/// The encoders of `ENCODER_ORDER` that the output of `ffmpeg -hide_banner -encoders` lists, in the order of
+/// `ENCODER_ORDER`.
+fn candidates(encoders_output: &str) -> Vec<VideoCodec> {
     // A line is the flags of the encoder (`V....D`: a video encoder) and its name, and then what it is.
     let video_encoders: Vec<&str> = encoders_output
         .lines()
@@ -195,7 +210,7 @@ pub fn pick_from_list(encoders_output: &str) -> Option<VideoCodec> {
         .collect();
     ENCODER_ORDER
         .iter()
-        .find(|encoder| video_encoders.contains(encoder))
+        .filter(|encoder| video_encoders.contains(encoder))
         .map(|&encoder| VideoCodec {
             encoder,
             // VP9 is the one encoder whose video does not go in an MP4.
@@ -205,6 +220,72 @@ pub fn pick_from_list(encoders_output: &str) -> Option<VideoCodec> {
                 Container::Mp4
             },
         })
+        .collect()
+}
+
+/// The first of `candidates` that `works`: the ones after it are not tried.
+fn first_working(
+    candidates: Vec<VideoCodec>,
+    works: impl Fn(&VideoCodec) -> bool,
+) -> Option<VideoCodec> {
+    candidates.into_iter().find(|codec| works(codec))
+}
+
+/// How long a probe of an encoder is given.
+const PROBE_LIMIT: Duration = Duration::from_secs(10);
+/// The size of the frames of a probe: large enough for the hardware encoders (some refuse a small picture), and small
+/// enough to cost nothing.
+const PROBE_SIZE: (u32, u32) = (256, 256);
+const PROBE_FRAMES: usize = 2;
+
+/// Whether `ffmpeg` can encode with `codec` here: it is made to encode two black frames to nowhere, with the options
+/// that `VideoEncoder` gives the encoder, and it has to end well within `PROBE_LIMIT`.
+fn works(ffmpeg: &Path, codec: &VideoCodec) -> bool {
+    works_within(ffmpeg, codec, PROBE_LIMIT)
+}
+
+fn works_within(ffmpeg: &Path, codec: &VideoCodec, limit: Duration) -> bool {
+    let Ok(Process {
+        mut child,
+        stdin,
+        stderr,
+        ..
+    }) = spawn(
+        ffmpeg,
+        probe_arguments(PROBE_SIZE, &Quality::Small.spec(), codec),
+    )
+    else {
+        return false;
+    };
+    // What ffmpeg says is read, and the frames are written, off this thread: a program that does not read its input
+    // (or fills the pipe of its messages) must not keep this one from giving up on it. Both threads end by themselves
+    // when ffmpeg does, killed or not.
+    std::thread::spawn(move || Tail::read(stderr));
+    std::thread::spawn(move || {
+        let mut stdin = stdin;
+        let frame = vec![0u8; PROBE_SIZE.0 as usize * PROBE_SIZE.1 as usize * 4];
+        for _ in 0..PROBE_FRAMES {
+            if stdin.write_all(&frame).is_err() {
+                return;
+            }
+        }
+        // Dropping the pipe is the end of the frames.
+    });
+    let give_up = Instant::now() + limit;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if Instant::now() < give_up => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            // It did not end in time (or cannot be asked): it and what it started are killed.
+            _ => {
+                let _ = child.start_kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+    }
 }
 
 /// How long `finish` waits for ffmpeg to write the end of the file.
@@ -395,14 +476,44 @@ fn describe(status: io::Result<ExitStatus>) -> String {
 ///
 /// The frames are raw BGRA on the standard input, `spec.fps` of them to a second, and the video has a keyframe every
 /// two seconds, which is also where a fragment of the file ends: a file that is cut off is playable up to the last
-/// fragment (`-flush_packets 1` is what puts each of them in the file at once). The file is a `.part`, which has no format of its own to ffmpeg, so the format is given; `file:` in front
-/// of the name keeps ffmpeg from taking a part of it for a protocol, or a name that starts with `-` for an option.
+/// fragment (`-flush_packets 1` is what puts each of them in the file at once). The file is a `.part`, which has no
+/// format of its own to ffmpeg, so the format is given; `file:` in front of the name keeps ffmpeg from taking a part of
+/// it for a protocol, or a name that starts with `-` for an option.
 fn arguments(
     size: (u32, u32),
     spec: &QualitySpec,
     codec: &VideoCodec,
     part: &Path,
 ) -> Vec<OsString> {
+    let mut args = encoding_arguments(size, spec, codec);
+    // What the muxer writes goes to the file as it is written. ffmpeg holds it in a buffer of its own until it is full
+    // otherwise, and a screen that hardly changes fills it in minutes: a recording that was cut off would have
+    // nothing in the file, not even the start of it, which is what makes the rest readable.
+    args.extend(words(&["-flush_packets", "1"]));
+    args.extend(match codec.container {
+        Container::Mp4 => words(&[
+            "-movflags",
+            "+frag_keyframe+empty_moov+default_base_moof",
+            "-f",
+            "mp4",
+        ]),
+        Container::WebM => words(&["-f", "webm"]),
+    });
+    args.push(file_argument(part));
+    args
+}
+
+/// The arguments of ffmpeg that make a probe of `codec` (see `works`): what `arguments` has up to the container, and
+/// the output goes nowhere.
+fn probe_arguments(size: (u32, u32), spec: &QualitySpec, codec: &VideoCodec) -> Vec<OsString> {
+    let mut args = encoding_arguments(size, spec, codec);
+    args.extend(words(&["-f", "null", "-"]));
+    args
+}
+
+/// The arguments of ffmpeg from the start to the end of what it is told about the encoder: where the frames come from,
+/// and how they are encoded.
+fn encoding_arguments(size: (u32, u32), spec: &QualitySpec, codec: &VideoCodec) -> Vec<OsString> {
     let mut args = words(&["-hide_banner", "-nostdin", "-y", "-v", "error"]);
     args.extend(words(&[
         "-f",
@@ -426,29 +537,17 @@ fn arguments(
         // hardware (a virtual machine).
         args.extend(words(&["-realtime", "1", "-allow_sw", "1"]));
     }
-    // What the muxer writes goes to the file as it is written. ffmpeg holds it in a buffer of its own until it is full
-    // otherwise, and a screen that hardly changes fills it in minutes: a recording that was cut off would have
-    // nothing in the file, not even the start of it, which is what makes the rest readable.
-    args.extend(words(&["-flush_packets", "1"]));
-    args.extend(match codec.container {
-        Container::Mp4 => words(&[
-            "-movflags",
-            "+frag_keyframe+empty_moov+default_base_moof",
-            "-f",
-            "mp4",
-        ]),
-        Container::WebM => words(&[
+    if codec.encoder == "libvpx-vp9" {
+        // The speed of the capture too: the encoder is not given the time that its best quality takes.
+        args.extend(words(&[
             "-deadline",
             "realtime",
             "-cpu-used",
             "8",
             "-row-mt",
             "1",
-            "-f",
-            "webm",
-        ]),
-    });
-    args.push(file_argument(part));
+        ]));
+    }
     args
 }
 
@@ -771,23 +870,179 @@ mod tests {
     }
 
     #[test]
-    fn pick_codec_reads_what_ffmpeg_lists() {
+    fn every_listed_encoder_is_a_candidate_in_the_order_of_the_list() {
+        let all: Vec<&str> = ENCODER_ORDER.to_vec();
+        let every = candidates(&listing(&all));
+        assert_eq!(every.iter().map(|c| c.encoder).collect::<Vec<_>>(), all);
+
+        // The ones that are not listed are left out, and the order is the list's, not the listing's.
+        let some = candidates(&listing(&["mpeg4", ENCODER_ORDER[0]]));
+        assert_eq!(
+            some.iter().map(|c| c.encoder).collect::<Vec<_>>(),
+            [ENCODER_ORDER[0], "mpeg4"]
+        );
+        assert!(candidates("").is_empty());
+    }
+
+    fn codec(encoder: &'static str) -> VideoCodec {
+        VideoCodec {
+            encoder,
+            container: Container::Mp4,
+        }
+    }
+
+    #[test]
+    fn first_working_skips_the_candidates_that_do_not() {
+        let candidates = vec![codec("h264_mf"), codec("libx264"), codec("mpeg4")];
+        let asked = std::cell::RefCell::new(Vec::new());
+
+        let picked = first_working(candidates.clone(), |c| {
+            asked.borrow_mut().push(c.encoder);
+            c.encoder != "h264_mf"
+        });
+
+        assert_eq!(picked, Some(codec("libx264")));
+        // Nothing after the one that works is tried.
+        assert_eq!(*asked.borrow(), ["h264_mf", "libx264"]);
+        // The first one is the pick when it works.
+        assert_eq!(first_working(candidates, |_| true), Some(codec("h264_mf")));
+    }
+
+    #[test]
+    fn first_working_gives_none_when_none_work() {
+        let candidates = vec![codec("h264_mf"), codec("mpeg4")];
+
+        assert_eq!(first_working(candidates, |_| false), None);
+        assert_eq!(first_working(Vec::new(), |_| true), None);
+    }
+
+    /// A stand-in for ffmpeg that lists `names` for `-encoders`, and for anything else (the probe of an encoder)
+    /// reads its input and ends with the status that `probe` is: a shell command.
+    fn listing_ffmpeg(dir: &Path, names: &[&str], probe: &str) -> PathBuf {
+        let listing = listing(names);
+        script(
+            dir,
+            "fake-ffmpeg",
+            &format!(
+                "case \"$*\" in\n\"-hide_banner -encoders\")\ncat <<'EOF'\n{listing}EOF\n;;\n*)\n{probe}\n;;\nesac"
+            ),
+            "exit /b 1",
+        )
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pick_codec_takes_the_first_listed_encoder_that_works() {
         let dir = tempfile::tempdir().unwrap();
-        let listing = listing(&["mpeg4", ENCODER_ORDER[0]]);
+        let first = ENCODER_ORDER[0];
+        // The first choice is listed and cannot be started: the probe of it fails and the next one's passes.
+        let fake = listing_ffmpeg(
+            dir.path(),
+            &["mpeg4", first],
+            &format!("cat > /dev/null; case \"$*\" in *\"-c:v {first} \"*) exit 1;; esac"),
+        );
+
+        assert_eq!(pick_codec(&fake), Some(codec("mpeg4")));
+
+        // One that works is the pick, as it is listed first.
+        let works = listing_ffmpeg(dir.path(), &["mpeg4", first], "cat > /dev/null");
+        assert_eq!(pick_codec(&works).unwrap().encoder, first);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pick_codec_gives_none_when_no_listed_encoder_works() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = listing_ffmpeg(
+            dir.path(),
+            &["mpeg4", ENCODER_ORDER[0]],
+            "cat > /dev/null; exit 1",
+        );
+
+        assert_eq!(pick_codec(&fake), None);
+        // Not a program at all: there is no encoder to speak of.
+        assert_eq!(pick_codec(&dir.path().join("none")), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_probe_encodes_two_frames_to_nowhere_with_the_options_of_the_encoder() {
+        let dir = tempfile::tempdir().unwrap();
         let fake = script(
             dir.path(),
             "fake-ffmpeg",
-            &format!(
-                "[ \"$*\" = \"-hide_banner -encoders\" ] || exit 1\ncat <<'EOF'\n{listing}EOF"
-            ),
-            "exit /b 1",
+            r#"printf '%s\n' "$@" > "$0.args"; cat > "$0.in""#,
+            "",
         );
+        let videotoolbox = codec("h264_videotoolbox");
+        let vp9 = VideoCodec {
+            encoder: "libvpx-vp9",
+            container: Container::WebM,
+        };
 
-        if cfg!(unix) {
-            assert_eq!(pick_codec(&fake).unwrap().encoder, ENCODER_ORDER[0]);
-        }
-        // Not a program at all: there is no encoder to speak of.
-        assert_eq!(pick_codec(&dir.path().join("none")), None);
+        assert!(works(&fake, &videotoolbox));
+        let args = fs::read_to_string(format!("{}.args", fake.display())).unwrap();
+        assert_eq!(
+            args.lines().collect::<Vec<_>>().join(" "),
+            "-hide_banner -nostdin -y -v error -f rawvideo -pix_fmt bgra -video_size 256x256 -framerate 10 -i pipe:0 -vf format=yuv420p -c:v h264_videotoolbox -b:v 1000000 -g 20 -realtime 1 -allow_sw 1 -f null -"
+        );
+        let sent = fs::read(format!("{}.in", fake.display())).unwrap();
+        assert_eq!(sent, vec![0u8; 2 * 256 * 256 * 4]);
+
+        assert!(works(&fake, &vp9));
+        let args = fs::read_to_string(format!("{}.args", fake.display())).unwrap();
+        assert!(
+            args.lines().collect::<Vec<_>>().join(" ").ends_with(
+                "-c:v libvpx-vp9 -b:v 1000000 -g 20 -deadline realtime -cpu-used 8 -row-mt 1 -f null -"
+            ),
+            "{args}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_probe_that_fails_or_hangs_is_not_an_encoder_that_works() {
+        let dir = tempfile::tempdir().unwrap();
+        let fails = script(
+            dir.path(),
+            "fails",
+            "echo 'Cannot load MFPlat.DLL' >&2; exit 1",
+            "",
+        );
+        // Reads what it is sent and then does not end.
+        let hangs = script(dir.path(), "hangs", "cat > /dev/null; sleep 60", "");
+        let started = Instant::now();
+
+        assert!(!works(&fails, &codec("h264_mf")));
+        assert!(!works_within(
+            &hangs,
+            &codec("h264_mf"),
+            Duration::from_millis(300)
+        ));
+
+        assert!(started.elapsed() < Duration::from_secs(20));
+        assert!(!works(&dir.path().join("none"), &codec("mpeg4")));
+    }
+
+    #[test]
+    fn a_probe_with_the_real_ffmpeg_tells_an_encoder_that_works_from_one_that_does_not() {
+        let Some(ffmpeg) = real_ffmpeg() else { return };
+
+        // mpeg4 is ffmpeg's own, and there is no encoder by the other name.
+        assert!(works(&ffmpeg, &codec("mpeg4")));
+        assert!(!works(&ffmpeg, &codec("no_such_encoder")));
+    }
+
+    #[test]
+    fn pick_codec_with_the_real_ffmpeg_gives_an_encoder_that_works() {
+        let Some(ffmpeg) = real_ffmpeg() else { return };
+
+        let picked =
+            pick_codec(&ffmpeg).expect("this ffmpeg has none of the encoders in ENCODER_ORDER");
+
+        eprintln!("encoder: {}", picked.encoder);
+        assert!(ENCODER_ORDER.contains(&picked.encoder));
+        assert!(works(&ffmpeg, &picked));
     }
 
     /// A stand-in for ffmpeg that writes down its arguments (one to a line, in `<it>.args`) and what it is sent
@@ -842,7 +1097,7 @@ mod tests {
                     container: Container::WebM,
                 },
                 "video.webm",
-                "-flush_packets 1 -deadline realtime -cpu-used 8 -row-mt 1 -f webm",
+                "-deadline realtime -cpu-used 8 -row-mt 1 -flush_packets 1 -f webm",
             ),
         ];
         for (codec, file, tail) in cases {
@@ -1124,7 +1379,12 @@ mod tests {
 
     /// The codec of this machine's ffmpeg.
     fn codec_of(ffmpeg: &Path) -> VideoCodec {
-        pick_codec(ffmpeg).expect("this ffmpeg has none of the encoders in ENCODER_ORDER")
+        let codec = pick_codec(ffmpeg)
+            .expect("this ffmpeg has none of the encoders in ENCODER_ORDER that work");
+        // What a test ran with, for the output of one that fails (or `--nocapture`): CI's ffmpeg is whatever the
+        // system's package manager has.
+        eprintln!("encoder: {}", codec.encoder);
+        codec
     }
 
     /// `video.<ext>.<nonce>.part` files in `folder`.
