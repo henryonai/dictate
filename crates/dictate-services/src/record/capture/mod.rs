@@ -1,5 +1,6 @@
 //! The sources of a recording that belong to the system: the microphone, the sound that the system plays, and the screen
-//! (on macOS the screen and the system's sound come from one stream; on Windows the screen is the Graphics Capture API).
+//! (on macOS the screen and the system's sound come from one stream; on Windows the screen is the Graphics Capture API; on Linux it
+//! is the ScreenCast portal and PipeWire).
 //!
 //! What a source does for the session, whichever it is:
 //! - It is started on the session's thread by [`Capturer::start`], and stopped on that same thread: a microphone of some
@@ -14,6 +15,7 @@
 
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
+use std::sync::Arc;
 
 use serde::Serialize;
 
@@ -23,9 +25,13 @@ use super::{
     Capturer, EndReason, Note, RecordOptions, RunningSource, SourceEvent, StartError, Track,
 };
 
+/// The screen of Linux, through the ScreenCast portal and PipeWire. What it keeps of the portal, how it ends and what it makes of a
+/// picture is plain code, built (and its tests run) on every system; the capture itself is for Linux.
+pub mod linux;
 /// Windows records what the default output device plays through the same calls as a microphone. That is all this is,
 /// so it is built on every system, to be checked on all of them.
 pub mod loopback_windows;
+pub use linux::{NoTokens, TokenStore};
 /// The screen and the system's audio of macOS: one ScreenCaptureKit stream.
 #[cfg(target_os = "macos")]
 pub mod macos;
@@ -71,8 +77,15 @@ pub fn list_sources() -> Result<Sources, StartError> {
     windows::list_sources()
 }
 
+/// What can be recorded on this system, for the picker: the portal's dialog, when the desktop has a portal to show it. It asks the
+/// system, which may take a moment.
+#[cfg(target_os = "linux")]
+pub fn list_sources() -> Result<Sources, StartError> {
+    linux::list_sources()
+}
+
 /// What can be recorded on this system, for the picker.
-#[cfg(not(any(target_os = "macos", windows)))]
+#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
 pub fn list_sources() -> Result<Sources, StartError> {
     Err(not_available_yet())
 }
@@ -81,6 +94,25 @@ pub fn list_sources() -> Result<Sources, StartError> {
 pub struct OsCapturer {
     /// ffmpeg, for the sources that need it: none of the sound does.
     pub ffmpeg: Option<PathBuf>,
+    /// Where the restore token of the screen is kept between recordings, which lets a recording start without the dialog of the desktop
+    /// that asks what to share. Only Linux has one (the ScreenCast portal); the other systems do not look at it.
+    pub tokens: Arc<dyn TokenStore>,
+}
+
+impl OsCapturer {
+    /// A capturer that keeps no restore token: on Linux the desktop asks what to share every time. See [`Self::with_token_store`].
+    pub fn new(ffmpeg: Option<PathBuf>) -> OsCapturer {
+        OsCapturer {
+            ffmpeg,
+            tokens: Arc::new(NoTokens),
+        }
+    }
+
+    /// The capturer, with `tokens` to keep the restore token of the screen in.
+    pub fn with_token_store(mut self, tokens: Arc<dyn TokenStore>) -> OsCapturer {
+        self.tokens = tokens;
+        self
+    }
 }
 
 impl Capturer for OsCapturer {
@@ -93,12 +125,12 @@ impl Capturer for OsCapturer {
         match track {
             Track::Mic => mic::start(tx),
             Track::System => start_system_audio(options, tx),
-            Track::Screen => start_screen(options, tx),
+            Track::Screen => start_screen(options, &self.tokens, tx),
         }
     }
 }
 
-#[cfg(not(any(target_os = "macos", windows)))]
+#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
 fn not_available_yet() -> StartError {
     StartError::Source("not available yet".into())
 }
@@ -131,6 +163,7 @@ fn start_system_audio(
 #[cfg(target_os = "macos")]
 fn start_screen(
     options: &RecordOptions,
+    _tokens: &Arc<dyn TokenStore>,
     tx: Sender<SourceEvent>,
 ) -> Result<Box<dyn RunningSource>, StartError> {
     macos::start(Track::Screen, options, tx)
@@ -139,14 +172,25 @@ fn start_screen(
 #[cfg(windows)]
 fn start_screen(
     options: &RecordOptions,
+    _tokens: &Arc<dyn TokenStore>,
     tx: Sender<SourceEvent>,
 ) -> Result<Box<dyn RunningSource>, StartError> {
     windows::start(options, tx)
 }
 
-#[cfg(not(any(target_os = "macos", windows)))]
+#[cfg(target_os = "linux")]
+fn start_screen(
+    options: &RecordOptions,
+    tokens: &Arc<dyn TokenStore>,
+    tx: Sender<SourceEvent>,
+) -> Result<Box<dyn RunningSource>, StartError> {
+    linux::start(options, Arc::clone(tokens), tx)
+}
+
+#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
 fn start_screen(
     _options: &RecordOptions,
+    _tokens: &Arc<dyn TokenStore>,
     _tx: Sender<SourceEvent>,
 ) -> Result<Box<dyn RunningSource>, StartError> {
     Err(not_available_yet())
@@ -309,19 +353,57 @@ mod tests {
         }
     }
 
-    /// The screen of Linux is not there yet. (That of macOS and that of Windows are, and their tests are in `macos` and
-    /// `windows`: they start no capture, which would need the permission of whoever runs them.)
-    #[cfg(not(any(target_os = "macos", windows)))]
+    /// A system that has no screen capture at all (not macOS, Windows or Linux) says so as an error, and does not panic.
+    #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
     #[test]
     fn os_capturer_reports_unavailable_tracks_as_errors_not_panics() {
         use crate::record::Capturer;
-        let capturer = OsCapturer { ffmpeg: None };
+        let capturer = OsCapturer::new(None);
 
         let (tx, _rx) = mpsc::channel();
         assert_eq!(
             capturer.start(Track::Screen, &options(), tx).err(),
             Some(StartError::Source("not available yet".into()))
         );
+    }
+
+    /// The screen of Linux is the portal's: a recording of sound has none to ask it for, and is told so before the portal is
+    /// reached. (The tests of the screens of macOS, Windows and Linux that start a capture are ignored: they need the permission, or
+    /// the dialog, of whoever runs them.)
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn os_capturer_starts_no_screen_for_a_recording_of_sound() {
+        use crate::record::Capturer;
+        let capturer = OsCapturer::new(None);
+
+        let (tx, rx) = mpsc::channel();
+        assert_eq!(
+            capturer.start(Track::Screen, &options(), tx).err(),
+            Some(StartError::Source(
+                "the screen is not recorded in a recording of sound".into()
+            ))
+        );
+        assert!(rx.try_recv().is_err());
+    }
+
+    /// A store of the restore token for the tests of what a capturer is given.
+    struct Kept(&'static str);
+
+    impl TokenStore for Kept {
+        fn load(&self) -> Option<String> {
+            Some(self.0.to_owned())
+        }
+
+        fn save(&self, _token: &str) {}
+    }
+
+    #[test]
+    fn a_capturer_keeps_no_restore_token_until_it_is_given_a_store() {
+        assert_eq!(OsCapturer::new(None).tokens.load(), None);
+
+        let capturer = OsCapturer::new(None).with_token_store(Arc::new(Kept("display:abc")));
+
+        assert_eq!(capturer.tokens.load().as_deref(), Some("display:abc"));
     }
 
     /// How many samples the stem has after what a track delivered (a buffer each at the instants given, which are

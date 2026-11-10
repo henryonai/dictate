@@ -191,6 +191,54 @@ describe("the recording of the screen, tried on the Windows runner", () => {
   });
 });
 
+describe("the PipeWire libraries that the screen capture of Linux builds against", () => {
+  // The portal gives the screen as a PipeWire stream: the `pipewire` crate links libpipewire-0.3 and builds its bindings from the headers
+  // of libpipewire-0.3-dev and libspa-0.2-dev (with libclang, which is in the list already).
+  const LIBRARIES = ["libpipewire-0.3-dev", "libspa-0.2-dev"];
+  const installs = (name: string) => stepsOf(name).filter((step) => step.includes("apt-get install"));
+
+  test("every job that builds on Linux installs them, in the step that installs the other libraries it builds against", () => {
+    for (const name of ["test", "app", "msrv"]) {
+      // The step of the other libraries (the first apt-get install of `test` is the one of ffmpeg, which comes later).
+      const step = installs(name).find((candidate) => candidate.includes("libwebkit2gtk-4.1-dev"));
+      expect(step, `${name}: the step with the Linux build dependencies`).toBeDefined();
+      for (const library of LIBRARIES) expect(step, `${name}: ${library}`).toContain(library);
+      // Before the first build, or the build script of pipewire-sys finds no headers.
+      const firstBuild = job(name).search(/\n +(- )?run: (cargo|pnpm)/);
+      expect(job(name).indexOf(step as string), `${name}: before the first build`).toBeLessThan(firstBuild);
+    }
+  });
+
+  test("the README lists them with the other libraries that a build on Linux needs", () => {
+    const readme = read("app/README.md");
+    const apt = readme.slice(readme.indexOf("sudo apt-get install -y build-essential"));
+    const command = apt.slice(0, apt.indexOf("```"));
+    for (const library of LIBRARIES) expect(command).toContain(library);
+  });
+});
+
+describe("how long a job gets", () => {
+  /** The minutes that `timeout-minutes: ${{ matrix.os == 'X' && A || B }}` gives the runner `os`. */
+  function minutes(name: string, os: string): number {
+    const expression = /^ {4}timeout-minutes: (.+)$/m.exec(job(name))?.[1] ?? "";
+    const parsed = /^\$\{\{ matrix\.os == '([^']+)' && (\d+) \|\| (\d+) \}\}$/.exec(expression);
+    if (!parsed) return Number(expression);
+    return Number(os === parsed[1] ? parsed[2] : parsed[3]);
+  }
+
+  test("the test job gets 45 minutes on Linux, as on Windows: a slow apt mirror has been taking about 24 of 30 minutes by itself", () => {
+    expect(minutes("test", "ubuntu-24.04")).toBe(45);
+    expect(minutes("test", "windows-latest")).toBe(45);
+  });
+
+  test("none of the jobs gets less than it had", () => {
+    expect(minutes("test", "macos-latest")).toBeGreaterThanOrEqual(30);
+    expect(minutes("app", "ubuntu-24.04")).toBeGreaterThanOrEqual(30);
+    expect(minutes("app", "windows-latest")).toBeGreaterThanOrEqual(45);
+    expect(minutes("msrv", "ubuntu-24.04")).toBeGreaterThanOrEqual(30);
+  });
+});
+
 describe("no espeak-ng (GPL-3.0) in what the app ships", () => {
   const SCRIPT = "scripts/check-no-espeak.sh";
 

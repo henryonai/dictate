@@ -34,14 +34,17 @@ On top of that:
   ```
 
   Open a new terminal afterwards, so that it finds the new tools. If the build can't find libclang, set `LIBCLANG_PATH` to the `bin` folder of the LLVM install.
-- **Linux:** the web view, tray, audio (ALSA, for the microphone) and build libraries. On Debian and Ubuntu:
+- **Linux:** the web view, tray, audio (ALSA, for the microphone), PipeWire (the screen of a recording, see below) and build libraries. On Debian and Ubuntu:
 
   ```sh
   sudo apt-get install -y build-essential cmake libclang-dev libasound2-dev \
+    libpipewire-0.3-dev libspa-0.2-dev \
     libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
   ```
 
-  Other distributions have the same libraries under their own names; the [Tauri prerequisites](https://tauri.app/start/prerequisites/#linux) list them. The tray icon needs a desktop that shows app indicators (GNOME needs the AppIndicator extension).
+  Other distributions have the same libraries under their own names (`pipewire-devel` on Fedora; the [Tauri prerequisites](https://tauri.app/start/prerequisites/#linux) list the others). The tray icon needs a desktop that shows app indicators (GNOME needs the AppIndicator extension).
+
+  The screen of a recording comes from the desktop's ScreenCast portal (`xdg-desktop-portal` and the backend of your desktop: GNOME, KDE Plasma and Hyprland have one, and `xdg-desktop-portal-wlr` serves Sway and other wlroots desktops) as a PipeWire stream, so a desktop without one, such as a bare window manager, cannot record its screen. The desktop's own dialog asks what to share. Dictate asks the portal to remember the choice, and a desktop that can (it is up to the desktop; GNOME and KDE Plasma can) records the same kind of thing later without the dialog; one that cannot asks every time. The app links `libpipewire-0.3`, so a machine that runs it needs the library itself (`libpipewire-0.3-0` on Debian and Ubuntu, which a desktop with PipeWire has).
 
 ## Install
 

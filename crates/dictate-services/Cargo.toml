@@ -112,6 +112,16 @@ keyring = { version = "3.6.3", features = ["async-secret-service", "async-io", "
 # the same. A package of the app has to ship the .so files.
 sherpa-onnx-sys = { version = "=1.13.8", default-features = false, features = ["shared"] }
 
+# The screen of a recording on Linux: the ScreenCast portal for what to share (record::capture::linux), and PipeWire for the pictures.
+# `ashpd` is the version, and the feature, that the app has for the GlobalShortcuts portal, so that there is one copy of it (0.13 needs
+# Rust 1.87); `futures-util` is the one that the app has too. `pipewire` links libpipewire-0.3 (libpipewire-0.3-dev and libspa-0.2-dev, and
+# libclang for its bindings, are needed to build it; the deb has to depend on libpipewire-0.3-0). Pinned: a move up is a decision with its
+# changelog read.
+[target.'cfg(target_os = "linux")'.dependencies]
+ashpd = { version = "=0.12.3", default-features = false, features = ["tokio"] }
+futures-util = { version = "0.3.34", default-features = false }
+pipewire = "=0.10.1"
+
 [dev-dependencies]
 tempfile = "3.27.0"
 tokio = { version = "1.54.1", features = ["macros", "net", "rt-multi-thread"] }

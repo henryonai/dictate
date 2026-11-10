@@ -1085,9 +1085,7 @@ mod tests {
         }
 
         fn start_session(mode: Mode, ffmpeg: PathBuf, folder: &Path) -> Session {
-            let capturer = Arc::new(OsCapturer {
-                ffmpeg: Some(ffmpeg.clone()),
-            });
+            let capturer = Arc::new(OsCapturer::new(Some(ffmpeg.clone())));
             Session::start(
                 options(mode),
                 folder,
@@ -1106,7 +1104,7 @@ mod tests {
 
             // First what the capture delivers on its own: a picture as large as it says, within a few seconds of the start.
             let (tx, rx) = mpsc::channel();
-            let source = OsCapturer { ffmpeg: None }
+            let source = OsCapturer::new(None)
                 .start(Track::Screen, &options(Mode::Screen { display: None }), tx)
                 .expect("the primary monitor is captured");
             let first = loop {

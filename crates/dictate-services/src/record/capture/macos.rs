@@ -1414,9 +1414,7 @@ mod tests {
     fn record(options: RecordOptions, seconds: u64) -> (Finished, tempfile::TempDir) {
         let ffmpeg = real_ffmpeg();
         let dir = tempfile::tempdir().unwrap();
-        let capturer = Arc::new(OsCapturer {
-            ffmpeg: ffmpeg.clone(),
-        });
+        let capturer = Arc::new(OsCapturer::new(ffmpeg.clone()));
         let session = Session::start(options, dir.path(), capturer, ffmpeg, Box::new(|_| {}))
             .expect("the session starts");
         std::thread::sleep(Duration::from_secs(seconds));
@@ -1492,7 +1490,7 @@ mod tests {
     #[ignore = "records the screen: needs Screen Recording; set DICTATE_TEST_SCREEN=1"]
     fn macos_system_audio_stops_and_starts_again_while_the_screen_goes_on() {
         require_enabled();
-        let capturer = OsCapturer { ffmpeg: None };
+        let capturer = OsCapturer::new(None);
         let wanted = options(Mode::Screen { display: None });
         let (tx, rx) = mpsc::channel();
 
@@ -1562,7 +1560,7 @@ mod tests {
     #[ignore = "records the screen: needs Screen Recording; set DICTATE_TEST_SCREEN=1"]
     fn macos_does_not_record_a_window_that_is_not_there() {
         require_enabled();
-        let capturer = OsCapturer { ffmpeg: None };
+        let capturer = OsCapturer::new(None);
         let (tx, _rx) = mpsc::channel();
 
         let error = capturer
