@@ -139,11 +139,12 @@ The speaker separation library that the build script downloads for Windows is bu
 ```powershell
 mkdir target\sherpa-onnx-md
 curl.exe -fL -o sherpa-onnx-md.tar.bz2 https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-v1.13.8-win-x64-static-MD-Release-lib.tar.bz2
+if ((Get-FileHash -Algorithm SHA256 sherpa-onnx-md.tar.bz2).Hash -ne 'a0f44cd91486e448c2be1f1d3662edb4f473ca3cb38a803cee158760cc588428') { throw 'not the archive that CI uses' }
 & "$env:SystemRoot\System32\tar.exe" -xjf sherpa-onnx-md.tar.bz2 -C target\sherpa-onnx-md --strip-components=1
 $env:SHERPA_ONNX_LIB_DIR = "$PWD\target\sherpa-onnx-md\lib"
 ```
 
-Then run, build or test as described here, from the same terminal (the variable is only set there; set it for your user in the system settings to keep it). With it set, the build script uses that folder and downloads nothing. CI does the same on Windows.
+Then run, build or test as described here, from the same terminal (the variable is only set there; set it for your user in the system settings to keep it). With it set, the build script uses that folder and downloads nothing. CI does the same on Windows, and stops if the SHA-256 of the archive is not the one it pins (`SHERPA_ONNX_MD_SHA256` in `.github/workflows/ci.yml`, the digest GitHub lists for the release asset).
 
 ### On Linux: the sherpa-onnx library is a shared one
 

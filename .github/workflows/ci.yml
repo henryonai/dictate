@@ -16,6 +16,10 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # The SHA-256 of the /MD build of sherpa-onnx that the Windows jobs download (v1.13.8, 96,599,351 bytes): the digest that GitHub
+  # lists for the release asset, which is also what a download of it hashes to. A job that gets anything else stops before it
+  # unpacks it. It changes with the version in the URL below and in the cache keys.
+  SHERPA_ONNX_MD_SHA256: a0f44cd91486e448c2be1f1d3662edb4f473ca3cb38a803cee158760cc588428
 
 jobs:
   test:
@@ -71,6 +75,13 @@ jobs:
             $archive = Join-Path $env:RUNNER_TEMP 'sherpa-onnx-md.tar.bz2'
             curl.exe -fsSL --retry 3 -o $archive 'https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-v1.13.8-win-x64-static-MD-Release-lib.tar.bz2'
             if ($LASTEXITCODE -ne 0) { throw 'the download failed' }
+            # It has to be the archive that was pinned: a file that is another one (the release asset was replaced, something on the
+            # way answered for it) is not linked into the app. -ne compares text without regard to case; Get-FileHash gives capitals.
+            $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash
+            if ($actual -ne $env:SHERPA_ONNX_MD_SHA256) {
+              Remove-Item -Force $archive
+              throw "the SHA-256 of the sherpa-onnx archive is $actual, not the pinned $env:SHERPA_ONNX_MD_SHA256"
+            }
             # The Windows tar (bsdtar), not the GNU one of Git for Windows, which reads `D:` as a host name.
             & "$env:SystemRoot\System32\tar.exe" -xjf $archive -C $dir --strip-components=1
             if ($LASTEXITCODE -ne 0) { throw 'the unpacking failed' }
@@ -128,10 +139,12 @@ jobs:
         run: |
           rm -f target/debug/libsherpa-onnx-*.so* target/debug/libonnxruntime.so*
           if ls target/debug/*.so* 2>/dev/null; then echo 'a .so file is left in target/debug'; exit 1; fi
+      # The third test loads the models from a folder named "Người dùng", as they are for a person with a Vietnamese user name (Windows
+      # gives the app's folders under the profile); it runs on every system, and Windows is where it can fail.
       - name: Separate the speakers of a recording with the real models
         env:
           DICTATE_TEST_DIARIZE_DIR: ${{ runner.temp }}/diarize-models
-        run: cargo test -p dictate-services --lib --locked -- --ignored --nocapture diarizer_finds_two_speakers no_audio_and_silence_have_no_turns
+        run: cargo test -p dictate-services --lib --locked -- --ignored --nocapture diarizer_finds_two_speakers no_audio_and_silence_have_no_turns diarizer_loads_models_from_a_folder_with_a_non_ascii_name
 
   # The app: its web UI (type check, tests, build) and the Tauri shell around it, on every OS.
   app:
@@ -171,6 +184,13 @@ jobs:
             $archive = Join-Path $env:RUNNER_TEMP 'sherpa-onnx-md.tar.bz2'
             curl.exe -fsSL --retry 3 -o $archive 'https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-v1.13.8-win-x64-static-MD-Release-lib.tar.bz2'
             if ($LASTEXITCODE -ne 0) { throw 'the download failed' }
+            # It has to be the archive that was pinned: a file that is another one (the release asset was replaced, something on the
+            # way answered for it) is not linked into the app. -ne compares text without regard to case; Get-FileHash gives capitals.
+            $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash
+            if ($actual -ne $env:SHERPA_ONNX_MD_SHA256) {
+              Remove-Item -Force $archive
+              throw "the SHA-256 of the sherpa-onnx archive is $actual, not the pinned $env:SHERPA_ONNX_MD_SHA256"
+            }
             # The Windows tar (bsdtar), not the GNU one of Git for Windows, which reads `D:` as a host name.
             & "$env:SystemRoot\System32\tar.exe" -xjf $archive -C $dir --strip-components=1
             if ($LASTEXITCODE -ne 0) { throw 'the unpacking failed' }

@@ -696,6 +696,36 @@ mod tests {
         assert!(progress.last().is_some_and(|p| *p > 0.9), "{progress:?}");
     }
 
+    /// The models are handed to the library as UTF-8 text, and where a file name is not that (Windows) whether the library
+    /// opens it is the library's own matter. A person whose user name is Vietnamese has the models in a folder such as
+    /// `C:\Users\Người dùng\AppData\Local\Dictate\diarization-models`, so the real models are loaded from a folder
+    /// that has such a name. It is in the list of the CI step that runs the real models, which is where Windows runs it.
+    #[test]
+    #[ignore = "needs the two models: set DICTATE_TEST_DIARIZE_DIR to the folder that holds them"]
+    fn diarizer_loads_models_from_a_folder_with_a_non_ascii_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp
+            .path()
+            .join("Người dùng")
+            .join("Dictate")
+            .join("diarization-models");
+        fs::create_dir_all(&dir).unwrap();
+        for model in &DIARIZE_MODELS {
+            fs::copy(models_dir().join(model.file), dir.join(model.file)).unwrap();
+        }
+        assert!(
+            dir.to_str().is_some_and(|path| !path.is_ascii()),
+            "the folder has a name that is not ASCII: {dir:?}"
+        );
+
+        let diarizer = Diarizer::load(&dir).unwrap();
+
+        // Loaded and working, not only loaded: the same two voices as in the test that uses the folder of the models itself.
+        let turns = diarizer.run(&two_voices(), |_| {}).unwrap();
+        let speakers: BTreeSet<u32> = turns.iter().map(|t| t.speaker).collect();
+        assert_eq!(speakers.len(), 2, "{turns:?}");
+    }
+
     #[test]
     #[ignore = "needs the two models: set DICTATE_TEST_DIARIZE_DIR to the folder that holds them"]
     fn no_audio_and_silence_have_no_turns() {
