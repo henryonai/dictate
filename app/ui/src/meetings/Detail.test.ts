@@ -153,6 +153,27 @@ test("a file that the element can't play (an error with the address that is righ
   expect(button("01:05")).toBeDisabled();
 });
 
+test("a file that the element can't play is played as the audio made from it, when there is one: with no picture, and the chapters still seek", async () => {
+  const AUDIO_URL = "http://127.0.0.1:41000/token/2";
+  const { user } = await opened(whole({ media: fakeMedia({ fallbackUrl: AUDIO_URL }) }));
+
+  video().dispatchEvent(new Event("error"));
+
+  await vi.waitFor(() => expect(document.querySelector("audio")?.getAttribute("src")).toBe(AUDIO_URL));
+  expect(document.querySelector("video")).toBeNull();
+  expect(screen.queryByText("This recording can't be played here. Open it in another app.")).not.toBeInTheDocument();
+  // The audio has not loaded yet: a seek waits for it, and is where it goes to.
+  await user.click(button("01:05"));
+  const audio = document.querySelector("audio") as HTMLAudioElement;
+  audio.dispatchEvent(new Event("loadedmetadata"));
+  expect(audio.currentTime).toBe(65);
+  expect(HTMLMediaElement.prototype.play).toHaveBeenCalled();
+
+  // Once: the audio that can't be played either is said.
+  document.querySelector("audio")?.dispatchEvent(new Event("error"));
+  expect(await screen.findByText("This recording can't be played here. Open it in another app.")).toBeInTheDocument();
+});
+
 test("an error of the element reads the detail again and plays from the address that it has now", async () => {
   await opened();
   const element = video();

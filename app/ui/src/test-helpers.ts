@@ -321,7 +321,7 @@ export function fakeSummary(overrides: Partial<SummaryView> = {}): SummaryView {
 
 /** Where a recording plays from: the address of the local media server, which differs from one launch to the next. */
 export function fakeMedia(overrides: Partial<MediaView> = {}): MediaView {
-  return { url: "http://127.0.0.1:41000/token/1", video: true, ...overrides };
+  return { url: "http://127.0.0.1:41000/token/1", video: true, fallbackUrl: null, ...overrides };
 }
 
 /**

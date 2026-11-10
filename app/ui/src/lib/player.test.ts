@@ -13,11 +13,11 @@ let element: FakeMedia;
 let fetchMedia: ReturnType<typeof vi.fn<FetchMedia>>;
 
 /** A player on a recording whose address is `OLD`, with an element that is attached to it. `now` is the address the server gives from here on. */
-function setup(now: MediaView | null = OLD) {
+function setup(now: MediaView | null = OLD, bound: MediaView = OLD) {
   fetchMedia = vi.fn<FetchMedia>(async () => now);
   const player = new PlayerController(fetchMedia);
   element = new FakeMedia();
-  player.bind(ID, OLD);
+  player.bind(ID, bound);
   const detach = player.attach(element as unknown as HTMLMediaElement);
   return { player, detach };
 }
@@ -423,6 +423,129 @@ describe("the element fails", () => {
 
     expect(fetchMedia).toHaveBeenCalledTimes(1);
     expect(element.sources).toEqual([OLD.url]);
+    expect(player.failed).toBe(false);
+  });
+});
+
+describe("a file the element cannot play, with an audio.m4a made from it", () => {
+  /** An imported video, and the `audio.m4a` next to it; the same two after the server was built again. */
+  const ORIGINAL = fakeMedia({ url: "http://127.0.0.1:41000/tok-a/1", fallbackUrl: "http://127.0.0.1:41000/tok-a/2" });
+  const REBUILT = fakeMedia({ url: "http://127.0.0.1:52000/tok-b/1", fallbackUrl: "http://127.0.0.1:52000/tok-b/2" });
+
+  test("an error with the address that is still the right one plays the audio instead, with no picture, from where it was", async () => {
+    const { player } = setup(ORIGINAL, ORIGINAL);
+    element.playAt(42.5);
+
+    element.emit("error");
+    await settle();
+
+    expect(element.src).toBe(ORIGINAL.fallbackUrl);
+    expect(player.url).toBe(ORIGINAL.fallbackUrl);
+    expect(player.failed).toBe(false);
+    expect(player.available).toBe(true);
+    expect(player.video).toBe(false);
+    element.emit("loadedmetadata");
+    expect(element.currentTime).toBe(42.5);
+    expect(element.play).toHaveBeenCalledTimes(1);
+  });
+
+  test("a recording that was paused stays paused on the audio", async () => {
+    setup(ORIGINAL, ORIGINAL);
+    element.currentTime = 10;
+
+    element.emit("error");
+    await settle();
+    element.emit("loadedmetadata");
+
+    expect(element.currentTime).toBe(10);
+    expect(element.play).not.toHaveBeenCalled();
+  });
+
+  test("it is the one chance: an error of the audio too is a failure, and nothing is tried again", async () => {
+    const { player } = setup(ORIGINAL, ORIGINAL);
+
+    element.emit("error");
+    await settle();
+    element.emit("error");
+    await settle();
+
+    expect(player.failed).toBe(true);
+    expect(element.sources).toEqual([ORIGINAL.url, ORIGINAL.fallbackUrl]);
+    element.emit("error");
+    await settle();
+    expect(element.sources).toHaveLength(2);
+  });
+
+  test("a recording with no audio to fall back to is a failure at the first error", async () => {
+    const { player } = setup(OLD, OLD);
+
+    element.emit("error");
+    await settle();
+
+    expect(player.failed).toBe(true);
+    expect(element.sources).toEqual([OLD.url]);
+  });
+
+  test("a stall is no reason to leave the original", async () => {
+    const { player } = setup(ORIGINAL, ORIGINAL);
+    element.playAt(3);
+
+    element.emit("waiting");
+    await vi.advanceTimersByTimeAsync(STALL_MS);
+
+    expect(player.url).toBe(ORIGINAL.url);
+    expect(player.video).toBe(true);
+    expect(player.failed).toBe(false);
+  });
+
+  test("a server that was built again while the audio plays gives the audio its new address, not the original's", async () => {
+    const { player } = setup(ORIGINAL, ORIGINAL);
+    element.emit("error");
+    await settle();
+    expect(player.url).toBe(ORIGINAL.fallbackUrl);
+    element.emit("loadedmetadata");
+    fetchMedia.mockImplementation(async () => REBUILT);
+
+    // The old address is dead: the error reads the new ones, and the audio is on its new one.
+    element.playAt(20);
+    element.emit("error");
+    await settle();
+    expect(element.src).toBe(REBUILT.fallbackUrl);
+    expect(player.video).toBe(false);
+    expect(player.failed).toBe(false);
+
+    // The window brings the new addresses with its next detail: the audio stays the audio.
+    player.bind(ID, REBUILT);
+    expect(player.url).toBe(REBUILT.fallbackUrl);
+    expect(player.video).toBe(false);
+  });
+
+  test("a play after a pause on the audio looks at the addresses and stays on the audio", async () => {
+    const { player } = setup(ORIGINAL, ORIGINAL);
+    element.emit("error");
+    await settle();
+    element.emit("loadedmetadata");
+    fetchMedia.mockImplementation(async () => REBUILT);
+    element.paused = true;
+    element.emit("pause");
+
+    await player.seek(30);
+
+    expect(element.src).toBe(REBUILT.fallbackUrl);
+    expect(player.video).toBe(false);
+  });
+
+  test("another recording starts on its own original", async () => {
+    const { player } = setup(ORIGINAL, ORIGINAL);
+    element.emit("error");
+    await settle();
+    expect(player.video).toBe(false);
+
+    const next = fakeMedia({ url: "http://127.0.0.1:41000/tok-a/3", fallbackUrl: "http://127.0.0.1:41000/tok-a/4" });
+    player.bind("another", next);
+
+    expect(player.url).toBe(next.url);
+    expect(player.video).toBe(true);
     expect(player.failed).toBe(false);
   });
 });

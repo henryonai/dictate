@@ -7,7 +7,9 @@
 //   2. a play or a seek after a pause (the server may have been rebuilt while nobody listened): if the address is another one it is
 //      swapped in, at the same position;
 //   3. `waiting` or `stalled` for about 8 s: the same as for the error.
-// An error with the address that is still the right one is a file that the element can't play (a `.mkv`): the player says so.
+// An error with the address that is still the right one is a file that the element can't play (a `.mkv`): the player goes to the
+// `audio.m4a` made from it, once, when there is one (the media then has a `fallbackUrl`), and says so when there is none or when that
+// can't be played either.
 import { api } from "./api";
 import type { MediaView } from "./api";
 import { onLinux } from "../panel/state";
@@ -34,7 +36,7 @@ export class PlayerController {
   playing = $state(false);
   /** The element can't play the file, and no other address helped. */
   failed = $state(false);
-  /** The media has a picture. */
+  /** The media has a picture: the audio that plays in place of a file that can't be played has none. */
   video = $state(false);
   /** Where the recording plays from: empty when it has no media, or when the player let go of it. */
   url = $state("");
@@ -59,6 +61,8 @@ export class PlayerController {
   /** An error or a wait that came while a read was on, and the address it was of: it is dealt with when that read is over. */
   private queued: { fatal: boolean; url: string } | null = null;
   private recoveries = 0;
+  /** The original could not be played and `audio.m4a` plays instead: its addresses are the ones that count from now on. */
+  private onFallback = false;
   private released = false;
   /** How many times `pause()` was called: a seek that was waiting when it grew was paused, and does not play. */
   private pauses = 0;
@@ -80,8 +84,8 @@ export class PlayerController {
       if (this.element && this.url) this.element.src = this.url;
       return;
     }
-    if (media) this.video = media.video;
-    const url = media?.url ?? "";
+    if (media) this.video = this.picture(media);
+    const url = media ? this.address(media) : "";
     if (url === this.url) return;
     if (url === "") {
       this.url = "";
@@ -131,7 +135,7 @@ export class PlayerController {
     // This is the look at the address for this play: the `play` event that follows has no need of another.
     this.wasPaused = false;
     if (fresh) {
-      this.swap(fresh.url, seconds, true);
+      this.swap(this.address(fresh), seconds, true);
       return;
     }
     element.currentTime = seconds;
@@ -195,6 +199,7 @@ export class PlayerController {
     this.wasPaused = true;
     this.queued = null;
     this.recoveries = 0;
+    this.onFallback = false;
     this.released = false;
   }
 
@@ -262,6 +267,16 @@ export class PlayerController {
     void Promise.resolve(element.play()).catch(() => {});
   }
 
+  /** Where `media` plays from: its `audio.m4a` once the original has been given up, otherwise the original. */
+  private address(media: MediaView): string {
+    return this.onFallback && media.fallbackUrl ? media.fallbackUrl : media.url;
+  }
+
+  /** Whether `media` has a picture as it is played now: the audio that stands for the original has none. */
+  private picture(media: MediaView): boolean {
+    return this.onFallback && media.fallbackUrl ? false : media.video;
+  }
+
   /** Plays the address from the start, and goes to `at` once it has loaded. */
   private swap(url: string, at: number, resume: boolean): void {
     this.url = url;
@@ -278,7 +293,7 @@ export class PlayerController {
     if (id === null) return null;
     try {
       const media = await this.fetchMedia(id);
-      return this.id === id && media && media.url !== this.url ? media : null;
+      return this.id === id && media && this.address(media) !== this.url ? media : null;
     } catch {
       return null;
     }
@@ -320,9 +335,9 @@ export class PlayerController {
   private async verify(): Promise<void> {
     if (this.reading || this.released) return;
     await this.read((media) => {
-      if (!media || media.url === this.url) return;
+      if (!media || this.address(media) === this.url) return;
       const { at, resume } = this.where();
-      this.swap(media.url, at, resume);
+      this.swap(this.address(media), at, resume);
     });
   }
 
@@ -341,14 +356,20 @@ export class PlayerController {
     await this.read((media) => {
       // A read that was on for a play may have swapped another address in: this error was of the one before it.
       if (this.url !== failedUrl) return;
-      if (media && media.url !== failedUrl) {
+      if (media && this.address(media) !== failedUrl) {
         if (this.recoveries >= MAX_RECOVERIES) {
           this.failed = true;
           return;
         }
         this.recoveries += 1;
         const { at, resume } = this.where();
-        this.swap(media.url, at, resume);
+        this.swap(this.address(media), at, resume);
+      } else if (fatal && media?.fallbackUrl && !this.onFallback) {
+        // The original is the right address and the element can't play it: the audio made from it is the same recording.
+        this.onFallback = true;
+        this.video = false;
+        const { at, resume } = this.where();
+        this.swap(media.fallbackUrl, at, resume);
       } else if (fatal) {
         this.failed = true;
       }

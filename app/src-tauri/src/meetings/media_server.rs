@@ -402,6 +402,11 @@ fn content_type(path: &Path) -> &'static str {
         Some("webm") => "video/webm",
         Some("mp4" | "m4v") => "video/mp4",
         Some("mov") => "video/quicktime",
+        Some("flac") => "audio/flac",
+        Some("aac") => "audio/aac",
+        // An Opus file is an Ogg file: `audio/ogg` is its type (RFC 7845).
+        Some("ogg" | "opus") => "audio/ogg",
+        Some("mka") => "audio/x-matroska",
         _ => "application/octet-stream",
     }
 }
@@ -1021,6 +1026,11 @@ mod tests {
             ("a.mp4", "video/mp4"),
             ("a.m4v", "video/mp4"),
             ("a.mov", "video/quicktime"),
+            ("a.flac", "audio/flac"),
+            ("a.AAC", "audio/aac"),
+            ("a.ogg", "audio/ogg"),
+            ("a.opus", "audio/ogg"),
+            ("a.mka", "audio/x-matroska"),
             ("a.mkv", "application/octet-stream"),
             ("a", "application/octet-stream"),
         ];

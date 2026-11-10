@@ -277,6 +277,9 @@ pub struct SummaryView {
 pub struct MediaView {
     pub url: String,
     pub video: bool,
+    /// Where `audio.m4a` plays from, when the media is the original and a made `audio.m4a` is there: the player goes to it
+    /// when the system can't play the original (an `.mkv`, an `.avi`, a `.wmv`).
+    pub fallback_url: Option<String>,
 }
 
 /// A recording, whole.
@@ -381,9 +384,18 @@ pub fn detail(
     let original = record.media();
     let playable = original.clone().filter(|path| path.is_file());
     let audio = Some(record.folder.join(files::AUDIO)).filter(|path| path.is_file());
+    let fallback_url = audio
+        .as_deref()
+        .filter(|audio| {
+            playable
+                .as_deref()
+                .is_some_and(|original| original != *audio)
+        })
+        .map(media_url);
     let media = playable.or(audio).map(|path| MediaView {
         url: media_url(&path),
         video: is_video(&path),
+        fallback_url,
     });
 
     MeetingDetail {
@@ -1031,17 +1043,21 @@ mod tests {
         std::fs::write(&original, b"video").unwrap();
         let url = |path: &Path| format!("http://media.test/{}", path.display());
 
+        let original_again = f.outside().join("Phim ảnh").join("lại.mp4");
+        std::fs::write(&original_again, b"video").unwrap();
         // The media file is there: it plays, with a picture.
         let id = "2026-11-09 10-00-00";
         let record = with_media(&f, id, original.to_str().unwrap());
         std::fs::write(record.folder.join(files::AUDIO), b"audio").unwrap();
         let detail_of = |record: &MeetingRecord| detail(record, None, None, &url);
         let shown = detail_of(&record);
+        // `audio.m4a` is what the player falls back to when the system can't play the original (an `.mkv`).
         assert_eq!(
             shown.media,
             Some(MediaView {
                 url: url(&original),
-                video: true
+                video: true,
+                fallback_url: Some(url(&record.folder.join(files::AUDIO))),
             })
         );
         assert!(!shown.media_missing);
@@ -1053,7 +1069,8 @@ mod tests {
             shown.media,
             Some(MediaView {
                 url: url(&record.folder.join(files::AUDIO)),
-                video: false
+                video: false,
+                fallback_url: None,
             })
         );
         assert!(shown.media_missing);
@@ -1069,6 +1086,21 @@ mod tests {
             Some(url(&record.folder.join(files::AUDIO)))
         );
         assert!(!shown.media_missing);
+
+        // The original that is the `audio.m4a` itself has no other file to fall back to.
+        let id = "2026-11-09 10-00-03";
+        let folder = f.folder(id);
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join(files::AUDIO), b"audio").unwrap();
+        let record = with_media(&f, id, folder.join(files::AUDIO).to_str().unwrap());
+        let shown = detail_of(&record);
+        assert_eq!(shown.media.map(|m| m.fallback_url), Some(None));
+
+        // An original that is there with no `audio.m4a` made from it (the encoder could not start) has nothing to fall back to.
+        let id = "2026-11-09 10-00-02";
+        let record = with_media(&f, id, original_again.to_str().unwrap());
+        let shown = detail_of(&record);
+        assert_eq!(shown.media.map(|m| m.fallback_url), Some(None));
     }
 
     #[test]

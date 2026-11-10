@@ -279,6 +279,8 @@ export interface SummaryView {
 export interface MediaView {
   url: string;
   video: boolean;
+  /** Where the `audio.m4a` made from the recording plays, when `url` is the original and that file is there: for a file the system can't play. */
+  fallbackUrl: string | null;
 }
 
 export interface MeetingDetail {
