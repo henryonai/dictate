@@ -384,9 +384,32 @@ struct Stream {
 /// The stream that is running, if any. Weak: the tracks that listen to it keep it, and it ends with the last of them.
 static CURRENT: Mutex<Weak<Stream>> = Mutex::new(Weak::new());
 
+/// Makes the routes of a stream with `track` already listening on `tx`, and runs `start` (which starts the capture) with them.
+///
+/// The track has to listen before the capture starts, not after: the system sends a frame when the picture changes, and the first
+/// one as the capture starts. A screen that then stays as it is (a slide) sends no other, so a frame that went to no one would
+/// leave the video black until something moved, with nothing to say so. A `start` that fails drops the routes, and the track with
+/// them.
+fn start_listened_to<S, E>(
+    target: Target,
+    track: Track,
+    tx: Sender<SourceEvent>,
+    start: impl FnOnce(&Arc<Routes>) -> Result<S, E>,
+) -> Result<(Arc<Routes>, S), E> {
+    let routes = Arc::new(Routes::new(target));
+    routes.attach(track, tx);
+    let started = start(&routes)?;
+    Ok((routes, started))
+}
+
 impl Stream {
-    /// Opens a stream for what `options` ask and starts it. Asks for Screen Recording, which is the first thing to fail without it.
-    fn open(options: &RecordOptions) -> Result<Stream, StartError> {
+    /// Opens a stream for what `options` ask and starts it, with `track` listening on `tx` from the first moment (see
+    /// [`start_listened_to`]). Asks for Screen Recording, which is the first thing to fail without it.
+    fn open(
+        options: &RecordOptions,
+        track: Track,
+        tx: Sender<SourceEvent>,
+    ) -> Result<Stream, StartError> {
         let content = SCShareableContent::get().map_err(|error| content_error(&error))?;
         let own_pid = own_pid();
         let own = content
@@ -451,28 +474,35 @@ impl Stream {
                 .with_channel_count(1);
         }
 
-        let routes = Arc::new(Routes::new(target));
-        let mut stream = SCStream::new_with_delegate(&filter, &config, StopWatch(routes.clone()))
-            .map_err(|error| start_failure(&error))?;
-        let pictures = routes.clone();
-        stream
-            .add_output_handler(
-                move |sample: CMSampleBuffer, _: SCStreamOutputType| on_picture(&pictures, &sample),
-                SCStreamOutputType::Screen,
-            )
-            .map_err(|error| start_failure(&error))?;
-        if options.system_audio {
-            let sound = routes.clone();
+        let (routes, stream) = start_listened_to(target, track, tx, |routes| {
+            let mut stream =
+                SCStream::new_with_delegate(&filter, &config, StopWatch(routes.clone()))
+                    .map_err(|error| start_failure(&error))?;
+            let pictures = routes.clone();
             stream
                 .add_output_handler(
-                    move |sample: CMSampleBuffer, _: SCStreamOutputType| on_sound(&sound, &sample),
-                    SCStreamOutputType::Audio,
+                    move |sample: CMSampleBuffer, _: SCStreamOutputType| {
+                        on_picture(&pictures, &sample);
+                    },
+                    SCStreamOutputType::Screen,
                 )
                 .map_err(|error| start_failure(&error))?;
-        }
-        stream
-            .start_capture()
-            .map_err(|error| start_failure(&error))?;
+            if options.system_audio {
+                let sound = routes.clone();
+                stream
+                    .add_output_handler(
+                        move |sample: CMSampleBuffer, _: SCStreamOutputType| {
+                            on_sound(&sound, &sample);
+                        },
+                        SCStreamOutputType::Audio,
+                    )
+                    .map_err(|error| start_failure(&error))?;
+            }
+            stream
+                .start_capture()
+                .map_err(|error| start_failure(&error))?;
+            Ok(stream)
+        })?;
         Ok(Stream {
             stream: Mutex::new(Some(stream)),
             routes,
@@ -627,16 +657,33 @@ impl Drop for Subscription {
     }
 }
 
-/// The stream that is running, or a new one for `options`.
-fn join_or_open(options: &RecordOptions) -> Result<Arc<Stream>, StartError> {
+/// The stream that is running with `track` listening on `tx`, or a new one for `options` that starts with it listening. A track
+/// that joins a stream that runs already has only what comes after: the screen is always the first track of a recording.
+fn join_or_open(
+    track: Track,
+    options: &RecordOptions,
+    tx: Sender<SourceEvent>,
+) -> Result<Arc<Stream>, StartError> {
     // A stream that is dropped is stopped, which takes a moment: not while `CURRENT` is held (declared first, so dropped last).
     let stale;
     let mut current = lock(&CURRENT);
     match current.upgrade() {
-        Some(stream) if stream.routes.is_alive() => return Ok(stream),
+        Some(stream) if stream.routes.is_alive() => {
+            let carried = match track {
+                Track::Screen => stream.video,
+                _ => stream.audio,
+            };
+            if !carried {
+                return Err(StartError::Source(
+                    "the screen capture that is running was not set up for that".into(),
+                ));
+            }
+            stream.routes.attach(track, tx);
+            return Ok(stream);
+        }
         other => stale = other,
     }
-    let stream = Arc::new(Stream::open(options)?);
+    let stream = Arc::new(Stream::open(options, track, tx)?);
     *current = Arc::downgrade(&stream);
     drop(current);
     drop(stale);
@@ -667,17 +714,7 @@ pub fn start(
         }
         Track::Screen | Track::System => {}
     }
-    let stream = join_or_open(options)?;
-    let carried = match track {
-        Track::Screen => stream.video,
-        _ => stream.audio,
-    };
-    if !carried {
-        return Err(StartError::Source(
-            "the screen capture that is running was not set up for that".into(),
-        ));
-    }
-    stream.routes.attach(track, tx);
+    let stream = join_or_open(track, options, tx)?;
     Ok(Box::new(Subscription { stream, track }))
 }
 
@@ -1211,6 +1248,53 @@ mod tests {
                 track: Track::System,
                 reason: EndReason::DeviceLost(why)
             } if why == "16-bit integers"
+        ));
+    }
+
+    #[test]
+    fn the_first_track_listens_before_the_capture_starts() {
+        let (tx, rx) = mpsc::channel();
+
+        // A screen that does not change (a slide) sends one frame, as the capture starts, and no other until it changes.
+        let started: Result<_, ()> =
+            start_listened_to(Target::Display, Track::Screen, tx, |routes| {
+                routes.frame(frame());
+                Ok(())
+            });
+
+        assert!(started.is_ok());
+        assert!(
+            matches!(rx.try_recv(), Ok(SourceEvent::Frame(_))),
+            "the frame of the start went to no one"
+        );
+    }
+
+    #[test]
+    fn the_sound_that_comes_as_the_capture_starts_is_heard_too() {
+        let (tx, rx) = mpsc::channel();
+
+        let started: Result<_, ()> =
+            start_listened_to(Target::Display, Track::System, tx, |routes| {
+                routes.audio(Instant::now(), 48_000, vec![0.5; 480]);
+                Ok(())
+            });
+
+        assert!(started.is_ok());
+        assert_eq!(audio_events(&rx).len(), 1);
+    }
+
+    #[test]
+    fn a_capture_that_does_not_start_leaves_no_track_listening() {
+        let (tx, rx) = mpsc::channel();
+
+        let started: Result<(Arc<Routes>, ()), &str> =
+            start_listened_to(Target::Window, Track::Screen, tx, |_| Err("refused"));
+
+        assert_eq!(started.err(), Some("refused"));
+        // The routes are gone, and with them the sender: nothing can be sent to a track that never was.
+        assert!(matches!(
+            rx.try_recv(),
+            Err(mpsc::TryRecvError::Disconnected)
         ));
     }
 
