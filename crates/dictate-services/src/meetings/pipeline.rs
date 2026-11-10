@@ -128,7 +128,7 @@ pub fn startup_status(record: &MeetingRecord) -> Option<MeetingError> {
 
 /// Removes what a job that was cut short (a quit, a crash) left in a recording's folder: the temporary files of
 /// atomic writes (`*.tmp`), the unfinished downloads and audio (`*.part`, such as `source.m4a.part` and
-/// `audio.m4a.part`) and the slices of audio the API was sent (`api-slice-*.wav`). Only files directly in `folder`:
+/// `audio.m4a.<nonce>.part`) and the slices of audio the API was sent (`api-slice-*.wav`). Only files directly in `folder`:
 /// the cache of API parts, which a second run continues from, is left alone, and so is anything in another folder.
 /// Returns how many were removed.
 ///

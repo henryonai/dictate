@@ -514,19 +514,14 @@ test("closing the window pauses the player: a hidden web view goes on playing", 
   expect(HTMLMediaElement.prototype.pause).toHaveBeenCalledTimes(1);
 });
 
-test("a document that is hidden pauses the player too, and one that is shown again does not", async () => {
+test("a document that is hidden does not pause the player: a minimized or covered window is not a closed one", async () => {
   await opened();
-  const hide = (hidden: boolean) => {
-    Object.defineProperty(document, "hidden", { configurable: true, get: () => hidden });
-    document.dispatchEvent(new Event("visibilitychange"));
-  };
   try {
     vi.mocked(HTMLMediaElement.prototype.pause).mockClear();
-    hide(false);
-    expect(HTMLMediaElement.prototype.pause).not.toHaveBeenCalled();
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
+    document.dispatchEvent(new Event("visibilitychange"));
 
-    hide(true);
-    expect(HTMLMediaElement.prototype.pause).toHaveBeenCalledTimes(1);
+    expect(HTMLMediaElement.prototype.pause).not.toHaveBeenCalled();
   } finally {
     // jsdom has `hidden` on the prototype: the own property that was put over it goes.
     Reflect.deleteProperty(document, "hidden");
@@ -541,7 +536,6 @@ test("the detail stops listening for the window being closed when it goes away",
   view.unmount();
   await vi.waitFor(() => expect(events.hiddenListeners()).toBe(0));
   events.emitHidden();
-  document.dispatchEvent(new Event("visibilitychange"));
 
   expect(HTMLMediaElement.prototype.pause).not.toHaveBeenCalled();
 });

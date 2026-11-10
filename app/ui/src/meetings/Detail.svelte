@@ -33,8 +33,9 @@
   });
 
   // Closing the window only hides it, and a hidden web view goes on playing, with no control on screen. The Rust side says when the
-  // window was closed (`meetings-hidden`: no engine is asked to fire `visibilitychange` for that), and a document that is hidden says
-  // so itself where the engine does: both pause the player.
+  // window was closed (`meetings-hidden`: no engine is asked to fire `visibilitychange` for that) and the player is paused then.
+  // `document.hidden` is not listened to: a web view also reports it when the window is minimized or covered by another app, and
+  // someone who listens to a recording while working elsewhere would be paused.
   $effect(() => {
     const stop = api
       .onMeetingsHidden(() => player.pause())
@@ -42,14 +43,7 @@
         store.notify(errorText(e));
         return () => {};
       });
-    const onVisibility = () => {
-      if (document.hidden) player.pause();
-    };
-    document.addEventListener("visibilitychange", onVisibility);
-    return () => {
-      document.removeEventListener("visibilitychange", onVisibility);
-      void stop.then((stopListening) => stopListening());
-    };
+    return () => void stop.then((stopListening) => stopListening());
   });
 
   const seek = (seconds: number) => void player.seek(seconds);
