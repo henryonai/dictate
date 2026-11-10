@@ -5,8 +5,10 @@
 //! `Mode::Screen` asks the portal for a monitor and `Mode::Window` for a window, and the `display` or the `id` that the mode has is not
 //! used. The portal hands over a PipeWire node and a connection to the PipeWire daemon that can see only that node; the stream that
 //! reads it offers shared memory formats only (BGRx, BGRA, RGBx, with no DMA-BUF modifier, so that the desktop gives memory that can be
-//! read) and copies each picture, as BGRA with an opaque alpha, at the rows' own stride. The pictures come when something changes, at
-//! the pace of the video at the most; the session repeats the last one meanwhile.
+//! read) and copies each picture, as BGRA with an opaque alpha, in rows with nothing between them. The pictures come when something
+//! changes: the offer says that no more than the frames a second of the video are wanted (`maxFramerate`), and every picture that comes
+//! is passed on, the last of a burst too, because it is what the video shows until the screen changes again. The session takes the latest
+//! picture at its own pace and repeats it meanwhile.
 //!
 //! The dialog may wait on the person for a long time: `start` blocks until it is answered, for [`DIALOG_WAIT`] at the most (the app
 //! starts a recording off the thread of its window). A dialog that is cancelled is `StartError::PortalCancelled`, and a desktop that
@@ -28,7 +30,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use super::Sources;
 use crate::record::video::Frame;
@@ -107,18 +109,33 @@ struct Ender {
 }
 
 /// How many pictures that cannot be read, one after the other, the capture puts up with. A picture that cannot be read once is a buffer
-/// that was not there yet; a run of them (a second or so, at the pace of the video) is a desktop that gives what cannot be copied.
+/// that was not there yet; a run of them (a second or so of a screen that changes) is a desktop that gives what cannot be copied.
 const UNREADABLE_PICTURES: u32 = 30;
 
 /// How many pictures in a row could not be read.
 #[derive(Default)]
 struct Unreadable(u32);
 
-/// Lets the pictures through at the pace of the video at the most: one for each frame of it, on a grid that starts with the first.
-struct Pace {
-    every: Duration,
-    /// When the next frame of the grid is due; `None` before the first picture.
-    next: Option<Instant>,
+/// What the stream says of a buffer, as far as a picture is read from it.
+struct Buffer<'a> {
+    /// Where the picture starts in `data`, and how many bytes it is: what its chunk says.
+    offset: u32,
+    size: u32,
+    stride: i32,
+    /// The desktop says that what is in the buffer is damaged.
+    corrupted: bool,
+    /// What is in the buffer, when it is memory that is mapped (a DMA-BUF is not).
+    data: Option<&'a [u8]>,
+}
+
+/// What the callbacks of the stream keep: what the pictures are, as the stream last said so, and where they go.
+struct Pictures {
+    /// `None` before the stream has said, or for a format that is not offered.
+    format: Option<PixelFormat>,
+    /// In pixels.
+    size: (u32, u32),
+    unreadable: Unreadable,
+    tx: Sender<SourceEvent>,
 }
 
 /// The picture that `bytes` are, in `height` rows of `stride` bytes of `format` pixels `width` wide, as BGRA with an opaque alpha in
@@ -244,12 +261,6 @@ fn portal_sources(answered: bool) -> Result<Sources, StartError> {
     }
 }
 
-/// The least time between the pictures that are copied: one frame of the video. A screen is not copied 60 times a second for a video
-/// of 10.
-fn frame_interval(fps: u32) -> Duration {
-    Duration::from_micros(1_000_000 / u64::from(fps.max(1)))
-}
-
 impl Ender {
     fn new(tx: Sender<SourceEvent>, target: Target) -> Ender {
         Ender {
@@ -302,32 +313,45 @@ impl Unreadable {
     }
 }
 
-impl Pace {
-    fn new(fps: u32) -> Pace {
-        Pace {
-            every: frame_interval(fps),
-            next: None,
+impl Pictures {
+    fn new(tx: Sender<SourceEvent>) -> Pictures {
+        Pictures {
+            format: None,
+            size: (0, 0),
+            unreadable: Unreadable::default(),
+            tx,
         }
     }
 
-    /// Whether the picture that is here at `now` is one to copy. A picture that is early by a tenth of a frame or less counts as on time:
-    /// the times of the pictures are not to the microsecond, and a screen that gives 60 for a video of 30 would else give it 20. After a
-    /// pause (a screen that did not change) the grid starts again from the picture that ends it, so that two do not come together.
-    fn admits(&mut self, now: Instant) -> bool {
-        let Some(next) = self.next else {
-            self.next = Some(now + self.every);
-            return true;
-        };
-        if now + self.every / 10 < next {
+    /// The stream says what its pictures are (it says so again when a window is resized).
+    fn say(&mut self, format: Option<PixelFormat>, size: (u32, u32)) {
+        self.format = format;
+        self.size = size;
+    }
+
+    /// A buffer has arrived: the picture that is in it goes to the channel at once, whole, whatever came before it. A screen sends a picture
+    /// when something changes and nothing when it stops changing, so the last picture of a burst is what the video shows from then on:
+    /// none is held back, and the session takes the latest at its own pace. A buffer that has nothing new in it, or that the desktop says
+    /// is damaged, is no picture and no fault, and uses up nothing. Whether the capture is to be given up, for a run of buffers that cannot
+    /// be read.
+    fn arrived(&mut self, buffer: Buffer) -> bool {
+        if buffer.size == 0 || buffer.corrupted {
             return false;
         }
-        let on_the_grid = next + self.every;
-        self.next = Some(if on_the_grid > now + self.every / 10 {
-            on_the_grid
-        } else {
-            now + self.every
+        let (width, height) = self.size;
+        let frame = self.format.and_then(|format| {
+            let bytes = chunk_bytes(buffer.data?, buffer.offset, buffer.size)?;
+            picture(format, width, height, buffer.stride, bytes)
         });
-        true
+        match frame {
+            Some(frame) => {
+                self.unreadable.read();
+                // A session that is over has no one to read.
+                let _ = self.tx.send(SourceEvent::Frame(frame));
+                false
+            }
+            None => self.unreadable.fail(),
+        }
     }
 }
 
@@ -681,15 +705,6 @@ mod native {
         .unwrap_or_default()
     }
 
-    /// What the callbacks of the stream keep.
-    struct Pictures {
-        /// What the stream says its pictures are, as it last said so: a window that is resized says it again.
-        format: spa::param::video::VideoInfoRaw,
-        pace: Pace,
-        unreadable: Unreadable,
-        tx: Sender<SourceEvent>,
-    }
-
     fn text(error: impl std::fmt::Display) -> String {
         error.to_string()
     }
@@ -726,12 +741,7 @@ mod native {
             },
         )
         .map_err(text)?;
-        let pictures = Pictures {
-            format: spa::param::video::VideoInfoRaw::default(),
-            pace: Pace::new(fps),
-            unreadable: Unreadable::default(),
-            tx,
-        };
+        let pictures = Pictures::new(tx);
         let _listener = stream
             .add_local_listener_with_user_data(pictures)
             .state_changed({
@@ -762,7 +772,8 @@ mod native {
                 }
                 let mut format = spa::param::video::VideoInfoRaw::default();
                 if format.parse(param).is_ok() {
-                    pictures.format = format;
+                    let size = format.size();
+                    pictures.say(PixelFormat::of(format.format()), (size.width, size.height));
                 }
             })
             .process({
@@ -772,40 +783,22 @@ mod native {
                     let Some(mut buffer) = stream.dequeue_buffer() else {
                         return;
                     };
-                    if !pictures.pace.admits(Instant::now()) {
-                        return;
-                    }
                     let Some(data) = buffer.datas_mut().first_mut() else {
                         return;
                     };
                     let chunk = data.chunk();
                     let (offset, size, stride) = (chunk.offset(), chunk.size(), chunk.stride());
-                    // A buffer with nothing new in it, or one that the desktop says is damaged, is not a picture and not a fault.
-                    if size == 0 || chunk.flags().contains(spa::buffer::ChunkFlags::CORRUPTED) {
-                        return;
-                    }
-                    let picture_size = pictures.format.size();
-                    let frame = PixelFormat::of(pictures.format.format()).and_then(|format| {
-                        let bytes = chunk_bytes(data.data()?, offset, size)?;
-                        picture(
-                            format,
-                            picture_size.width,
-                            picture_size.height,
-                            stride,
-                            bytes,
-                        )
+                    let corrupted = chunk.flags().contains(spa::buffer::ChunkFlags::CORRUPTED);
+                    let given_up = pictures.arrived(Buffer {
+                        offset,
+                        size,
+                        stride,
+                        corrupted,
+                        data: data.data().map(|bytes| &*bytes),
                     });
-                    match frame {
-                        Some(frame) => {
-                            pictures.unreadable.read();
-                            // A session that is over has no one to read.
-                            let _ = pictures.tx.send(SourceEvent::Frame(frame));
-                        }
-                        None if pictures.unreadable.fail() => {
-                            ender.failed("the desktop gives pictures that cannot be read");
-                            mainloop.quit();
-                        }
-                        None => {}
+                    if given_up {
+                        ender.failed("the desktop gives pictures that cannot be read");
+                        mainloop.quit();
                     }
                 }
             })
@@ -1491,74 +1484,153 @@ mod tests {
         }
     }
 
-    // ---- The pace ----
+    // ---- The buffers of the stream ----
 
-    #[test]
-    fn pictures_that_come_faster_than_the_video_are_not_copied() {
-        // A screen that gives 144 pictures a second, for a video of 10: one in about 14.
-        let base = Instant::now();
-        let mut pace = Pace::new(10);
+    /// A picture of 2 x 1 pixels in BGRx, of `shade`: what a buffer of the stream carries.
+    fn bytes_of(shade: u8) -> Vec<u8> {
+        vec![shade, shade, shade, 0, shade, shade, shade, 0]
+    }
 
-        let kept = (0..144u32)
-            .filter(|n| pace.admits(base + Duration::from_micros(u64::from(*n) * 6_944)))
-            .count();
+    /// A buffer that holds `data` (8 bytes of 2 x 1 pixels), as the stream hands it over.
+    fn buffer(data: &[u8]) -> Buffer<'_> {
+        Buffer {
+            offset: 0,
+            size: data.len() as u32,
+            stride: 8,
+            corrupted: false,
+            data: Some(data),
+        }
+    }
 
-        assert!(
-            (9..=11).contains(&kept),
-            "{kept} of 144 pictures in a second"
-        );
+    /// The pictures of a stream that said its pictures are BGRx and 2 x 1, and the channel that they go to.
+    fn pictures() -> (Pictures, mpsc::Receiver<SourceEvent>) {
+        let (tx, rx) = mpsc::channel();
+        let mut pictures = Pictures::new(tx);
+        pictures.say(Some(PixelFormat::Bgrx), (2, 1));
+        (pictures, rx)
+    }
+
+    fn shade_of(event: SourceEvent) -> u8 {
+        match event {
+            SourceEvent::Frame(frame) => frame.bgra[0],
+            _ => panic!("not a picture"),
+        }
     }
 
     #[test]
-    fn a_screen_of_60_pictures_a_second_gives_a_video_of_30_exactly_30() {
-        let base = Instant::now();
-        let mut pace = Pace::new(30);
+    fn every_picture_of_a_quick_burst_reaches_the_channel_and_the_last_one_is_the_last() {
+        // A screen sends a picture when something changes, and then nothing when it stops changing: what the last one shows is what the
+        // video shows from then on, so none of a burst (a slide that fades, a line that is typed) may be held back, least of all the end.
+        let (mut pictures, rx) = pictures();
 
-        let kept = (0..60u64)
-            .filter(|n| pace.admits(base + Duration::from_micros(n * 16_667)))
-            .count();
+        for shade in 1..=20u8 {
+            assert!(!pictures.arrived(buffer(&bytes_of(shade))));
+        }
 
-        assert_eq!(kept, 30);
+        let shades: Vec<u8> = rx.try_iter().map(shade_of).collect();
+        assert_eq!(shades, (1..=20).collect::<Vec<u8>>());
     }
 
     #[test]
-    fn after_a_pause_the_next_picture_is_copied_and_the_one_after_it_waits_for_its_frame() {
-        // A screen that does not change sends nothing, and then something: the picture that ends the pause is not one of a pair.
-        let base = Instant::now();
-        let mut pace = Pace::new(10);
-        assert!(pace.admits(base));
+    fn a_buffer_with_nothing_in_it_or_a_damaged_one_is_no_picture_and_takes_nothing_with_it() {
+        // The first buffer of a stream may be an empty one, and the picture that matters (all there is of a screen that does not
+        // change) follows at once: whatever comes before it must not use up its place.
+        let (mut pictures, rx) = pictures();
+        let data = bytes_of(7);
 
-        assert!(pace.admits(base + Duration::from_secs(5)));
-        assert!(!pace.admits(base + Duration::from_millis(5_010)));
-        assert!(pace.admits(base + Duration::from_millis(5_100)));
+        for _ in 0..UNREADABLE_PICTURES * 2 {
+            let empty = Buffer {
+                size: 0,
+                ..buffer(&data)
+            };
+            let damaged = Buffer {
+                corrupted: true,
+                ..buffer(&data)
+            };
+            assert!(!pictures.arrived(empty));
+            assert!(!pictures.arrived(damaged));
+        }
+        assert!(rx.try_recv().is_err(), "nothing was sent for them");
+
+        assert!(!pictures.arrived(buffer(&data)));
+        assert_eq!(shade_of(rx.try_recv().expect("the picture")), 7);
     }
 
     #[test]
-    fn the_first_picture_is_always_copied() {
-        let mut pace = Pace::new(10);
+    fn a_run_of_buffers_that_cannot_be_read_gives_the_capture_up_and_sends_nothing() {
+        let (mut pictures, rx) = pictures();
+        let unmapped = Buffer {
+            data: None,
+            ..buffer(&[])
+        };
 
-        assert!(pace.admits(Instant::now()));
+        for _ in 1..UNREADABLE_PICTURES {
+            assert!(!pictures.arrived(Buffer {
+                size: 8,
+                ..unmapped
+            }));
+        }
+        assert!(pictures.arrived(Buffer {
+            size: 8,
+            ..unmapped
+        }));
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]
-    fn a_picture_a_little_early_is_not_held_back_for_a_whole_frame() {
-        // 60 pictures a second for a video of 30: every other one. One that is 2 ms early (its time is not to the microsecond) is
-        // copied all the same, or the video would get 20 frames a second.
-        let base = Instant::now();
-        let mut pace = Pace::new(30);
+    fn a_buffer_that_is_read_ends_the_run_of_the_ones_that_were_not() {
+        let (mut pictures, rx) = pictures();
+        let unmapped = Buffer {
+            size: 8,
+            data: None,
+            ..buffer(&[])
+        };
 
-        assert!(pace.admits(base));
-        assert!(!pace.admits(base + Duration::from_micros(16_667)));
-        assert!(pace.admits(base + Duration::from_micros(31_000)));
+        for _ in 0..3 {
+            for _ in 1..UNREADABLE_PICTURES {
+                assert!(!pictures.arrived(Buffer { ..unmapped }));
+            }
+            assert!(!pictures.arrived(buffer(&bytes_of(1))));
+        }
+        assert_eq!(rx.try_iter().count(), 3);
     }
 
     #[test]
-    fn the_pace_of_the_pictures_is_one_frame_of_the_video() {
-        assert_eq!(frame_interval(10), Duration::from_millis(100));
-        assert_eq!(frame_interval(30), Duration::from_micros(33_333));
-        // A rate of nothing is not a pace of no time.
-        assert_eq!(frame_interval(0), Duration::from_secs(1));
+    fn buffers_before_the_stream_has_said_what_its_pictures_are_cannot_be_read() {
+        // Or in a format that is not offered: they are not pictures, and a run of them is a stream that gives nothing.
+        let (tx, rx) = mpsc::channel();
+        let mut pictures = Pictures::new(tx);
+        let data = bytes_of(1);
+
+        for _ in 1..UNREADABLE_PICTURES {
+            assert!(!pictures.arrived(buffer(&data)));
+        }
+        assert!(pictures.arrived(buffer(&data)));
+        assert!(rx.try_recv().is_err());
     }
+
+    #[test]
+    fn a_picture_follows_the_size_that_the_stream_last_said() {
+        // A window that is resized says its format again, and the next buffer is of the new size.
+        let (mut pictures, rx) = pictures();
+        assert!(!pictures.arrived(buffer(&bytes_of(1))));
+
+        pictures.say(Some(PixelFormat::Bgrx), (1, 2));
+        assert!(!pictures.arrived(Buffer {
+            stride: 4,
+            ..buffer(&bytes_of(2))
+        }));
+
+        let sizes: Vec<(u32, u32)> = rx
+            .try_iter()
+            .map(|event| match event {
+                SourceEvent::Frame(frame) => (frame.width, frame.height),
+                _ => panic!("not a picture"),
+            })
+            .collect();
+        assert_eq!(sizes, [(2, 1), (1, 2)]);
+    }
+
     // ---- With the real system: they record this machine's screen, so they are asked for ----
 
     #[cfg(target_os = "linux")]
