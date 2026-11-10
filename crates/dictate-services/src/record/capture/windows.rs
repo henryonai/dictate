@@ -195,9 +195,75 @@ enum Refused {
     Unsupported,
     /// The window or the display is not there any more.
     TargetGone,
-    /// What was asked besides the picture (the cursor, no border, a pace) was not given; the text says what.
-    Extras(String),
+    /// One of the extras that were asked for besides the picture was not given; the text is what the system said.
+    Extra(Extra, String),
     Other(String),
+}
+
+/// Which of the extras that a capture asks for besides the picture the system refused.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Extra {
+    Cursor,
+    Border,
+    Interval,
+    /// A call that sets one of them failed, and the system does not say which.
+    Unknown,
+}
+
+/// What a capture asks for besides the picture; a Windows that lacks one of them refuses it, and the capture is asked again
+/// without that one.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Extras {
+    /// The cursor is in the picture.
+    cursor: bool,
+    /// No border around the window (the yellow one of the system).
+    border: bool,
+    /// No more than one picture per frame of the video.
+    interval: bool,
+}
+
+impl Extras {
+    const ALL: Extras = Extras {
+        cursor: true,
+        border: true,
+        interval: true,
+    };
+
+    /// What is asked for after the system refused `refused`: the same, without that one and nothing else. `None` when there is
+    /// nothing to take away (it was not asked for), which is the end of asking again. A failure that names no setting takes
+    /// them away one at a time, the pace first (which is the least of them), then the border, then the cursor.
+    fn without(self, refused: Extra) -> Option<Extras> {
+        let mut fewer = self;
+        let setting = match refused {
+            Extra::Cursor => &mut fewer.cursor,
+            Extra::Border => &mut fewer.border,
+            Extra::Interval => &mut fewer.interval,
+            Extra::Unknown if self.interval => &mut fewer.interval,
+            Extra::Unknown if self.border => &mut fewer.border,
+            Extra::Unknown => &mut fewer.cursor,
+        };
+        // What it was: a setting that was not asked for is not one to take away.
+        std::mem::replace(setting, false).then_some(fewer)
+    }
+}
+
+/// Starts a capture with `start`, asked for everything at first, and again (without what the system said it does not have, see
+/// [`Extras::without`]) for as long as it refuses one of the extras and there is one left to take away. `refused` says which
+/// extra an error is about, if it is about one. The start that works, or the error that no taking away helps.
+fn start_degrading<S, E>(
+    mut start: impl FnMut(Extras) -> Result<S, E>,
+    refused: impl Fn(&E) -> Option<Extra>,
+) -> Result<S, E> {
+    let mut wanted = Extras::ALL;
+    loop {
+        match start(wanted) {
+            Ok(started) => return Ok(started),
+            Err(error) => match refused(&error).and_then(|extra| wanted.without(extra)) {
+                Some(fewer) => wanted = fewer,
+                None => return Err(error),
+            },
+        }
+    }
 }
 
 /// What a start that the system refused is, as the session and the person hear of it.
@@ -210,7 +276,7 @@ fn start_error(refused: Refused, target: Target) -> StartError {
             Target::Window => StartError::WindowGone,
             Target::Display => display_gone(),
         },
-        Refused::Extras(text) | Refused::Other(text) => StartError::Source(text),
+        Refused::Extra(_, text) | Refused::Other(text) => StartError::Source(text),
     }
 }
 
@@ -322,12 +388,19 @@ mod native {
             | GraphicsCaptureApiError::GraphicsCaptureApiError(Api::WindowError(_)) => {
                 Refused::TargetGone
             }
+            GraphicsCaptureApiError::GraphicsCaptureApiError(Api::CursorConfigUnsupported) => {
+                Refused::Extra(Extra::Cursor, error.to_string())
+            }
+            GraphicsCaptureApiError::GraphicsCaptureApiError(Api::BorderConfigUnsupported) => {
+                Refused::Extra(Extra::Border, error.to_string())
+            }
             GraphicsCaptureApiError::GraphicsCaptureApiError(
-                Api::CursorConfigUnsupported
-                | Api::BorderConfigUnsupported
-                | Api::MinimumUpdateIntervalUnsupported
-                | Api::WindowsError(_),
-            ) => Refused::Extras(error.to_string()),
+                Api::MinimumUpdateIntervalUnsupported,
+            ) => Refused::Extra(Extra::Interval, error.to_string()),
+            // A setter that fails (the border may be refused where the system has it) says no more than that.
+            GraphicsCaptureApiError::GraphicsCaptureApiError(Api::WindowsError(_)) => {
+                Refused::Extra(Extra::Unknown, error.to_string())
+            }
             other => Refused::Other(other.to_string()),
         }
     }
@@ -369,8 +442,8 @@ mod native {
 
     /// Starts the capture of `item` (a display or a window, `target`) on a thread of its own, sending the pictures and the end to
     /// `tx`. Besides the picture it asks for the cursor, no border around a window (the yellow one of the system) and no more than
-    /// one picture per frame of the video; a Windows that has none of these, or refuses them, is asked again without, and gives the
-    /// picture it has.
+    /// one picture per frame of the video; a Windows that refuses one of these is asked again without that one (see
+    /// [`start_degrading`]), and gives the picture it has.
     fn begin<T>(
         item: T,
         target: Target,
@@ -381,21 +454,21 @@ mod native {
         T: TryIntoCaptureItemWithType + Send + Copy + 'static,
     {
         let interval = frame_interval(options.quality.spec().fps);
-        let settings = |extras: bool| {
+        let settings = |wanted: Extras| {
             Settings::new(
                 item,
-                if extras {
+                if wanted.cursor {
                     CursorCaptureSettings::WithCursor
                 } else {
                     CursorCaptureSettings::Default
                 },
-                if extras {
+                if wanted.border {
                     DrawBorderSettings::WithoutBorder
                 } else {
                     DrawBorderSettings::Default
                 },
                 SecondaryWindowSettings::Default,
-                if extras {
+                if wanted.interval {
                     MinimumUpdateIntervalSettings::Custom(interval)
                 } else {
                     MinimumUpdateIntervalSettings::Default
@@ -405,12 +478,13 @@ mod native {
                 (tx.clone(), target),
             )
         };
-        let started = match Handler::start_free_threaded(settings(true)) {
-            Err(error) if matches!(refused(&error), Refused::Extras(_)) => {
-                Handler::start_free_threaded(settings(false))
-            }
-            started => started,
-        };
+        let started = start_degrading(
+            |wanted| Handler::start_free_threaded(settings(wanted)),
+            |error| match refused(error) {
+                Refused::Extra(extra, _) => Some(extra),
+                _ => None,
+            },
+        );
         let control = started.map_err(|error| start_error(refused(&error), target))?;
         Ok(Box::new(Capture {
             control: Some(control),
@@ -478,6 +552,79 @@ mod native {
             windows: listed_windows(&windows, std::process::id()),
             picker_is_the_system: false,
         })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use windows::core::{Error as WindowsError, HRESULT};
+        use windows_capture::window::Error as WindowError;
+
+        fn api(error: Api) -> GraphicsCaptureApiError<String> {
+            GraphicsCaptureApiError::GraphicsCaptureApiError(error)
+        }
+
+        #[test]
+        fn graphics_capture_that_is_not_there_is_unsupported() {
+            assert_eq!(refused(&api(Api::Unsupported)), Refused::Unsupported);
+        }
+
+        #[test]
+        fn a_window_that_the_system_does_not_know_is_gone() {
+            assert_eq!(
+                refused(&GraphicsCaptureApiError::ItemConvertFailed),
+                Refused::TargetGone
+            );
+            assert_eq!(
+                refused(&api(Api::WindowError(WindowError::NoActiveWindow))),
+                Refused::TargetGone
+            );
+        }
+
+        #[test]
+        fn each_setting_that_the_system_refuses_is_named() {
+            for (error, named) in [
+                (Api::CursorConfigUnsupported, Extra::Cursor),
+                (Api::BorderConfigUnsupported, Extra::Border),
+                (Api::MinimumUpdateIntervalUnsupported, Extra::Interval),
+            ] {
+                let said = error.to_string();
+                assert!(
+                    matches!(
+                        refused(&api(error)),
+                        Refused::Extra(extra, text) if extra == named && text.contains(&said)
+                    ),
+                    "{named:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn a_setter_that_fails_without_saying_which_is_not_named() {
+            // E_FAIL.
+            let failed = WindowsError::from_hresult(HRESULT(-2_147_467_259));
+
+            assert!(matches!(
+                refused(&api(Api::WindowsError(failed))),
+                Refused::Extra(Extra::Unknown, _)
+            ));
+        }
+
+        #[test]
+        fn what_else_the_crate_says_is_another_reason_that_taking_a_setting_away_does_not_help() {
+            assert!(matches!(
+                refused(&GraphicsCaptureApiError::FailedToInitWinRT),
+                Refused::Other(_)
+            ));
+            assert!(matches!(
+                refused(&GraphicsCaptureApiError::NewHandlerError("boom".into())),
+                Refused::Other(text) if text.contains("boom")
+            ));
+            assert!(matches!(
+                refused(&api(Api::SecondaryWindowsUnsupported)),
+                Refused::Other(_)
+            ));
+        }
     }
 }
 
@@ -765,9 +912,133 @@ mod tests {
             StartError::Source("access denied".into())
         );
         assert_eq!(
-            start_error(Refused::Extras("no cursor".into()), Target::Window),
+            start_error(
+                Refused::Extra(Extra::Cursor, "no cursor".into()),
+                Target::Window
+            ),
             StartError::Source("no cursor".into())
         );
+    }
+
+    fn extras(cursor: bool, border: bool, interval: bool) -> Extras {
+        Extras {
+            cursor,
+            border,
+            interval,
+        }
+    }
+
+    #[test]
+    fn a_windows_without_the_pace_keeps_the_cursor_and_the_border() {
+        assert_eq!(
+            Extras::ALL.without(Extra::Interval),
+            Some(extras(true, true, false))
+        );
+    }
+
+    #[test]
+    fn a_windows_that_refuses_the_border_keeps_the_cursor_and_the_pace() {
+        assert_eq!(
+            Extras::ALL.without(Extra::Border),
+            Some(extras(true, false, true))
+        );
+    }
+
+    #[test]
+    fn a_windows_that_refuses_the_cursor_keeps_the_border_and_the_pace() {
+        assert_eq!(
+            Extras::ALL.without(Extra::Cursor),
+            Some(extras(false, true, true))
+        );
+    }
+
+    #[test]
+    fn a_setting_that_is_refused_when_it_is_not_asked_for_leaves_nothing_to_take_away() {
+        assert_eq!(extras(true, true, false).without(Extra::Interval), None);
+        assert_eq!(extras(true, false, true).without(Extra::Border), None);
+        assert_eq!(extras(false, true, true).without(Extra::Cursor), None);
+    }
+
+    #[test]
+    fn a_failure_that_names_no_setting_takes_away_the_pace_then_the_border_then_the_cursor() {
+        let mut asked = Extras::ALL;
+        let mut taken = Vec::new();
+        while let Some(fewer) = asked.without(Extra::Unknown) {
+            taken.push(fewer);
+            asked = fewer;
+        }
+
+        assert_eq!(
+            taken,
+            [
+                extras(true, true, false),
+                extras(true, false, false),
+                extras(false, false, false)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_start_is_asked_again_without_only_what_was_refused() {
+        // A Windows that has the cursor, but neither the pace nor the border: the cursor is asked for in every start.
+        let mut asked = Vec::new();
+
+        let started = start_degrading(
+            |wanted| {
+                asked.push(wanted);
+                if wanted.interval {
+                    Err(Extra::Interval)
+                } else if wanted.border {
+                    Err(Extra::Border)
+                } else {
+                    Ok("started")
+                }
+            },
+            |refused| Some(*refused),
+        );
+
+        assert_eq!(started, Ok("started"));
+        assert_eq!(
+            asked,
+            [
+                Extras::ALL,
+                extras(true, true, false),
+                extras(true, false, false)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_start_that_fails_for_another_reason_is_not_asked_again() {
+        let mut asked = 0;
+
+        let started: Result<(), &str> = start_degrading(
+            |_| {
+                asked += 1;
+                Err("out of memory")
+            },
+            |_| None,
+        );
+
+        assert_eq!(started, Err("out of memory"));
+        assert_eq!(asked, 1);
+    }
+
+    #[test]
+    fn a_start_that_fails_with_every_setting_taken_away_gives_the_error() {
+        let mut asked = Vec::new();
+
+        let started: Result<(), Extra> = start_degrading(
+            |wanted| {
+                asked.push(wanted);
+                Err(Extra::Unknown)
+            },
+            |refused| Some(*refused),
+        );
+
+        assert_eq!(started, Err(Extra::Unknown));
+        assert_eq!(asked.len(), 4, "all three, then one less each time");
+        assert_eq!(asked[3], extras(false, false, false));
     }
 
     #[test]
