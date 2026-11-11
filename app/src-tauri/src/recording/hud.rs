@@ -35,18 +35,37 @@ const TOP_GAP: f64 = 12.0;
 
 /// Shows the bar at its place, making its window the first time.
 pub fn show<R: Runtime>(app: &AppHandle<R>) {
-    let Some(window) = window(app) else { return };
-    place(&window);
-    keep_other_windows_out(app, true);
-    set_visible(app, &window, true);
+    show_with(app, cfg!(windows), window);
+}
+
+/// `show` with the window of the bar made by `make`, on a system that is Windows or is not. What was kept out of the recording is
+/// given back, by label.
+fn show_with<R: Runtime>(
+    app: &AppHandle<R>,
+    on_windows: bool,
+    make: impl FnOnce(&AppHandle<R>) -> Option<WebviewWindow<R>>,
+) -> Vec<&'static str> {
+    // Before the bar, and whatever comes of it: a bar that cannot be made is no reason to have the app's windows in a recording.
+    let kept = keep_other_windows_out(app, true, on_windows);
+    if let Some(window) = make(app) {
+        place(&window);
+        set_visible(app, &window, true);
+    }
+    kept
 }
 
 /// Hides the bar. A bar that was never made stays unmade.
 pub fn hide<R: Runtime>(app: &AppHandle<R>) {
-    keep_other_windows_out(app, false);
+    hide_with(app, cfg!(windows));
+}
+
+/// `hide` on a system that is Windows or is not. The windows that were given back to the recording are told by label.
+fn hide_with<R: Runtime>(app: &AppHandle<R>, on_windows: bool) -> Vec<&'static str> {
+    let given_back = keep_other_windows_out(app, false, on_windows);
     if let Some(window) = app.get_webview_window(LABEL) {
         set_visible(app, &window, false);
     }
+    given_back
 }
 
 /// Whether a window that is made now is to be kept out of the recording of the screen: on Windows, while a recording goes on.
@@ -72,9 +91,14 @@ fn protected_windows(on_windows: bool) -> &'static [&'static str] {
 }
 
 /// Puts the windows of the app that show in a recording of the screen out of it while the bar is shown, and back in the picture
-/// when it is hidden.
-fn keep_other_windows_out<R: Runtime>(app: &AppHandle<R>, out: bool) {
-    for label in protected_windows(cfg!(windows)) {
+/// when it is hidden. The labels of the windows that were there to be changed.
+fn keep_other_windows_out<R: Runtime>(
+    app: &AppHandle<R>,
+    out: bool,
+    on_windows: bool,
+) -> Vec<&'static str> {
+    let mut changed = Vec::new();
+    for label in protected_windows(on_windows) {
         let Some(window) = app.get_webview_window(label) else {
             continue;
         };
@@ -83,7 +107,9 @@ fn keep_other_windows_out<R: Runtime>(app: &AppHandle<R>, out: bool) {
                 "Could not change whether the {label} window is kept out of a recording: {e}"
             );
         }
+        changed.push(*label);
     }
+    changed
 }
 
 /// The window of the bar, made when there is none yet.
@@ -355,6 +381,48 @@ mod tests {
         let mut labels: Vec<String> = handle.webview_windows().into_keys().collect();
         labels.sort();
         assert_eq!(labels, ["meetings", "recorder", "settings"]);
+    }
+
+    /// An app with windows of these labels.
+    fn app_with(labels: &[&str]) -> App<MockRuntime> {
+        let app = app();
+        for label in labels {
+            WebviewWindowBuilder::new(app.handle(), *label, WebviewUrl::default())
+                .build()
+                .unwrap();
+        }
+        app
+    }
+
+    #[test]
+    fn on_windows_the_other_windows_are_kept_out_of_the_recording_even_when_the_bar_cannot_be_made()
+    {
+        let app = app_with(&["settings", "meetings"]);
+        let handle = app.handle();
+
+        // The bar could not be made (nothing came of making it): the recording must not have the app's windows in it for that.
+        let kept = show_with(handle, true, |_| None);
+
+        assert_eq!(kept, ["meetings", "settings"]);
+        assert!(handle.get_webview_window(LABEL).is_none());
+    }
+
+    #[test]
+    fn elsewhere_no_window_is_kept_out_by_the_app_and_a_window_that_does_not_exist_is_left_out_of_it(
+    ) {
+        let app = app_with(&["settings", "meetings"]);
+        assert!(show_with(app.handle(), false, |_| None).is_empty());
+
+        let app = app_with(&["settings"]);
+        assert_eq!(show_with(app.handle(), true, |_| None), ["settings"]);
+    }
+
+    #[test]
+    fn the_windows_are_given_back_when_the_bar_is_hidden() {
+        let app = app_with(&["settings", "meetings"]);
+
+        assert_eq!(hide_with(app.handle(), true), ["meetings", "settings"]);
+        assert!(hide_with(app.handle(), false).is_empty());
     }
 
     #[test]

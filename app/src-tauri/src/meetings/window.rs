@@ -4,11 +4,7 @@
 //! it are as they were when it comes back, and the app stays in the tray. A hidden web view goes on playing, so the page is told
 //! (`meetings-hidden`) and pauses its player.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-
 use serde::Serialize;
-use tauri::webview::PageLoadEvent;
 use tauri::{
     AppHandle, Emitter, Manager, Runtime, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
@@ -32,7 +28,17 @@ const MIN_HEIGHT: f64 = 600.0;
 pub const HIDDEN_EVENT: &str = "meetings-hidden";
 
 /// The event that asks the page to show the picker of the recording ("Record & summarize"), with an [`OpenRecorder`] as its payload.
+/// It reaches a page that is there to hear it, which is a window that was made before.
 pub const OPEN_RECORDER_EVENT: &str = "meetings-open-recorder";
+
+/// The global that a window made for the picker has before any script of its page runs, holding the same [`OpenRecorder`] as JSON.
+/// A page that is not there yet cannot hear [`OPEN_RECORDER_EVENT`]: Tauri sends an event only to a page that has registered a
+/// listener for it, which the page does when it has started, and nothing orders the two.
+///
+/// The contract for the page: when it mounts it reads `window.__dictateOpenRecorder`, deletes it, and shows the picker (with the
+/// error, if there is one) when it was there; and it listens for `meetings-open-recorder` for the asks that come later. The global
+/// is set again by a reload of the window, which the app does not do (a development build does).
+pub const OPEN_RECORDER_GLOBAL: &str = "__dictateOpenRecorder";
 
 /// What the page is told when the picker is asked for.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -70,7 +76,8 @@ pub fn show<R: Runtime>(app: &AppHandle<R>) {
 /// Shows the meetings window with the picker of the recording open, making the window when there is none yet. `error` is why a
 /// recording did not begin, for the picker to show.
 ///
-/// A window that is made now has no page to hear the event yet: it is sent when the page has loaded.
+/// A window that is there has its page told by the event [`OPEN_RECORDER_EVENT`]. A window that is made now has no page to hear
+/// it yet, so it is made with [`OPEN_RECORDER_GLOBAL`], which the page reads when it mounts.
 pub fn show_recorder<R: Runtime>(app: &AppHandle<R>, error: Option<&ErrorView>) {
     let open = OpenRecorder {
         error: error.cloned(),
@@ -80,20 +87,27 @@ pub fn show_recorder<R: Runtime>(app: &AppHandle<R>, error: Option<&ErrorView>) 
         tell_the_page(&window, &open);
         return;
     }
-    // The page is loaded once for the life of the window: the event goes with that load and with no later one.
-    let told = Arc::new(AtomicBool::new(false));
-    let on_load = {
-        let open = open.clone();
-        move |window: WebviewWindow<R>, payload: tauri::webview::PageLoadPayload<'_>| {
-            if payload.event() == PageLoadEvent::Finished && !told.swap(true, Ordering::SeqCst) {
-                tell_the_page(&window, &open);
-            }
-        }
-    };
-    match builder(app).on_page_load(on_load).build() {
+    match builder(app)
+        .initialization_script(open_recorder_script(&open))
+        .build()
+    {
         Ok(window) => bring_forward(&window),
         Err(e) => log::warn!("Could not make the meetings window: {e}"),
     }
+}
+
+/// The script that gives [`OPEN_RECORDER_GLOBAL`] its value: one statement. The error says what a tool or the system said, which
+/// is no code: the value is JSON, and the characters that could end a string, a script element or (for older scripts) a line are
+/// escaped, so that it is read as data whatever it holds.
+fn open_recorder_script(open: &OpenRecorder) -> String {
+    let json = serde_json::to_string(open).unwrap_or_else(|_| r#"{"error":null}"#.to_owned());
+    let json = json
+        .replace('<', "\\u003c")
+        .replace('>', "\\u003e")
+        .replace('&', "\\u0026")
+        .replace('\u{2028}', "\\u2028")
+        .replace('\u{2029}', "\\u2029");
+    format!("window.{OPEN_RECORDER_GLOBAL} = {json};")
 }
 
 fn tell_the_page<R: Runtime>(window: &WebviewWindow<R>, open: &OpenRecorder) {
@@ -226,6 +240,71 @@ mod tests {
                 }
             })
         );
+    }
+
+    /// What the script gives the global, read back as the JSON it is.
+    fn literal_of(script: &str) -> serde_json::Value {
+        let prefix = format!("window.{OPEN_RECORDER_GLOBAL} = ");
+        let literal = script
+            .strip_prefix(&prefix)
+            .expect("an assignment to the global");
+        let literal = literal.strip_suffix(';').expect("one statement");
+        serde_json::from_str(literal).expect("a literal of JSON")
+    }
+
+    #[test]
+    fn the_page_of_a_window_made_for_the_picker_finds_what_to_open_in_a_global_at_start() {
+        // The name is the contract with the page: it reads this global when it mounts and deletes it.
+        assert_eq!(OPEN_RECORDER_GLOBAL, "__dictateOpenRecorder");
+
+        let none = open_recorder_script(&OpenRecorder { error: None });
+        assert_eq!(literal_of(&none), serde_json::json!({ "error": null }));
+
+        let error = ErrorView {
+            kind: "MissingTool".into(),
+            key: "recording.error.needs_ffmpeg".into(),
+            detail: None,
+            command: Some("brew install ffmpeg".into()),
+        };
+        let some = open_recorder_script(&OpenRecorder { error: Some(error) });
+        assert_eq!(
+            literal_of(&some),
+            serde_json::json!({
+                "error": {
+                    "kind": "MissingTool",
+                    "key": "recording.error.needs_ffmpeg",
+                    "detail": null,
+                    "command": "brew install ffmpeg",
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn what_an_error_says_goes_into_the_script_as_data_and_never_as_code() {
+        // Quotes and backslashes that would end a string, a comment, a template, a script element, and the line separators that
+        // older scripts take for the end of a line: the detail of an error is whatever a tool or the system said.
+        let nasty = "\"; alert(1); //\\ ' ` ${x} </script><script>alert(2)</script> <!-- & > \u{2028}\u{2029}\n\r\t";
+        let open = OpenRecorder {
+            error: Some(ErrorView {
+                kind: "Other".into(),
+                key: "recording.error.source".into(),
+                detail: Some(nasty.into()),
+                command: Some(nasty.into()),
+            }),
+        };
+
+        let script = open_recorder_script(&open);
+
+        // It reads back as exactly what was said, and the whole of it is that one literal.
+        assert_eq!(literal_of(&script), serde_json::to_value(&open).unwrap());
+        assert_eq!(
+            literal_of(&script)["error"]["detail"],
+            serde_json::Value::String(nasty.to_owned())
+        );
+        for raw in ['<', '>', '&', '\u{2028}', '\u{2029}', '\n', '\r'] {
+            assert!(!script.contains(raw), "{raw:?} is in {script}");
+        }
     }
 
     #[test]

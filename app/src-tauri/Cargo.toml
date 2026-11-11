@@ -28,6 +28,8 @@ getrandom = "=0.3.4"
 log = "0.4"
 reqwest = { version = "0.12.28", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
+# The script that tells a new window of the meetings what to open: its value is JSON.
+serde_json = "1.0.154"
 sys-locale = "0.3"
 # macos-private-api: a transparent window on macOS (the floating panels), which the macOSPrivateApi setting of tauri.conf.json asks for too.
 tauri = { version = "2", features = ["tray-icon", "macos-private-api"] }
@@ -99,5 +101,4 @@ x11rb = "0.13"
 dictate-services = { path = "../../crates/dictate-services", features = ["test-support"] }
 # The mock runtime, to ask the app's own commands from the windows of the app and see what the permissions let through.
 tauri = { version = "2", features = ["test"] }
-serde_json = "1.0.154"
 tempfile = "3.27.0"
