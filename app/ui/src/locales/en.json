@@ -379,5 +379,22 @@
   "meetings.speakers.too_long": "Names have at most {max} characters and no “:”, “.” or “*”: the rest is dropped.",
   "meetings.speakers.resummarize": "Summarize again with the new names (calls AI)",
   "meetings.speakers.rename": "Rename",
-  "meetings.speakers.save_failed": "Couldn't save the speaker names: {reason}"
+  "meetings.speakers.save_failed": "Couldn't save the speaker names: {reason}",
+  "recording.ended.window_closed": "The window you were recording was closed. What was recorded is kept and is being processed.",
+  "recording.ended.display_gone": "The screen you were recording is no longer available. What was recorded is kept and is being processed.",
+  "recording.ended.device_lost": "A device was lost and the recording stopped: {detail}. What was recorded is kept and is being processed.",
+  "recording.ended.permission_revoked": "Permission to record was turned off, so the recording stopped. What was recorded is kept and is being processed.",
+  "recording.ended.failed": "The recording stopped: {detail}. What was recorded is kept and is being processed.",
+  "recording.error.nothing_to_record": "Turn on at least system audio or the microphone.",
+  "recording.error.needs_screen_permission": "No Screen Recording permission. Turn on Dictate in System Settings → Privacy & Security → Screen & System Audio Recording, then reopen the app.",
+  "recording.error.needs_ffmpeg": "Recording the screen needs ffmpeg: {command}",
+  "recording.error.no_video_encoder": "This ffmpeg has no video encoder that works on this computer. Install a full build: {command}",
+  "recording.error.portal_unavailable": "This desktop can't share the screen with apps.",
+  "recording.error.portal_cancelled": "Nothing was chosen to share, so the recording did not start.",
+  "recording.error.window_gone": "That window is gone. Choose another window.",
+  "recording.error.source": "Couldn't start recording: {detail}",
+  "recording.error.io": "Couldn't write the recording's folder: {detail}",
+  "recording.error.nothing_recorded": "Nothing was recorded, so there is nothing to summarize.",
+  "recording.error.stop_failed": "Couldn't finish the recording: {detail}. What was recorded is kept, and Dictate tries again the next time it starts.",
+  "recording.error.discard_failed": "The recording was stopped, but its folder could not be removed: {detail}"
 }

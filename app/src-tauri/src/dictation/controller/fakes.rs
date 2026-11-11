@@ -226,6 +226,8 @@ pub struct FakePlatform {
     pub mouse: Mutex<Option<(f64, f64)>>,
     pub accessibility: Mutex<Permission>,
     pub microphone: Mutex<Permission>,
+    /// What the system says of Screen Recording.
+    pub screen: Mutex<Permission>,
     /// What the system answers when asked for the microphone.
     pub mic_grant: AtomicBool,
     /// Whether it answers at all: with `false` the prompt stays up, and its callback is kept as the system keeps it.
@@ -237,6 +239,7 @@ pub struct FakePlatform {
     log: Arc<CallLog>,
     pub accessibility_requests: AtomicUsize,
     pub mic_requests: AtomicUsize,
+    pub screen_requests: AtomicUsize,
 }
 
 impl FakePlatform {
@@ -257,6 +260,11 @@ impl FakePlatform {
                 Permission::NotNeeded
             }),
             microphone: Mutex::new(Permission::Granted),
+            screen: Mutex::new(if os == Os::Mac {
+                Permission::Granted
+            } else {
+                Permission::NotNeeded
+            }),
             mic_grant: AtomicBool::new(true),
             mic_answers: AtomicBool::new(true),
             pending_prompt: Mutex::new(None),
@@ -265,6 +273,7 @@ impl FakePlatform {
             log,
             accessibility_requests: AtomicUsize::new(0),
             mic_requests: AtomicUsize::new(0),
+            screen_requests: AtomicUsize::new(0),
         })
     }
 
@@ -342,10 +351,12 @@ impl Platform for FakePlatform {
     }
 
     fn screen_recording(&self) -> Permission {
-        Permission::NotNeeded
+        *lock(&self.screen)
     }
 
-    fn request_screen_recording(&self) {}
+    fn request_screen_recording(&self) {
+        self.screen_requests.fetch_add(1, Ordering::SeqCst);
+    }
 }
 
 // ---- the clipboard and the keys ---------------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "meetings",
-  "description": "What the meetings window may do: its own commands, and hear the events of its jobs and of the files dropped on it. The dialogs, the notifications and the file manager are opened from Rust, not by the page.",
+  "description": "What the meetings window may do: its own commands, the recording's, and hear the events of its jobs, of the recording and of the files dropped on it. The dialogs, the notifications and the file manager are opened from Rust, not by the page.",
   "windows": ["meetings"],
   "permissions": [
     "core:event:allow-listen",
@@ -27,6 +27,13 @@
     "allow-copy-text",
     "allow-meetings-open-settings",
     "allow-meetings-readiness",
+    "allow-recording-sources",
+    "allow-recording-start",
+    "allow-recording-pause",
+    "allow-recording-resume",
+    "allow-recording-stop",
+    "allow-recording-discard",
+    "allow-recording-state",
     "allow-media-tools"
   ]
 }

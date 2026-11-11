@@ -11,6 +11,7 @@ mod panel;
 #[cfg(debug_assertions)]
 mod panel_demo;
 mod platform;
+mod recording;
 mod state;
 #[cfg(test)]
 mod test_support;
@@ -27,6 +28,7 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
 use dictation::system::DictationHandle;
 use hotkey::HotkeyEvent;
+use recording::Recorder;
 use state::AppState;
 
 /// The app's configuration and its permissions, as compiled in. One function holds the only `generate_context!`, which
@@ -135,6 +137,13 @@ fn main() {
             meetings::commands::copy_text,
             meetings::commands::meetings_open_settings,
             meetings::commands::meetings_readiness,
+            recording::commands::recording_sources,
+            recording::commands::recording_start,
+            recording::commands::recording_pause,
+            recording::commands::recording_resume,
+            recording::commands::recording_stop,
+            recording::commands::recording_discard,
+            recording::commands::recording_state,
             panel::dictation_languages,
             panel::dictation_stop,
             panel::dictation_cancel,
@@ -169,6 +178,18 @@ fn main() {
         RunEvent::ExitRequested { api, code, .. } => {
             if code.is_none() {
                 api.prevent_exit();
+            } else if let Some(recorder) = app.try_state::<Recorder>() {
+                // A recording that goes on is put together before the app goes; the exit is asked for again when that is done,
+                // and finds nothing to wait for.
+                let handle = app.clone();
+                let waits =
+                    recording::before_exit(&recorder, recording::QUIT_WAIT, code, move |code| {
+                        handle.exit(code);
+                    });
+                if waits {
+                    log::info!("Quitting: finishing the recording first");
+                    api.prevent_exit();
+                }
             }
         }
         RunEvent::Exit => {
@@ -296,7 +317,7 @@ mod tests {
     ];
 
     /// The commands of the meetings window.
-    const MEETINGS_COMMANDS: [&str; 22] = [
+    const MEETINGS_COMMANDS: [&str; 29] = [
         "meetings_list",
         "meeting_detail",
         "meetings_pick_files",
@@ -319,6 +340,25 @@ mod tests {
         "meetings_open_settings",
         "meetings_readiness",
         "media_tools",
+        // The recording: what the picker offers, and starting, pausing, stopping and throwing away.
+        "recording_sources",
+        "recording_start",
+        "recording_pause",
+        "recording_resume",
+        "recording_stop",
+        "recording_discard",
+        "recording_state",
+    ];
+
+    /// The commands of the recorder, which are in the list of the meetings window too.
+    const RECORDING_COMMANDS: [&str; 7] = [
+        "recording_sources",
+        "recording_start",
+        "recording_pause",
+        "recording_resume",
+        "recording_stop",
+        "recording_discard",
+        "recording_state",
     ];
 
     /// The one command that Settings and the meetings window both ask.
@@ -478,6 +518,23 @@ mod tests {
         ] {
             let refusal = asked_by(&app, "meetings", command).expect_err(command);
             assert!(refusal.contains("not allowed"), "{command}: {refusal}");
+        }
+    }
+
+    #[test]
+    fn the_recording_commands_are_the_meetings_windows_and_nobody_elses() {
+        let app = app();
+        for command in RECORDING_COMMANDS {
+            assert!(MEETINGS_COMMANDS.contains(&command), "{command}");
+            assert_eq!(asked_by(&app, "meetings", command), Ok(()), "{command}");
+            // Settings, the floating dictation windows and a window that no capability names can't start or stop a recording.
+            for window in ["settings", "bubble", "card", "stranger"] {
+                let refusal = asked_by(&app, window, command).expect_err(command);
+                assert!(
+                    refusal.contains("not allowed"),
+                    "{window} {command}: {refusal}"
+                );
+            }
         }
     }
 

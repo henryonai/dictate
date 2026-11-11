@@ -17,10 +17,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use dictate_core::meetings::library::MeetingLibrary;
+use dictate_services::media::tools::Tools;
 use tauri::{AppHandle, Manager};
 use tokio::time::MissedTickBehavior;
 
 use crate::platform;
+use crate::recording;
 use crate::state::AppState;
 use backend::{AppBackend, DiarizerCache};
 use commands::TextClipboard;
@@ -48,7 +50,7 @@ pub fn start(app: &AppHandle, state: &AppState, diarize_dir: PathBuf) {
         state.jobs.clone(),
         backend,
         events.clone(),
-        notifier,
+        notifier.clone(),
         jobs::system_clock(),
     );
     // Playing is a convenience: with no server the window shows no player, and everything else works.
@@ -63,15 +65,29 @@ pub fn start(app: &AppHandle, state: &AppState, diarize_dir: PathBuf) {
     let meetings = Meetings::new(library, registry, media, events, Arc::new(SystemTrash));
     app.manage(meetings.clone());
     app.manage(TextClipboard(platform::current_clipboard()));
+    // The recorder turns a recording into a meeting of this library.
+    recording::start(app, state, &meetings, notifier);
 
     // Off the thread of the interface: it reads every recording's folder, and the key store may wait for the person.
-    let (directory, registry, state_for_keys) = (
+    let (directory, registry, state_for_keys, library) = (
         meetings.library.directory.clone(),
         meetings.registry.clone(),
         state.clone(),
+        meetings.clone(),
     );
     tauri::async_runtime::spawn_blocking(move || {
-        start_up(&directory, &state_for_keys, || registry.open());
+        start_up(
+            &directory,
+            &state_for_keys,
+            || {
+                let recovered =
+                    recording::recover_library(&library, Tools::find().ffmpeg.as_deref());
+                if recovered > 0 {
+                    log::info!("Finished {recovered} recordings that were cut off");
+                }
+            },
+            || registry.open(),
+        );
     });
 
     let (whisper, diarizer) = (state.whisper.clone(), diarizer);
@@ -81,10 +97,12 @@ pub fn start(app: &AppHandle, state: &AppState, diarize_dir: PathBuf) {
     });
 }
 
-/// What has to be done before the first job: what a job that was cut short left in the folders is cleared away (a job that
-/// is running has such files too, which is why it is done before any), and the key flags are read (the backend goes by them
-/// and never asks the key store), and then `open` lets the jobs go.
-fn start_up(directory: &Path, state: &AppState, open: impl FnOnce()) {
+/// What has to be done before the first job: the recordings that the app left cut off are finished (`recover`), what a job that
+/// was cut short left in the folders is cleared away (a job that is running has such files too, which is why it is done before any),
+/// and the key flags are read (the backend goes by them and never asks the key store), and then `open` lets the jobs go.
+fn start_up(directory: &Path, state: &AppState, recover: impl FnOnce(), open: impl FnOnce()) {
+    // The recordings that were cut off are finished first: their video is a `.part` file, which the sweep removes.
+    recover();
     let swept = sweep_library(directory);
     if swept > 0 {
         log::info!("Cleared {swept} unfinished files out of the meetings library");
@@ -125,6 +143,36 @@ mod tests {
     use test_fixture::{Fixture, SCREEN};
 
     #[test]
+    fn start_up_finishes_the_cut_off_recordings_before_the_sweep_and_before_the_jobs_are_let_go() {
+        let library = Fixture::new();
+        let part = library.folder(SCREEN).join("video.mp4.1a2b.part");
+        fs::write(&part, b"video").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let (store, _) = SettingsStore::open(dir.path().join("settings.json"));
+        let state = AppState::new(
+            store,
+            None,
+            Arc::new(crate::test_support::CountingStore::default()),
+            ModelDir::new(dir.path().join("models")),
+        );
+        let order = std::sync::Mutex::new(Vec::new());
+
+        start_up(
+            &library.dir(),
+            &state,
+            || {
+                // What recovery needs is still there when it runs.
+                assert!(part.is_file(), "the sweep ran first");
+                order.lock().unwrap().push("recover");
+            },
+            || order.lock().unwrap().push("open"),
+        );
+
+        assert_eq!(*order.lock().unwrap(), ["recover", "open"]);
+        assert!(!part.exists(), "and the sweep came after it");
+    }
+
+    #[test]
     fn start_up_clears_the_folders_and_reads_the_keys_before_the_jobs_are_let_go() {
         let library = Fixture::new();
         let stale = library.folder(SCREEN).join("transcript.txt.1-0.tmp");
@@ -140,13 +188,18 @@ mod tests {
         );
         let opened = AtomicUsize::new(0);
 
-        start_up(&library.dir(), &state, || {
-            // At the moment the jobs are let go the folders are clean and the flags are read.
-            assert!(!stale.exists(), "a job would have met the leftovers");
-            assert_eq!(secrets.gets(), 2, "both keys were asked for");
-            assert!(!state.keys.get(Account::Ai));
-            opened.fetch_add(1, Ordering::SeqCst);
-        });
+        start_up(
+            &library.dir(),
+            &state,
+            || {},
+            || {
+                // At the moment the jobs are let go the folders are clean and the flags are read.
+                assert!(!stale.exists(), "a job would have met the leftovers");
+                assert_eq!(secrets.gets(), 2, "both keys were asked for");
+                assert!(!state.keys.get(Account::Ai));
+                opened.fetch_add(1, Ordering::SeqCst);
+            },
+        );
 
         assert_eq!(opened.load(Ordering::SeqCst), 1);
         assert!(library.folder(SCREEN).join("transcript.txt").is_file());

@@ -379,5 +379,22 @@
   "meetings.speakers.too_long": "Tên tối đa {max} ký tự, không có “:”, “.” hay “*”: phần thừa sẽ được bỏ.",
   "meetings.speakers.resummarize": "Tóm tắt lại theo tên mới (gọi AI)",
   "meetings.speakers.rename": "Đổi tên",
-  "meetings.speakers.save_failed": "Không lưu được tên người nói: {reason}"
+  "meetings.speakers.save_failed": "Không lưu được tên người nói: {reason}",
+  "recording.ended.window_closed": "Cửa sổ đang quay đã đóng. Phần đã quay được giữ lại và đang được xử lý.",
+  "recording.ended.display_gone": "Màn hình đang quay không còn khả dụng. Phần đã quay được giữ lại và đang được xử lý.",
+  "recording.ended.device_lost": "Mất một thiết bị nên bản ghi đã dừng: {detail}. Phần đã quay được giữ lại và đang được xử lý.",
+  "recording.ended.permission_revoked": "Quyền quay đã bị tắt nên bản ghi đã dừng. Phần đã quay được giữ lại và đang được xử lý.",
+  "recording.ended.failed": "Bản ghi đã dừng: {detail}. Phần đã quay được giữ lại và đang được xử lý.",
+  "recording.error.nothing_to_record": "Bật ít nhất âm thanh hệ thống hoặc micro.",
+  "recording.error.needs_screen_permission": "Chưa có quyền Screen Recording. Bật cho Dictate trong System Settings → Privacy & Security → Screen & System Audio Recording, rồi mở lại app.",
+  "recording.error.needs_ffmpeg": "Quay màn hình cần ffmpeg: {command}",
+  "recording.error.no_video_encoder": "ffmpeg này không có bộ mã hóa video chạy được trên máy này. Hãy cài bản đầy đủ: {command}",
+  "recording.error.portal_unavailable": "Máy tính này không cho ứng dụng chia sẻ màn hình.",
+  "recording.error.portal_cancelled": "Chưa chọn gì để chia sẻ nên bản ghi chưa bắt đầu.",
+  "recording.error.window_gone": "Cửa sổ đó không còn nữa. Hãy chọn cửa sổ khác.",
+  "recording.error.source": "Không bắt đầu quay được: {detail}",
+  "recording.error.io": "Không ghi được thư mục của bản ghi: {detail}",
+  "recording.error.nothing_recorded": "Chưa quay được gì nên không có gì để tóm tắt.",
+  "recording.error.stop_failed": "Không hoàn tất được bản ghi: {detail}. Phần đã quay được giữ lại, và Dictate sẽ thử lại ở lần mở sau.",
+  "recording.error.discard_failed": "Đã dừng bản ghi nhưng không xóa được thư mục của nó: {detail}"
 }

@@ -13,10 +13,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Local;
-use dictate_core::meetings::library::{files, Kind, MeetingLibrary, MeetingRecord, Meta};
-use dictate_core::meetings::{atomic_write, export_file_name, export_markdown, SummaryDoc};
+use dictate_core::meetings::library::{
+    files, Kind, MeetingLibrary, MeetingRecord, Meta, SCREEN_SOURCE,
+};
+use dictate_core::meetings::{
+    append_log, atomic_write, export_file_name, export_markdown, SummaryDoc,
+};
 use dictate_services::media::ytdlp::link_is_valid;
 use dictate_services::meetings::{sweep_stale_files, JobSpec, MeetingError, StartAt};
+use dictate_services::record::marker::MARKER;
+use dictate_services::record::session::Finished;
 use dictate_services::summary;
 
 use super::backend::ai_ready;
@@ -113,6 +119,7 @@ impl Meetings {
             id: record.id.clone(),
             folder: record.folder.clone(),
             link: (record.kind() == Kind::Link).then(|| record.source.clone()),
+            notes: Vec::new(),
         }
     }
 
@@ -202,12 +209,104 @@ impl Meetings {
             id: id.clone(),
             folder,
             link,
+            notes: Vec::new(),
         };
         // A folder that was just made has no job.
         self.registry
             .start(spec, from)
             .map_err(|_| io::Error::other("the new recording already has a job"))?;
         Ok(id)
+    }
+
+    /// The folder of a recording that is about to be made: the folder and its `meta.json`, with the source that the screen
+    /// recordings of the Swift app have (for every mode, the sound alone included), the title, and `media_name` in the folder
+    /// as the media, by its absolute path, as the library has it. The length is not known yet. No job is started: that is
+    /// `finish_recording`, when the recording is over. The id and the folder.
+    pub fn begin_recording(&self, title: &str, media_name: &str) -> io::Result<(String, PathBuf)> {
+        let now = Local::now();
+        let (id, folder) = self.library.create_folder(now)?;
+        let meta = Meta {
+            title: title.to_owned(),
+            source: SCREEN_SOURCE.to_owned(),
+            media: absolute(&folder.join(media_name)),
+            created: now.timestamp_millis() as f64 / 1000.0,
+            duration: None,
+        };
+        if let Err(e) = meta.write(&folder) {
+            let _ = fs::remove_dir(&folder);
+            return Err(e);
+        }
+        Ok((id, folder))
+    }
+
+    /// The recording `id` in `folder` is over: its `meta.json` gets the file that was made as the media and how long it is, what
+    /// went wrong on the way is written in its log, and its job starts, from the audio. A `meta.json` that is not there (a
+    /// recording that was begun and then lost it) is made again, named by the folder.
+    pub fn finish_recording(&self, id: &str, folder: &Path, finished: &Finished) -> io::Result<()> {
+        let mut meta = Meta::read(folder).unwrap_or_else(|| Meta {
+            title: id.to_owned(),
+            source: SCREEN_SOURCE.to_owned(),
+            created: Local::now().timestamp_millis() as f64 / 1000.0,
+            ..Meta::default()
+        });
+        meta.media = absolute(&finished.media);
+        if finished.duration.is_finite() && finished.duration > 0.0 {
+            meta.duration = Some(finished.duration);
+        }
+        meta.write(folder)?;
+        // The job writes them again when it starts the log afresh; they are written here too, for the recording whose job does not
+        // get to start (the app ends first).
+        for note in &finished.notes {
+            // A line that is not written is a line of a log less: the recording is not lost for it.
+            if let Err(e) = append_log(folder, note) {
+                log::warn!("Could not write a note of the recording {id}: {e}");
+            }
+        }
+        let spec = JobSpec {
+            id: id.to_owned(),
+            folder: folder.to_path_buf(),
+            link: None,
+            notes: finished.notes.clone(),
+        };
+        self.registry
+            .start(spec, StartAt::Audio)
+            .map_err(|_| io::Error::other("the recording already has a job"))
+    }
+
+    /// Tells the window that the library changed: a recording was begun, or is gone.
+    pub fn library_changed(&self) {
+        self.events.changed();
+    }
+
+    /// Whether `folder` is a recording's folder of this library (a folder directly inside it).
+    fn is_a_folder_of_the_library(&self, folder: &Path) -> bool {
+        folder.parent() == Some(self.library.directory.as_path()) && folder.is_dir()
+    }
+
+    /// Removes the folder of a recording that did not begin. Only a folder of the library is: this is called with what
+    /// `begin_recording` made, and must not be able to remove anything else.
+    pub fn discard_folder(&self, folder: &Path) {
+        if !self.is_a_folder_of_the_library(folder) {
+            log::warn!("Not removing {}: it is not a recording", folder.display());
+            return;
+        }
+        if let Err(e) = fs::remove_dir_all(folder) {
+            log::warn!("Could not remove {}: {e}", folder.display());
+        }
+    }
+
+    /// A recording that is thrown away: its folder goes to the Trash like a deleted recording, or is removed when the Trash
+    /// will not take it. The window is told that the library changed. An error is the reason that the folder is still there.
+    pub fn trash_recording(&self, folder: &Path) -> Result<(), String> {
+        if !self.is_a_folder_of_the_library(folder) {
+            return Err("That is not a recording of the library.".to_owned());
+        }
+        let moved = self.trash.delete(folder).or_else(|why| {
+            log::warn!("The Trash did not take {}: {why}", folder.display());
+            fs::remove_dir_all(folder).map_err(|e| e.to_string())
+        });
+        self.events.changed();
+        moved
     }
 
     /// Starts the job of the recording from where `from` says. A recording that has a job says so, with a key: a second click
@@ -427,6 +526,14 @@ pub fn retry_start(record: &MeetingRecord) -> StartAt {
     }
 }
 
+/// `path` as an absolute one (the library may be given as a relative one).
+fn absolute(path: &Path) -> String {
+    std::path::absolute(path)
+        .unwrap_or_else(|_| path.to_path_buf())
+        .to_string_lossy()
+        .into_owned()
+}
+
 /// Clears out of every recording's folder what a job that was cut short left (the temporary files of writes, the unfinished
 /// downloads, the slices of audio the API was sent). For the start of the app, before any job runs. How many files went.
 pub fn sweep_library(directory: &Path) -> usize {
@@ -436,6 +543,8 @@ pub fn sweep_library(directory: &Path) -> usize {
     entries
         .filter_map(Result::ok)
         .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        // A recording that was cut off and is not finished yet has its video in a `.part` file: that is for `recover`.
+        .filter(|entry| !entry.path().join(MARKER).is_file())
         .map(|entry| sweep_stale_files(&entry.path()))
         .sum()
 }
@@ -932,6 +1041,209 @@ mod tests {
         for id in &ids {
             rig.ended(id);
         }
+    }
+
+    // ---- recording
+
+    use dictate_core::meetings::library::SCREEN_SOURCE;
+    use dictate_services::record::session::Finished;
+
+    /// A recording that ended well: `name` is in its folder, with something in it.
+    fn finished(rig: &Rig, id: &str, name: &str, notes: &[&str]) -> Finished {
+        let media = std::path::absolute(rig.library.folder(id).join(name)).unwrap();
+        fs::write(&media, b"sound").unwrap();
+        Finished {
+            media,
+            duration: 12.5,
+            notes: notes.iter().map(|note| (*note).to_owned()).collect(),
+        }
+    }
+
+    #[test]
+    fn a_recording_begins_as_a_folder_with_the_source_of_the_swift_app_and_no_job() {
+        let rig = Rig::empty(FakeBackend::new());
+
+        let (id, folder) = rig
+            .meetings
+            .begin_recording("Screen recording 10:00 10/11", "audio.m4a")
+            .unwrap();
+
+        assert_eq!(folder, rig.library.folder(&id));
+        assert!(folder.is_dir());
+        let meta = rig.meta(&id);
+        assert_eq!(meta.title, "Screen recording 10:00 10/11");
+        assert_eq!(meta.source, SCREEN_SOURCE);
+        // Where the recording will be, as an absolute path: the pipeline and the player read it from there.
+        assert!(Path::new(&meta.media).is_absolute(), "{}", meta.media);
+        assert!(Path::new(&meta.media).ends_with(format!("{id}/audio.m4a")));
+        assert_eq!(meta.duration, None);
+        assert!(meta.created > 1_700_000_000.0, "{}", meta.created);
+        // Nothing runs until the recording is over, and the window is not told of a recording that has not begun.
+        assert_eq!(rig.meetings.registry.status(&id), None);
+        assert!(rig.backend.calls().is_empty());
+    }
+
+    #[test]
+    fn a_recording_that_ends_well_gets_its_media_and_duration_and_a_job_from_the_audio() {
+        // The job is held at the audio, so that what the recording wrote is read before the pipeline writes its own.
+        let (backend, control) = held_at_audio();
+        let rig = Rig::empty(backend);
+        let (id, folder) = rig
+            .meetings
+            .begin_recording("Họp", "recording.mp4")
+            .unwrap();
+        let done = finished(&rig, &id, "audio.m4a", &["The system's audio was lost."]);
+
+        rig.meetings.finish_recording(&id, &folder, &done).unwrap();
+        control.started.blocking_recv().unwrap();
+
+        let meta = rig.meta(&id);
+        assert_eq!(PathBuf::from(&meta.media), done.media);
+        assert_eq!(meta.duration, Some(12.5));
+        assert_eq!(meta.source, SCREEN_SOURCE);
+        assert_eq!(meta.title, "Họp");
+        // What went wrong on the way is in the log of the recording, before the pipeline's own lines.
+        let log = rig.meetings.log(&id).unwrap();
+        assert!(log.starts_with("The system's audio was lost.\n"), "{log:?}");
+        // The job starts at the audio, from the file that was made.
+        assert_eq!(rig.backend.calls(), ["prepare_audio"]);
+        assert_eq!(rig.backend.media_seen(), [done.media]);
+        control.release.send(()).unwrap();
+        rig.ended(&id);
+    }
+
+    #[test]
+    fn a_recording_whose_media_is_a_wav_is_a_recording_like_any_other() {
+        // With no encoder for audio.m4a the sound is kept as recording.wav: the library plays and opens it.
+        let rig = Rig::empty(FakeBackend::new());
+        let (id, folder) = rig.meetings.begin_recording("Họp", "audio.m4a").unwrap();
+        let done = finished(&rig, &id, "recording.wav", &[]);
+
+        rig.meetings.finish_recording(&id, &folder, &done).unwrap();
+        rig.ended(&id);
+
+        assert_eq!(rig.meetings.media_path(&id).unwrap(), done.media);
+        assert_eq!(rig.backend.media_seen(), [done.media]);
+    }
+
+    #[test]
+    fn a_recording_without_a_known_length_leaves_the_duration_to_the_pipeline() {
+        let (backend, control) = held_at_audio();
+        let rig = Rig::empty(backend);
+        let (id, folder) = rig.meetings.begin_recording("Họp", "audio.m4a").unwrap();
+        let mut done = finished(&rig, &id, "audio.m4a", &[]);
+        done.duration = 0.0;
+
+        rig.meetings.finish_recording(&id, &folder, &done).unwrap();
+        control.started.blocking_recv().unwrap();
+
+        assert_eq!(rig.meta(&id).duration, None);
+        control.release.send(()).unwrap();
+        rig.ended(&id);
+    }
+
+    #[test]
+    fn a_folder_with_a_marker_and_no_meta_is_given_one_when_its_recording_is_finished() {
+        let (backend, control) = held_at_audio();
+        let rig = Rig::empty(backend);
+        let (id, folder) = rig.meetings.begin_recording("Họp", "audio.m4a").unwrap();
+        fs::remove_file(folder.join(files::META)).unwrap();
+        let done = finished(&rig, &id, "audio.m4a", &[]);
+
+        rig.meetings.finish_recording(&id, &folder, &done).unwrap();
+        control.started.blocking_recv().unwrap();
+
+        let meta = rig.meta(&id);
+        assert_eq!(meta.title, id);
+        assert_eq!(meta.source, SCREEN_SOURCE);
+        assert_eq!(PathBuf::from(&meta.media), done.media);
+        control.release.send(()).unwrap();
+        rig.ended(&id);
+    }
+
+    #[test]
+    fn a_recording_that_has_not_ended_cannot_be_run_again_by_a_click() {
+        // The place of the recording is held while it is made: "Try again" or "Transcribe again" on its row would start
+        // a job on a folder that is being written.
+        let rig = Rig::empty(FakeBackend::new());
+        let (id, _) = rig.meetings.begin_recording("Họp", "audio.m4a").unwrap();
+
+        let held = rig.meetings.registry.hold(&id).unwrap();
+
+        assert_eq!(
+            rig.meetings.rerun(&id).unwrap_err().key,
+            "meetings.error.busy"
+        );
+        assert_eq!(
+            rig.meetings.retry(&id).unwrap_err().key,
+            "meetings.error.busy"
+        );
+        drop(held);
+        assert!(rig.backend.calls().is_empty());
+    }
+
+    #[test]
+    fn a_folder_that_a_start_left_is_removed_and_no_other_folder_is() {
+        let rig = Rig::new();
+        let (id, folder) = rig.meetings.begin_recording("Họp", "audio.m4a").unwrap();
+        fs::write(folder.join("recording.json"), b"{}").unwrap();
+
+        rig.meetings.discard_folder(&folder);
+
+        assert!(!folder.exists(), "{id} is gone");
+        assert!(
+            rig.library.folder(SCREEN).is_dir(),
+            "the others are not touched"
+        );
+        // A path that is not a folder of the library is left alone, whoever asks.
+        let outside = rig.library.outside();
+        rig.meetings.discard_folder(&outside);
+        assert!(outside.is_dir());
+        rig.meetings.discard_folder(&rig.library.dir());
+        assert!(rig.library.dir().is_dir());
+    }
+
+    #[test]
+    fn a_recording_that_is_thrown_away_goes_to_the_trash_and_the_window_is_told() {
+        let rig = Rig::empty(FakeBackend::new());
+        let (_, folder) = rig.meetings.begin_recording("Họp", "audio.m4a").unwrap();
+        let before = rig.changed();
+
+        rig.meetings.trash_recording(&folder).unwrap();
+
+        assert_eq!(*lock(&rig.trash.moved), [(folder.clone(), false)]);
+        assert!(!folder.exists());
+        assert_eq!(rig.changed(), before + 1);
+        assert!(rig.backend.calls().is_empty(), "no job was started");
+    }
+
+    #[test]
+    fn a_recording_is_removed_when_the_trash_will_not_take_it() {
+        let mut rig = Rig::empty(FakeBackend::new());
+        let jobs = rig.trash.jobs.clone();
+        rig.trash = Arc::new(FakeTrash {
+            jobs,
+            moved: Mutex::new(Vec::new()),
+            fail: true,
+        });
+        rig.meetings.trash = rig.trash.clone();
+        let (_, folder) = rig.meetings.begin_recording("Họp", "audio.m4a").unwrap();
+
+        rig.meetings.trash_recording(&folder).unwrap();
+
+        assert_eq!(lock(&rig.trash.moved).len(), 1, "the Trash was tried first");
+        assert!(!folder.exists(), "and then the folder was removed");
+    }
+
+    #[test]
+    fn only_a_folder_of_the_library_is_trashed_as_a_recording() {
+        let rig = Rig::empty(FakeBackend::new());
+        let outside = rig.library.outside();
+
+        assert!(rig.meetings.trash_recording(&outside).is_err());
+
+        assert!(outside.is_dir());
+        assert!(lock(&rig.trash.moved).is_empty());
     }
 
     // ---- starting jobs again
@@ -1551,6 +1863,24 @@ mod tests {
         assert!(f.dir().join("notes.tmp").is_file());
         assert_eq!(sweep_library(&f.dir()), 0);
         assert_eq!(sweep_library(&f.dir().join("no such library")), 0);
+    }
+
+    #[test]
+    fn startup_leaves_the_parts_of_a_recording_that_is_still_to_be_finished() {
+        // A recording that was cut off and could not be put together yet keeps its video, which is a `.part` file, for the next
+        // try: the sweep is for what a job left, and this is not that.
+        let f = Fixture::new();
+        let cut_off = f.folder(FILE);
+        fs::write(cut_off.join("recording.json"), b"{}").unwrap();
+        fs::write(cut_off.join("video.mp4.1a2b.part"), b"video").unwrap();
+        fs::write(cut_off.join("meta.json.9-1.tmp"), b"x").unwrap();
+        fs::write(f.folder(SCREEN).join("audio.m4a.4d2-0.part"), b"x").unwrap();
+
+        assert_eq!(sweep_library(&f.dir()), 1);
+
+        assert!(cut_off.join("video.mp4.1a2b.part").is_file());
+        assert!(cut_off.join("meta.json.9-1.tmp").is_file());
+        assert!(!f.folder(SCREEN).join("audio.m4a.4d2-0.part").exists());
     }
 
     #[test]

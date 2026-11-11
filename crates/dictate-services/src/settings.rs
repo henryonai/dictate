@@ -13,6 +13,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use serde::{Deserialize, Serialize};
 
 use crate::presets::{AiProvider, TranscribePreset};
+use crate::record::quality::Quality;
 
 /// Which engine turns speech into text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
@@ -70,6 +71,17 @@ pub struct Settings {
     pub dictation_model: String,
     /// ISO-639-1 code for file transcripts; empty = detect it.
     pub transcribe_language: String,
+    /// The quality of the video of a screen recording, as the picker last had it.
+    pub record_quality: Quality,
+    /// What the picker last had to record: `"screen"`, `"window"` or `"audio"` (the window and the display are not kept).
+    pub record_mode: String,
+    /// Whether the microphone is on in the picker.
+    pub record_mic: bool,
+    /// Whether the system's audio is on in the picker.
+    pub record_system_audio: bool,
+    /// What the desktop's ScreenCast portal gave the last time the person chose what to share (Linux), as the recorder keeps
+    /// it: it is the recorder's to read and write, and Settings does not touch it.
+    pub screencast_restore_token: Option<String>,
 }
 
 impl Default for Settings {
@@ -101,6 +113,11 @@ impl Default for Settings {
             transcribe_model: model.into(),
             dictation_model: model.into(),
             transcribe_language: String::new(),
+            record_quality: Quality::default(),
+            record_mode: "screen".into(),
+            record_mic: true,
+            record_system_audio: true,
+            screencast_restore_token: None,
         }
     }
 }
@@ -385,6 +402,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
 mod tests {
     use super::*;
     use crate::presets::{AiProvider, TranscribePreset};
+    use crate::record::quality::Quality;
     use std::fs;
     use std::thread;
 
@@ -414,6 +432,57 @@ mod tests {
         assert_eq!(s.transcribe_model, "whisper-1");
         assert_eq!(s.dictation_model, "whisper-1");
         assert_eq!(s.transcribe_language, "");
+    }
+
+    #[test]
+    fn recording_choices_default_to_the_screen_at_standard_with_both_sounds_and_no_token() {
+        let s = Settings::default();
+        assert_eq!(s.record_quality, Quality::Standard);
+        assert_eq!(s.record_mode, "screen");
+        assert!(s.record_mic && s.record_system_audio);
+        assert_eq!(s.screencast_restore_token, None);
+    }
+
+    #[test]
+    fn a_file_from_before_recording_gets_the_recording_defaults_and_keeps_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("settings.json"),
+            r#"{"vocabulary": "Dictate"}"#,
+        )
+        .unwrap();
+
+        let (store, warning) = store_in(&dir);
+
+        assert!(warning.is_none());
+        let s = store.get();
+        assert_eq!(s.vocabulary, "Dictate");
+        assert_eq!(s.record_mode, "screen");
+        assert_eq!(s.record_quality, Quality::Standard);
+    }
+
+    #[test]
+    fn the_recording_choices_and_the_token_are_written_and_read_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, _) = store_in(&dir);
+        store
+            .update(|s| {
+                s.record_quality = Quality::Sharp;
+                s.record_mode = "window".into();
+                s.record_mic = false;
+                s.record_system_audio = false;
+                s.screencast_restore_token = Some("display:abc".into());
+            })
+            .unwrap();
+
+        let (again, warning) = store_in(&dir);
+
+        assert!(warning.is_none());
+        let s = again.get();
+        assert_eq!(s.record_quality, Quality::Sharp);
+        assert_eq!(s.record_mode, "window");
+        assert!(!s.record_mic && !s.record_system_audio);
+        assert_eq!(s.screencast_restore_token.as_deref(), Some("display:abc"));
     }
 
     #[test]
@@ -965,8 +1034,13 @@ mod tests {
     fn settings_file_never_contains_keys() {
         let json = serde_json::to_value(Settings::default()).unwrap();
         let fields = json.as_object().unwrap();
-        assert_eq!(fields.len(), 23);
+        assert_eq!(fields.len(), 28);
         for name in fields.keys() {
+            // The one name with "token" in it is the handle that the ScreenCast portal gives for sharing the same screen
+            // again without its dialog (the recorder keeps it): it opens no account and no service.
+            if name == "screencast_restore_token" {
+                continue;
+            }
             let n = name.to_lowercase();
             assert!(
                 n != "key"

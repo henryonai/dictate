@@ -28,6 +28,8 @@ pub enum Job {
     /// The processing of the recording with this id (its folder name): download, audio, transcript and summary. One at
     /// a time for each recording, and any number of recordings at once.
     Meeting(String),
+    /// The recording that goes on, from the moment its sources start until it is put together or thrown away. One at a time.
+    Recording,
 }
 
 /// The job is running already.
@@ -348,6 +350,21 @@ mod tests {
         let _meeting = jobs
             .start(Job::Meeting("2026-11-09 10-00-00".into()))
             .unwrap();
+    }
+
+    #[test]
+    fn one_recording_at_a_time_and_it_runs_beside_the_other_jobs() {
+        let jobs = Arc::new(Jobs::default());
+        let recording = jobs.start(Job::Recording).unwrap();
+        let _meeting = jobs
+            .start(Job::Meeting("2026-11-09 10-00-00".into()))
+            .unwrap();
+        let _download = jobs.start(download("tiny")).unwrap();
+        assert_eq!(jobs.start(Job::Recording).err(), Some(AlreadyRunning));
+        assert!(jobs.is_active(&Job::Recording));
+        drop(recording);
+        assert!(!jobs.is_active(&Job::Recording));
+        assert!(jobs.start(Job::Recording).is_ok());
     }
 
     #[test]

@@ -50,6 +50,14 @@ const COMMANDS: &[&str] = &[
     "copy_text",
     "meetings_open_settings",
     "meetings_readiness",
+    // The recording, which the meetings window starts and stops (the bar of the recording has some of them too).
+    "recording_sources",
+    "recording_start",
+    "recording_pause",
+    "recording_resume",
+    "recording_stop",
+    "recording_discard",
+    "recording_state",
     // The bubble, the chip and the card.
     "dictation_languages",
     "dictation_stop",

@@ -114,12 +114,15 @@ pub struct TranscribePresetView {
 
 // ---- the plain functions behind the commands
 
-/// What the system says about the two permissions dictation needs. Only macOS has them: elsewhere both are
-/// `NotNeeded`, which is how the Settings window knows to show no Permissions section.
+/// What the system says about the permissions of the app: the two that dictation needs, and Screen Recording. Only macOS has them:
+/// elsewhere all are `NotNeeded`, which is how the Settings window knows to show no Permissions section.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct PermissionsView {
     pub microphone: Permission,
     pub accessibility: Permission,
+    /// Screen Recording, which records the screen and the sound of the system (macOS). It is asked for when a recording is, and
+    /// is no reason for the guide: macOS cannot say that it was never asked, so until it is granted this says `Denied`.
+    pub screen: Permission,
 }
 
 impl PermissionsView {
@@ -172,20 +175,22 @@ pub fn open_guide_at_start(view: &PermissionsView, auto_write: bool, mark: &Guid
     true
 }
 
-/// Asks the system for both permissions.
+/// Asks the system for the permissions.
 pub fn permissions_view(platform: &dyn Platform) -> PermissionsView {
     PermissionsView {
         microphone: platform.microphone(),
         accessibility: platform.accessibility(),
+        screen: platform.screen_recording(),
     }
 }
 
-/// Shows the system's prompt for the permission `kind` names ("microphone" or "accessibility"), and doesn't wait
+/// Shows the system's prompt for the permission `kind` names ("microphone", "accessibility" or "screen"), and doesn't wait
 /// for the answer: the window asks for the status every second.
 fn request_permission_now(platform: &dyn Platform, kind: &str) -> Result<(), String> {
     match kind {
         "microphone" => platform.request_microphone(Box::new(|_| {})),
         "accessibility" => platform.request_accessibility(),
+        "screen" => platform.request_screen_recording(),
         other => return Err(format!("{other:?} is not a permission of this app")),
     }
     Ok(())
@@ -204,6 +209,9 @@ fn permission_settings_url(os: Os, kind: &str) -> Result<&'static str, String> {
         }
         "accessibility" => {
             Ok("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+        }
+        "screen" => {
+            Ok("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
         }
         other => Err(format!("{other:?} is not a permission of this app")),
     }
@@ -304,7 +312,8 @@ fn set_hotkey_inner(
 
 /// Saves `settings`. `apply_launch_at_login` is called, with the new value, only when that setting changes; if it
 /// fails nothing is saved, so the file never says something the system doesn't do. The same goes for the shortcut,
-/// which only `set_hotkey` changes: what the window sends for it is ignored.
+/// which only `set_hotkey` changes: what the window sends for it is ignored. So are the choices of the recording picker and
+/// the portal's restore token, which the recorder writes (the window may hold a copy from before).
 fn save_settings_inner(
     store: &SettingsStore,
     keys: &KeyFlags,
@@ -318,8 +327,22 @@ fn save_settings_inner(
     }
     let saved = store.update(|current| {
         let hotkey = std::mem::take(&mut current.hotkey);
+        let record = (
+            std::mem::take(&mut current.record_mode),
+            current.record_quality,
+            current.record_mic,
+            current.record_system_audio,
+            current.screencast_restore_token.take(),
+        );
         *current = settings;
         current.hotkey = hotkey;
+        (
+            current.record_mode,
+            current.record_quality,
+            current.record_mic,
+            current.record_system_audio,
+            current.screencast_restore_token,
+        ) = record;
     });
     if let Err(e) = saved {
         if changed {
@@ -1217,6 +1240,36 @@ mod tests {
     }
 
     #[test]
+    fn saving_the_settings_leaves_the_recorders_choices_and_token_as_they_are() {
+        // The picker and the portal write these while Settings may be open with a copy from before: what Settings sends
+        // back for them is not theirs to say (a stale token would be one the desktop has dropped, and none would bring the
+        // dialog back at every recording).
+        let f = fixture();
+        f.store
+            .update(|s| {
+                s.record_mode = "window".into();
+                s.record_mic = false;
+                s.screencast_restore_token = Some("display:fresh".into());
+            })
+            .unwrap();
+        let stale = Settings {
+            vocabulary: "Dictate".into(),
+            ..Settings::default()
+        };
+
+        let view = save_settings_inner(&f.store, &f.keys, stale, |_| Ok(())).unwrap();
+
+        assert_eq!(view.settings.vocabulary, "Dictate");
+        let kept = f.store.get();
+        assert_eq!(kept.record_mode, "window");
+        assert!(!kept.record_mic);
+        assert_eq!(
+            kept.screencast_restore_token.as_deref(),
+            Some("display:fresh")
+        );
+    }
+
+    #[test]
     fn switching_provider_follows_the_rules_and_is_saved() {
         let f = fixture();
         let view = set_ai_provider_inner(&f.store, &f.keys, AiProvider::OpenAi).unwrap();
@@ -1680,10 +1733,15 @@ mod tests {
         let view = PermissionsView {
             microphone: Permission::NotDetermined,
             accessibility: Permission::Granted,
+            screen: Permission::Denied,
         };
         assert_eq!(
             serde_json::to_value(view).unwrap(),
-            serde_json::json!({ "microphone": "not_determined", "accessibility": "granted" })
+            serde_json::json!({
+                "microphone": "not_determined",
+                "accessibility": "granted",
+                "screen": "denied",
+            })
         );
         // Each state has the word that the window has a text for.
         for (state, word) in [
@@ -1704,11 +1762,33 @@ mod tests {
             PermissionsView {
                 microphone: Permission::NotDetermined,
                 accessibility: Permission::Denied,
+                screen: Permission::Granted,
             }
         );
         // The questions change nothing: no prompt is shown by asking.
         assert_eq!(platform.mic_requests.load(Ordering::SeqCst), 0);
         assert_eq!(platform.accessibility_requests.load(Ordering::SeqCst), 0);
+        assert_eq!(platform.screen_requests.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn the_screen_permission_is_what_the_system_says_of_screen_recording() {
+        // macOS cannot say that it was never asked: until it is granted the answer is "denied".
+        let platform = mac_with(Permission::Granted, Permission::Granted);
+        *lock(&platform.screen) = Permission::Denied;
+        assert_eq!(permissions_view(&*platform).screen, Permission::Denied);
+        *lock(&platform.screen) = Permission::Granted;
+        assert_eq!(permissions_view(&*platform).screen, Permission::Granted);
+        // The other systems have none to grant.
+        let other = FakePlatform::new(Os::Windows, Arc::new(CallLog::default()));
+        assert_eq!(permissions_view(&*other).screen, Permission::NotNeeded);
+        // The screen is not a reason for Settings to open by itself at the start: it is asked for when a recording is.
+        let guide = PermissionsView {
+            microphone: Permission::Granted,
+            accessibility: Permission::Granted,
+            screen: Permission::Denied,
+        };
+        assert!(!guide.needs_a_guide(true, false));
     }
 
     #[test]
@@ -1718,6 +1798,7 @@ mod tests {
             PermissionsView {
                 microphone,
                 accessibility,
+                screen: Permission::Denied,
             }
             .needs_a_guide(auto_write, shown_before)
         };
@@ -1749,6 +1830,7 @@ mod tests {
         let view = |microphone, accessibility| PermissionsView {
             microphone,
             accessibility,
+            screen: Permission::Denied,
         };
 
         // Accessibility is missing: the first start that finds it opens Settings, and the ones after it don't.
@@ -1804,15 +1886,24 @@ mod tests {
         assert_eq!(platform.mic_requests.load(Ordering::SeqCst), 1);
         assert_eq!(platform.accessibility_requests.load(Ordering::SeqCst), 1);
 
+        request_permission_now(&*platform, "screen").unwrap();
+        assert_eq!(platform.screen_requests.load(Ordering::SeqCst), 1);
+        assert_eq!(platform.mic_requests.load(Ordering::SeqCst), 1);
+
         // A name the window doesn't use is refused, and the system is not asked.
         let error = request_permission_now(&*platform, "camera").unwrap_err();
         assert!(error.contains("camera"), "{error}");
         assert_eq!(platform.mic_requests.load(Ordering::SeqCst), 1);
         assert_eq!(platform.accessibility_requests.load(Ordering::SeqCst), 1);
+        assert_eq!(platform.screen_requests.load(Ordering::SeqCst), 1);
     }
 
     #[test]
     fn the_permission_links_open_the_privacy_pane_of_each() {
+        assert_eq!(
+            permission_settings_url(Os::Mac, "screen"),
+            Ok("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
+        );
         assert_eq!(
             permission_settings_url(Os::Mac, "microphone"),
             Ok("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
@@ -1829,7 +1920,7 @@ mod tests {
     fn the_permission_links_are_for_macos_only_and_no_other_system_is_handed_one() {
         // The link is an address of the Mac's System Settings: the opener would give it to the browser or to nothing.
         for os in [Os::Windows, Os::Linux] {
-            for kind in ["microphone", "accessibility"] {
+            for kind in ["microphone", "accessibility", "screen"] {
                 assert!(permission_settings_url(os, kind).is_err(), "{os:?} {kind}");
             }
         }
