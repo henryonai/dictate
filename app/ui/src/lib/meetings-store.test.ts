@@ -993,6 +993,85 @@ describe("the recording", () => {
     expect(store.items.map((item) => item.id)).toEqual([ID, RECORDING_ID]);
   });
 
+  test("the list is not worked out again at each report of the time of the recording", async () => {
+    await started([row, live]);
+    events.sendRecordingState(fakeRecording({ phase: "recording", meetingId: RECORDING_ID, elapsedMs: 50 }));
+    const items = store.items;
+
+    events.sendRecordingState(fakeRecording({ phase: "recording", meetingId: RECORDING_ID, elapsedMs: 100 }));
+    events.sendRecordingState(fakeRecording({ phase: "recording", meetingId: RECORDING_ID, elapsedMs: 150 }));
+
+    expect(store.items).toBe(items);
+  });
+
+  test("deleting the selected recording while one goes on selects the next recording of the library, not the folder of the one that goes on", async () => {
+    // The recording that goes on is the newest row of the list.
+    await started([live, row, other]);
+    events.sendRecordingState(fakeRecording({ phase: "recording", meetingId: RECORDING_ID }));
+    await store.select(ID);
+    vi.mocked(api.meetingDetail).mockClear();
+    vi.mocked(api.meetingsList).mockResolvedValue([live, other]);
+
+    expect(await store.remove(ID)).toBe(true);
+
+    expect(store.selectedId).toBe(OTHER);
+    expect(store.selectedRow?.id).toBe(OTHER);
+    expect(api.meetingDetail).not.toHaveBeenCalledWith(RECORDING_ID);
+  });
+
+  test("a selected recording that is gone from the list is replaced by the first one that is shown, not by the one that goes on", async () => {
+    await started([live, row, other]);
+    events.sendRecordingState(fakeRecording({ phase: "recording", meetingId: RECORDING_ID }));
+    await store.select(ID);
+    vi.mocked(api.meetingDetail).mockClear();
+    // The recording was deleted elsewhere (the folder, or the other window): the change of the library brings the list again.
+    vi.mocked(api.meetingsList).mockResolvedValue([live, other]);
+
+    await store.load();
+
+    expect(store.selectedId).toBe(OTHER);
+    expect(api.meetingDetail).not.toHaveBeenCalledWith(RECORDING_ID);
+  });
+
+  test("a library with nothing in it but the recording that goes on selects nothing", async () => {
+    await started([live, row]);
+    events.sendRecordingState(fakeRecording({ phase: "recording", meetingId: RECORDING_ID }));
+    await store.select(ID);
+    vi.mocked(api.meetingsList).mockResolvedValue([live]);
+
+    await store.remove(ID);
+
+    expect(store.selectedId).toBeNull();
+    expect(store.selectedRow).toBeNull();
+  });
+
+  test("the recording that goes on can't be selected, and is when it is over", async () => {
+    await started([live, row]);
+    await store.select(ID);
+    events.sendRecordingState(fakeRecording({ phase: "recording", meetingId: RECORDING_ID }));
+    vi.mocked(api.meetingDetail).mockClear();
+
+    await store.select(RECORDING_ID);
+
+    expect(store.selectedId).toBe(ID);
+    expect(api.meetingDetail).not.toHaveBeenCalled();
+
+    events.sendRecordingState(IDLE_RECORDING);
+    await store.select(RECORDING_ID);
+    expect(store.selectedId).toBe(RECORDING_ID);
+  });
+
+  test("a recording that begins while its folder is the selected one lets go of it", async () => {
+    await started([live, row]);
+    await store.select(RECORDING_ID);
+    expect(store.selectedId).toBe(RECORDING_ID);
+
+    events.sendRecordingState(fakeRecording({ phase: "recording", meetingId: RECORDING_ID }));
+
+    await vi.waitFor(() => expect(store.selectedId).toBe(ID));
+    expect(store.selectedRow?.id).toBe(ID);
+  });
+
   test("a recording that has no folder yet hides nothing", async () => {
     await started([row, live]);
 
