@@ -538,8 +538,9 @@ mod tests {
         assert!(video.is_file(), "the video is kept");
         assert_eq!(finished.notes.len(), 1, "{:?}", finished.notes);
         assert!(finished.notes[0].contains("ffmpeg"), "{:?}", finished.notes);
+        // Linux has VP9 first, which is a `video.webm`: the note names the file that there is.
         assert!(
-            finished.notes[0].contains("video.mp"),
+            finished.notes[0].contains(&name_of(&video)),
             "{:?}",
             finished.notes
         );
@@ -768,9 +769,10 @@ mod tests {
             "{left:?}"
         );
         assert!(
-            !left
-                .iter()
-                .any(|name| name.starts_with("recording.mp") || name.ends_with(".part")),
+            !left.iter().any(
+                |name| (name.starts_with("recording.") && !is_sound_file(name))
+                    || name.ends_with(".part")
+            ),
             "{left:?}"
         );
     }
@@ -891,8 +893,10 @@ mod tests {
     #[test]
     fn a_video_that_cannot_be_read_is_still_left_out_when_there_is_sound() {
         let dir = tempfile::tempdir().unwrap();
-        let tools = tempfile::tempdir().unwrap();
-        let ffmpeg = ffmpeg_that_reads_nothing(tools.path());
+        // An ffmpeg that is not there: it can read nothing, and the sound is mixed without it on every system (the system's
+        // encoder on macOS and Windows, a `recording.wav` on Linux). A stand-in that starts and then fails would be what the
+        // mix is written through on Linux, which has no AAC encoder of its own.
+        let ffmpeg = dir.path().join("no-ffmpeg-here");
         let video = dir.path().join("video.mp4");
         fs::write(&video, vec![7_u8; 4096]).unwrap();
         tone_stem(dir.path(), "mic.wav", 440.0, 1.5);
