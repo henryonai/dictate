@@ -498,7 +498,7 @@ impl Recorder {
 
     /// Ends the recording and makes a meeting of it: the job starts at the audio. This waits for the sound to be mixed, which is as
     /// long as a long recording takes: call it on a blocking thread. A recording that has nothing in it is told so, and its folder
-    /// is removed; one that has already been taken to be put together is not an error.
+    /// is cleared away (`discard_nothing_recorded`); one that has already been taken to be put together is not an error.
     pub fn stop(&self) -> Result<(), ErrorView> {
         match self.take_running() {
             Taken::Running(running) => self.finish(*running, None),
@@ -525,9 +525,10 @@ impl Recorder {
             Ok(finished) => meetings
                 .finish_recording(&id, &folder, &finished)
                 .map_err(|e| stop_failed(&e)),
-            // Nothing was recorded: there is nothing to keep, and no job to start.
+            // Nothing was recorded: there is nothing to keep, and no job to start. What is in the folder besides what the library
+            // wrote (a file that could not be used) is not deleted: it goes to the Trash.
             Err(e) if nothing_was_recorded(&e, &folder) => {
-                meetings.discard_folder(&folder);
+                meetings.discard_nothing_recorded(&folder);
                 meetings.library_changed();
                 Err(views::error(
                     "Other",
@@ -881,8 +882,9 @@ fn stop_failed(error: &io::Error) -> ErrorView {
 }
 
 /// Finishes the recordings that the app left cut off (a crash, or a quit that did not wait): each folder of the library that has a
-/// `recording.json` is put together from what is on the disk, and its job starts. A folder that has nothing in it is removed, and
-/// one that could not be put together is left as it is, for the next start. Returns how many became meetings.
+/// `recording.json` is put together from what is on the disk, and its job starts. A folder that has nothing in it is cleared
+/// away (`discard_nothing_recorded`: removed when only the library's own files are in it, and moved to the Trash when anything
+/// else is), and one that could not be put together is left as it is, for the next start. Returns how many became meetings.
 ///
 /// This must run before the start-up sweep of the library, which removes every `*.part` file, among them the video that was not
 /// finished; and before the jobs are let go.
@@ -919,8 +921,8 @@ pub fn recover_library(meetings: &Meetings, ffmpeg: Option<&Path>) -> usize {
                 }
             }
             Some(Err(e)) if nothing_was_recorded(&e, &folder) => {
-                log::info!("The recording {id} that was cut off has nothing in it: removed");
-                meetings.discard_folder(&folder);
+                log::info!("The recording {id} that was cut off has nothing in it: cleared away");
+                meetings.discard_nothing_recorded(&folder);
             }
             Some(Err(e)) => log::warn!("Could not finish the recording {id}: {e}; it is kept"),
         }

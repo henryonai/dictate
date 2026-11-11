@@ -295,6 +295,45 @@ impl Meetings {
         }
     }
 
+    /// Clears away the folder of a recording that was put together and had nothing in it (`finalize` says so), and never more
+    /// than that. A folder that holds only `meta.json` and the log has nothing that anyone could want: those two files are
+    /// removed, and then the folder, which `remove_dir` takes only when it is empty. One that holds anything else (a stem that
+    /// could not be read, a video that could not be played: what a person may still get something out of) is moved to the
+    /// Trash, where it can be got back, and stays where it is when the Trash will not take it: nothing is removed by force.
+    pub fn discard_nothing_recorded(&self, folder: &Path) {
+        if !self.is_a_folder_of_the_library(folder) {
+            log::warn!("Not removing {}: it is not a recording", folder.display());
+            return;
+        }
+        let holds_more = fs::read_dir(folder).map_or(true, |mut entries| {
+            entries.any(|entry| {
+                entry.map_or(true, |entry| {
+                    let name = entry.file_name();
+                    name != OsStr::new(files::META) && name != OsStr::new(files::LOG)
+                })
+            })
+        });
+        if holds_more {
+            if let Err(why) = self.trash.delete(folder) {
+                log::warn!(
+                    "The Trash did not take {}: {why}; it is kept",
+                    folder.display()
+                );
+            }
+            return;
+        }
+        for name in [files::META, files::LOG] {
+            if let Err(e) = fs::remove_file(folder.join(name)) {
+                if e.kind() != io::ErrorKind::NotFound {
+                    log::warn!("Could not remove {name} of {}: {e}", folder.display());
+                }
+            }
+        }
+        if let Err(e) = fs::remove_dir(folder) {
+            log::warn!("Could not remove {}: {e}", folder.display());
+        }
+    }
+
     /// A recording that is thrown away: its folder goes to the Trash like a deleted recording, or is removed when the Trash
     /// will not take it. The window is told that the library changed. An error is the reason that the folder is still there.
     pub fn trash_recording(&self, folder: &Path) -> Result<(), String> {
@@ -1201,6 +1240,67 @@ mod tests {
         assert!(outside.is_dir());
         rig.meetings.discard_folder(&rig.library.dir());
         assert!(rig.library.dir().is_dir());
+    }
+
+    #[test]
+    fn a_folder_with_nothing_recorded_in_it_is_removed_by_what_the_library_wrote_and_not_by_force()
+    {
+        let rig = Rig::new();
+        let (_, folder) = rig.meetings.begin_recording("Họp", "audio.m4a").unwrap();
+        fs::write(folder.join(files::LOG), "The recording was interrupted.").unwrap();
+
+        rig.meetings.discard_nothing_recorded(&folder);
+
+        assert!(!folder.exists());
+        assert!(
+            lock(&rig.trash.moved).is_empty(),
+            "there is nothing to get back"
+        );
+        assert!(
+            rig.library.folder(SCREEN).is_dir(),
+            "the others are not touched"
+        );
+        // A path that is not a folder of the library is left alone, whoever asks.
+        let outside = rig.library.outside();
+        rig.meetings.discard_nothing_recorded(&outside);
+        assert!(outside.is_dir());
+    }
+
+    #[test]
+    fn a_folder_that_has_anything_else_in_it_goes_to_the_trash_and_is_not_removed() {
+        // A file of the recording that could not be used (a stem that cannot be read, a video that cannot be played) may be
+        // what a person can still get something out of: it is moved, and can be got back, and nothing deletes it.
+        let rig = Rig::new();
+        let (_, folder) = rig.meetings.begin_recording("Họp", "audio.m4a").unwrap();
+        fs::write(folder.join("mic.wav.unreadable"), b"RIFF").unwrap();
+
+        rig.meetings.discard_nothing_recorded(&folder);
+
+        assert_eq!(*lock(&rig.trash.moved), [(folder.clone(), false)]);
+    }
+
+    #[test]
+    fn a_folder_that_has_anything_else_in_it_stays_when_the_trash_will_not_take_it() {
+        let mut rig = Rig::new();
+        let jobs = rig.trash.jobs.clone();
+        rig.trash = Arc::new(FakeTrash {
+            jobs,
+            moved: Mutex::new(Vec::new()),
+            fail: true,
+        });
+        rig.meetings.trash = rig.trash.clone();
+        let (_, folder) = rig.meetings.begin_recording("Họp", "audio.m4a").unwrap();
+        fs::write(folder.join("video.mp4"), b"a video that may be played").unwrap();
+
+        rig.meetings.discard_nothing_recorded(&folder);
+
+        assert_eq!(lock(&rig.trash.moved).len(), 1, "the Trash was tried");
+        // Nothing is removed, `meta.json` included: the recording is still there to be seen and to be deleted by its person.
+        assert_eq!(
+            fs::read(folder.join("video.mp4")).unwrap(),
+            b"a video that may be played"
+        );
+        assert!(folder.join(files::META).is_file());
     }
 
     #[test]

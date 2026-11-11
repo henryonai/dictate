@@ -695,15 +695,27 @@ pub fn mux_within(
     }
 }
 
-/// How long `probe_seconds` waits for ffmpeg.
+/// How long `probe_seconds` waits for ffmpeg to read a file that is quickly read.
 const PROBE_SECONDS_LIMIT: Duration = Duration::from_secs(30);
+/// How many bytes of a file ffmpeg is allowed a second more for: it reads all of the file, so the time it takes goes with the
+/// size of the file and the speed of the disk (32 MiB a second is a slow one).
+const PROBE_BYTES_PER_SECOND: u64 = 32 * 1024 * 1024;
+/// The most that `probe_seconds` waits, whatever the size: the start-up of the app waits for it.
+const PROBE_SECONDS_MOST: Duration = Duration::from_secs(15 * 60);
+
+/// How long ffmpeg is given to read a file of `bytes`: 30 s, and a second more for every 32 MiB of it, up to 15 minutes.
+fn probe_limit(bytes: u64) -> Duration {
+    (PROBE_SECONDS_LIMIT + Duration::from_secs(bytes / PROBE_BYTES_PER_SECOND))
+        .min(PROBE_SECONDS_MOST)
+}
 
 /// How long the video in `video` is, in seconds: what ffmpeg reaches when it reads the file to its end without
 /// decoding it (it copies the packets to nowhere), which is as far as the video can be played. A file that was cut
 /// off gives the length of what is in it. `None` when ffmpeg cannot be run, cannot read the file, or does not end
-/// within 30 s.
+/// within the time that a file of its size is given (30 s, and a second more for every 32 MiB, up to 15 minutes).
 pub fn probe_seconds(video: &Path, ffmpeg: &Path) -> Option<f64> {
-    probe_within(video, ffmpeg, PROBE_SECONDS_LIMIT)
+    let bytes = std::fs::metadata(video).map_or(0, |meta| meta.len());
+    probe_within(video, ffmpeg, probe_limit(bytes))
 }
 
 fn probe_within(video: &Path, ffmpeg: &Path, limit: Duration) -> Option<f64> {
@@ -1915,6 +1927,19 @@ mod tests {
             probe_seconds(&dir.path().join("missing.mp4"), &ffmpeg),
             None
         );
+    }
+
+    #[test]
+    fn a_bigger_file_is_given_longer_to_be_read() {
+        // 30 s for a file that is quickly read, and more for the one of a long recording on a slow disk: ffmpeg reads all
+        // of it, and not being given the time to is what made a recording that may be played look like one that cannot.
+        assert_eq!(probe_limit(0), Duration::from_secs(30));
+        assert_eq!(probe_limit(100 * 1024 * 1024), Duration::from_secs(33));
+        let long_one = probe_limit(8 * 1024 * 1024 * 1024);
+        assert!(long_one > Duration::from_secs(200), "{long_one:?}");
+        assert!(probe_limit(2 * 1024 * 1024 * 1024) < long_one);
+        // But not for ever: start-up waits for it.
+        assert_eq!(probe_limit(u64::MAX), Duration::from_secs(15 * 60));
     }
 
     #[cfg(unix)]

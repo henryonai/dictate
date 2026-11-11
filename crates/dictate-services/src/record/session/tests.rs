@@ -1230,6 +1230,75 @@ fn recover_finishes_a_recording_left_by_a_crash() {
     assert!(left.contains(&name), "{left:?}");
 }
 
+/// What a crash leaves of a stem that was pushed `seconds` of a tone and never finished: the file as it is on the disk while
+/// the writer still holds the rest.
+fn stem_as_a_crash_leaves_it(folder: &Path, name: &str, seconds: f32) {
+    let live = folder.join("live.wav");
+    let mut stem = StemWriter::create(&live, 48_000).unwrap();
+    let tone = sine(440.0, 48_000, 0, (48_000.0 * seconds) as usize);
+    for (i, block) in tone.chunks(4_800).enumerate() {
+        stem.push(Duration::from_millis(i as u64 * 100), block)
+            .unwrap();
+    }
+    std::fs::copy(&live, folder.join(name)).unwrap();
+    drop(stem);
+    std::fs::remove_file(&live).unwrap();
+}
+
+#[test]
+fn recover_finishes_a_recording_whose_system_stem_a_crash_found_nearly_empty() {
+    // Windows sends nothing for the loopback while no sound plays: a short sound and then silence is a stem that holds less
+    // than the second after which its header is written again, and the microphone's stem next to it is a good one.
+    let dir = tempfile::tempdir().unwrap();
+    write_marker(dir.path(), Mode::Audio);
+    stem_as_a_crash_leaves_it(dir.path(), "mic.wav", 2.4);
+    stem_as_a_crash_leaves_it(dir.path(), "system.wav", 0.01);
+
+    let finished = recover(dir.path(), None).expect("a marker").unwrap();
+
+    assert!(is_sound_file(&name_of(&finished.media)));
+    assert!(
+        (2.0..=2.5).contains(&finished.duration),
+        "{} s",
+        finished.duration
+    );
+    // Every file of the recording was used: nothing is set aside, and nothing but the sound is left.
+    assert_eq!(names(dir.path()), [name_of(&finished.media)]);
+}
+
+#[test]
+fn recover_goes_on_without_a_stem_that_cannot_be_read() {
+    // The stem of a program that was stopped before its header was written (as the ones of an earlier version were), or
+    // that the disk damaged: the good stem and the video are not lost with it, now or at any later start.
+    let dir = tempfile::tempdir().unwrap();
+    write_marker(dir.path(), Mode::Audio);
+    stem_as_a_crash_leaves_it(dir.path(), "mic.wav", 2.4);
+    std::fs::write(dir.path().join("system.wav"), b"").unwrap();
+
+    let finished = recover(dir.path(), None).expect("a marker").unwrap();
+
+    assert!(is_sound_file(&name_of(&finished.media)));
+    assert!(
+        (2.0..=2.5).contains(&finished.duration),
+        "{} s",
+        finished.duration
+    );
+    assert!(
+        finished
+            .notes
+            .iter()
+            .any(|note| note.contains("system.wav")),
+        "{:?}",
+        finished.notes
+    );
+    assert_eq!(
+        names(dir.path()),
+        [name_of(&finished.media), "system.wav.unreadable".to_owned()]
+    );
+    // Nothing is left to try again.
+    assert!(recover(dir.path(), None).is_none());
+}
+
 #[test]
 fn recover_ignores_a_folder_without_a_marker() {
     let dir = tempfile::tempdir().unwrap();

@@ -1508,28 +1508,74 @@ fn write_stem(folder: &Path, name: &str) {
 }
 
 #[test]
-fn a_stem_that_cannot_be_read_costs_nothing_that_was_recorded() {
-    // What cannot be read is `InvalidData` too, like a folder with nothing in it, but the files are all that is left of the
-    // recording: the next start tries again, and no file is removed for this.
+fn a_stem_that_cannot_be_read_does_not_cost_the_recording_the_stem_that_can() {
+    // The stem of a microphone that a crash cut inside its header, next to a system stem that is fine: the good one is not
+    // lost with it, at this start or at any later one, and the one that cannot be read is kept as it is.
     let rig = Rig::new();
     let folder = cut_off_recording(&rig.library, "2026-11-10 10-00-00");
     write_stem(&folder, "system.wav");
     fs::write(folder.join("mic.wav"), b"this is not a stem").unwrap();
 
+    assert_eq!(recover_library(&rig.meetings, None), 1);
+
+    assert!(
+        !folder.join(MARKER).exists(),
+        "nothing is left to try again"
+    );
+    assert_eq!(
+        fs::read(folder.join("mic.wav.unreadable")).unwrap(),
+        b"this is not a stem"
+    );
+    assert!(
+        !folder.join("system.wav").exists(),
+        "the good one was mixed"
+    );
+    let meta = rig.meta("2026-11-10 10-00-00");
+    assert!(Path::new(&meta.media).is_file());
+    assert!(meta.duration.is_some_and(|seconds| seconds >= 1.0));
+    let log = fs::read_to_string(folder.join(files::LOG)).unwrap();
+    assert!(log.contains("mic.wav could not be read"), "{log}");
+    wait_until("the job to start", || !rig.backend.calls().is_empty());
+}
+
+#[test]
+fn stems_that_cannot_be_read_are_all_there_is_and_the_folder_goes_to_the_trash_not_to_nothing() {
+    let rig = Rig::new();
+    let folder = cut_off_recording(&rig.library, "2026-11-10 10-00-00");
+    fs::write(folder.join("mic.wav"), b"").unwrap();
+
     assert_eq!(recover_library(&rig.meetings, None), 0);
 
-    assert!(folder.is_dir(), "the folder is kept");
-    assert!(
-        folder.join(MARKER).is_file(),
-        "and the marker, for the next try"
-    );
-    assert!(
-        folder.join("system.wav").is_file(),
-        "and the stem that is fine"
-    );
-    assert!(folder.join("mic.wav").is_file());
-    assert!(folder.join(files::META).is_file());
+    // It is nothing that could be put together, and so no meeting; but what is in the folder is moved and not deleted.
+    assert_eq!(*lock(&rig.trash.moved), [folder]);
     assert!(rig.backend.calls().is_empty(), "no job without a recording");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_video_that_ffmpeg_cannot_read_is_not_removed_by_the_recovery_of_the_start_up() {
+    // A long recording on a slow disk: ffmpeg is not given the time to read its video, and there is no sound to go with it
+    // (a screen with both sounds off). It is a recording all the same, and what it has is kept.
+    use std::os::unix::fs::PermissionsExt;
+    let rig = Rig::new();
+    let folder = cut_off_recording(&rig.library, "2026-11-10 10-00-00");
+    fs::remove_file(folder.join("mic.wav")).unwrap();
+    fs::write(folder.join("video.mp4"), vec![7_u8; 4096]).unwrap();
+    let tools = tempfile::tempdir().unwrap();
+    let ffmpeg = tools.path().join("ffmpeg");
+    fs::write(&ffmpeg, "#!/bin/sh\nexit 1\n").unwrap();
+    fs::set_permissions(&ffmpeg, fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert_eq!(recover_library(&rig.meetings, Some(&ffmpeg)), 1);
+
+    assert!(folder.join("video.mp4").is_file(), "the video is kept");
+    assert_eq!(
+        rig.meta("2026-11-10 10-00-00").media,
+        folder.join("video.mp4").to_string_lossy()
+    );
+    assert!(!folder.join(MARKER).exists());
+    assert!(lock(&rig.trash.moved).is_empty());
+    wait_until("the job to start", || !rig.backend.calls().is_empty());
 }
 
 #[test]

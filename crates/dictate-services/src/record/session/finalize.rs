@@ -17,7 +17,7 @@ use super::Finished;
 use crate::media::encode::{publish, remove_part, EncodeError};
 use crate::record::marker::MARKER;
 use crate::record::mix::mix_stems;
-use crate::record::stem::{into_io_error, pad_to, STEM_RATE};
+use crate::record::stem::{pad_to, STEM_RATE};
 use crate::record::video::{mux_within, probe_seconds, Container};
 use crate::record::Track;
 
@@ -50,6 +50,9 @@ pub(super) struct Hints {
 /// nothing to try again: it is `InvalidData` ("nothing was recorded"), and `recording.json` is removed so that
 /// no start-up tries it again.
 ///
+/// A stem that cannot be read (a crash may leave one that is cut inside its header) does not stop that: it is set aside
+/// as `<name>.unreadable`, which is not deleted, and the rest is put together, with a note that says so.
+///
 /// A video that is there (`video.*`, or the `video.*.part` of an encoder that did not end) is used: the part is
 /// renamed first. Whoever sweeps the folders for `*.part` files (`meetings::sweep_stale_files` does, at start-up) must
 /// do it after this has run.
@@ -76,16 +79,34 @@ pub(super) fn finalize_with(
     hints: &Hints,
 ) -> io::Result<Finished> {
     let mut notes = Vec::new();
-    let video = find_video(folder, ffmpeg, hints, &mut notes)?;
-    let stems = find_stems(folder)?;
+    let found = find_video(folder, ffmpeg, hints, &mut notes)?;
+    let stems = find_stems(folder, &mut notes);
+    // A video that ffmpeg could not read anything from is not put under the sound: it is left out, and kept in the folder.
+    let (video, unreadable) = match found {
+        Some(video) if !video.readable => (None, Some(video)),
+        found => (found, None),
+    };
 
     if stems.is_empty() {
-        let Some(video) = video else {
-            remove(&folder.join(MARKER));
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "nothing was recorded: the folder has no sound and no video",
-            ));
+        // What is left to the recording is its video, and that is the recording even when it could not be read: ffmpeg has
+        // the same answer for a file with no picture in it, for one it could not open, and for one that it was not given
+        // the time to read to its end, and a recording that may be played is not thrown away on that.
+        let video = match (video, unreadable) {
+            (Some(video), _) => video,
+            (None, Some(video)) => {
+                notes.push(format!(
+                    "{} could not be read (it may be cut off, or have no picture in it), but it is all that was recorded: it is kept as the recording.",
+                    name_of(&video.path)
+                ));
+                video
+            }
+            (None, None) => {
+                remove(&folder.join(MARKER));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "nothing was recorded: the folder has no sound and no video",
+                ));
+            }
         };
         notes.push("No audio was recorded.".to_owned());
         remove(&folder.join(MARKER));
@@ -94,6 +115,12 @@ pub(super) fn finalize_with(
             duration: video.seconds.unwrap_or(0.0),
             notes,
         });
+    }
+    if let Some(video) = &unreadable {
+        notes.push(format!(
+            "There is no video in the recording: {} could not be read (it may have no picture in it), so it was left out and kept in the folder.",
+            name_of(&video.path)
+        ));
     }
 
     // Every stem as long as the longest of the stems and the video, and no shorter than the least there is.
@@ -189,17 +216,23 @@ struct Stem {
     seconds: f64,
 }
 
-/// The stems in `folder`. One with no samples is removed: its track delivered nothing.
-fn find_stems(folder: &Path) -> io::Result<Vec<Stem>> {
+/// The stems in `folder`. One with no samples is removed: its track delivered nothing. One that cannot be read at all
+/// (what a crash leaves when it comes before the header of the stem was written, or in the middle of it) is no reason to
+/// lose the others: it is set aside as `<name>.unreadable`, which is not deleted, and `notes` says so.
+fn find_stems(folder: &Path, notes: &mut Vec<String>) -> Vec<Stem> {
     let mut stems = Vec::new();
     for (_, name) in STEMS {
         let path = folder.join(name);
         if !path.is_file() {
             continue;
         }
-        let reader = hound::WavReader::open(&path).map_err(into_io_error)?;
-        let samples = u64::from(reader.duration());
-        drop(reader);
+        let samples = match hound::WavReader::open(&path) {
+            Ok(reader) => u64::from(reader.duration()),
+            Err(error) => {
+                set_aside(&path, &error, notes);
+                continue;
+            }
+        };
         if samples == 0 {
             remove(&path);
             continue;
@@ -209,7 +242,22 @@ fn find_stems(folder: &Path) -> io::Result<Vec<Stem>> {
             seconds: samples as f64 / f64::from(STEM_RATE),
         });
     }
-    Ok(stems)
+    stems
+}
+
+/// Leaves the stem at `path`, which `error` says cannot be read, out of the recording: it is renamed to `<name>.unreadable`
+/// (and stays where it is when that name is taken, so that nothing is overwritten).
+fn set_aside(path: &Path, error: &hound::Error, notes: &mut Vec<String>) {
+    let name = name_of(path);
+    let aside = path.with_file_name(format!("{name}.unreadable"));
+    let kept = if !aside.exists() && fs::rename(path, &aside).is_ok() {
+        format!("kept as {}", name_of(&aside))
+    } else {
+        "kept where it is".to_owned()
+    };
+    notes.push(format!(
+        "{name} could not be read ({error}), so it was left out of the recording and is {kept}."
+    ));
 }
 
 /// The video of a recording.
@@ -218,11 +266,15 @@ struct Video {
     container: Container,
     /// How long it is, when that is known.
     seconds: Option<f64>,
+    /// Whether it can be used with the sound. A video that was counted is believed; one that was not, and that ffmpeg can
+    /// read nothing from, is not.
+    readable: bool,
 }
 
 /// The video in `folder`: `video.<ext>`, which is made out of a `.part` that an encoder left, when there is one and
-/// there is no finished video. `None` when there is none, or it has nothing to play (an encoder that was given no
-/// frame writes a file that has only a header, which `mux` cannot read): that file is left where it is.
+/// there is no finished video. `None` when there is none. One that ffmpeg can read no length from is there all the same,
+/// as a video that is not `readable` (an encoder that was given no frame writes a file that has only a header, which
+/// `mux` cannot read): it is left where it is.
 fn find_video(
     folder: &Path,
     ffmpeg: Option<&Path>,
@@ -268,23 +320,15 @@ fn find_video(
         Some(seconds) => Some(seconds),
         None => ffmpeg.and_then(|ffmpeg| probe_seconds(&path, ffmpeg)),
     };
-    // A video that was counted is believed; one that was not, and that ffmpeg can read nothing from, is left out of the
-    // recording. It is not removed: ffmpeg has the same answer for a file with no picture in it and for a file it could
-    // not open, and what may be a video is not thrown away on that.
-    let unplayable = hints.video_seconds.is_none()
-        && ffmpeg.is_some()
-        && !seconds.is_some_and(|seconds| seconds > 0.0);
-    if unplayable {
-        notes.push(format!(
-            "There is no video in the recording: {} could not be read (it may have no picture in it), so it was left out and kept in the folder.",
-            name_of(&path)
-        ));
-        return Ok(None);
-    }
+    // It is not removed, whatever ffmpeg says: what may be a video is not thrown away on that.
+    let readable = hints.video_seconds.is_some()
+        || ffmpeg.is_none()
+        || seconds.is_some_and(|seconds| seconds > 0.0);
     Ok(Some(Video {
         path,
         container,
         seconds,
+        readable,
     }))
 }
 
@@ -550,6 +594,95 @@ mod tests {
         assert_eq!(names(dir.path()), before);
     }
 
+    /// What a stem can be when a crash found it: nothing at all, the start of a header, or not a WAV file.
+    fn broken_stems() -> Vec<(&'static str, Vec<u8>)> {
+        let dir = tempfile::tempdir().unwrap();
+        let whole = fs::read(tone_stem(dir.path(), "whole.wav", 440.0, 0.5)).unwrap();
+        vec![
+            ("empty", Vec::new()),
+            ("cut header", whole[..20].to_vec()),
+            ("not a wav", b"this is not a sound".to_vec()),
+        ]
+    }
+
+    fn is_sound_file(name: &str) -> bool {
+        name == "audio.m4a" || name == "recording.wav"
+    }
+
+    #[test]
+    fn a_stem_that_cannot_be_opened_is_set_aside_and_the_other_is_recovered() {
+        for (what, bytes) in broken_stems() {
+            let dir = tempfile::tempdir().unwrap();
+            tone_stem(dir.path(), "mic.wav", 440.0, 1.5);
+            fs::write(dir.path().join("system.wav"), &bytes).unwrap();
+            write_marker(dir.path());
+
+            let finished = finalize(dir.path(), None).unwrap_or_else(|e| panic!("{what}: {e}"));
+
+            assert!(
+                (finished.duration - 1.5).abs() < 0.05,
+                "{what}: {}",
+                finished.duration
+            );
+            assert!(is_sound_file(&names(dir.path())[0]), "{what}");
+            assert_eq!(finished.media.parent(), Some(dir.path()), "{what}");
+            // Said, so that the person can find it; and kept, since what is in it may be of use to someone.
+            assert!(
+                finished.notes.iter().any(|n| n.contains("system.wav")),
+                "{what}: {:?}",
+                finished.notes
+            );
+            assert_eq!(
+                fs::read(dir.path().join("system.wav.unreadable")).unwrap(),
+                bytes,
+                "{what}"
+            );
+            // What was put together is gone, and the marker with it: no start-up tries this folder again.
+            let left = names(dir.path());
+            assert_eq!(left.len(), 2, "{what}: {left:?}");
+            assert!(
+                !left.contains(&MARKER.to_owned()) && !left.contains(&"mic.wav".to_owned()),
+                "{what}: {left:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn stems_that_cannot_be_opened_are_kept_and_it_is_nothing_that_was_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("mic.wav"), b"").unwrap();
+        fs::write(dir.path().join("system.wav"), b"RIFF").unwrap();
+        write_marker(dir.path());
+
+        let error = finalize(dir.path(), None).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        // They are not deleted: whoever cleans up the folder sees that it holds something.
+        assert_eq!(
+            names(dir.path()),
+            ["mic.wav.unreadable", "system.wav.unreadable"]
+        );
+    }
+
+    #[test]
+    fn a_stem_that_cannot_be_opened_does_not_take_the_video_from_the_recording() {
+        let Some(ffmpeg) = real_ffmpeg() else { return };
+        let dir = tempfile::tempdir().unwrap();
+        let video = encode_video(dir.path(), &ffmpeg, 2);
+        fs::write(dir.path().join("system.wav"), b"").unwrap();
+        write_marker(dir.path());
+
+        let finished = finalize(dir.path(), Some(&ffmpeg)).unwrap();
+
+        assert_eq!(finished.media, video);
+        assert!(video.exists());
+        assert!(
+            finished.notes.iter().any(|n| n.contains("system.wav")),
+            "{:?}",
+            finished.notes
+        );
+    }
+
     /// A stand-in for ffmpeg that does what `on_mux` says when it is asked to put the sound under a video, and is
     /// the real one otherwise.
     #[cfg(unix)]
@@ -663,6 +796,74 @@ mod tests {
         assert!(empty.exists());
         assert!(
             finished.notes.iter().any(|n| n.contains("no video")),
+            "{:?}",
+            finished.notes
+        );
+    }
+
+    /// An ffmpeg that cannot read what it is given: the answer of the real one for a file it cannot open, and for one that it
+    /// is not given the time to read to its end (a long recording on a slow disk).
+    fn ffmpeg_that_reads_nothing(dir: &Path) -> PathBuf {
+        crate::media::test_support::script(dir, "fake-ffmpeg", "exit 1", "exit /b 1")
+    }
+
+    #[test]
+    fn a_video_that_cannot_be_read_with_no_sound_is_the_recording_and_not_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let tools = tempfile::tempdir().unwrap();
+        let ffmpeg = ffmpeg_that_reads_nothing(tools.path());
+        let video = dir.path().join("video.mp4");
+        fs::write(&video, vec![7_u8; 4096]).unwrap();
+        write_marker(dir.path());
+
+        let finished = finalize(dir.path(), Some(&ffmpeg)).unwrap();
+
+        assert_eq!(finished.media, video);
+        assert!(video.is_file());
+        assert!(
+            finished.notes.iter().any(|n| n.contains("video.mp4")),
+            "{:?}",
+            finished.notes
+        );
+        assert!(
+            finished.notes.iter().any(|n| n == "No audio was recorded."),
+            "{:?}",
+            finished.notes
+        );
+        // It is a recording now: nothing is left to try again.
+        assert_eq!(names(dir.path()), ["video.mp4"]);
+    }
+
+    #[test]
+    fn a_video_part_that_cannot_be_read_with_no_sound_is_published_and_kept_as_the_recording() {
+        let dir = tempfile::tempdir().unwrap();
+        let tools = tempfile::tempdir().unwrap();
+        let ffmpeg = ffmpeg_that_reads_nothing(tools.path());
+        fs::write(dir.path().join("video.webm.4242.part"), vec![7_u8; 4096]).unwrap();
+        write_marker(dir.path());
+
+        let finished = finalize(dir.path(), Some(&ffmpeg)).unwrap();
+
+        assert_eq!(finished.media, dir.path().join("video.webm"));
+        assert!(finished.media.is_file());
+        assert_eq!(names(dir.path()), ["video.webm"]);
+    }
+
+    #[test]
+    fn a_video_that_cannot_be_read_is_still_left_out_when_there_is_sound() {
+        let dir = tempfile::tempdir().unwrap();
+        let tools = tempfile::tempdir().unwrap();
+        let ffmpeg = ffmpeg_that_reads_nothing(tools.path());
+        let video = dir.path().join("video.mp4");
+        fs::write(&video, vec![7_u8; 4096]).unwrap();
+        tone_stem(dir.path(), "mic.wav", 440.0, 1.5);
+
+        let finished = finalize(dir.path(), Some(&ffmpeg)).unwrap();
+
+        assert!(is_sound_file(&name_of(&finished.media)));
+        assert!(video.is_file(), "it is kept, whatever it is");
+        assert!(
+            finished.notes.iter().any(|n| n.contains("video.mp4")),
             "{:?}",
             finished.notes
         );
