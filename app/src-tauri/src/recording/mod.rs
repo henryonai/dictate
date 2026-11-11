@@ -20,6 +20,7 @@ pub mod views;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::{Duration, Instant};
@@ -221,6 +222,9 @@ struct Inner {
     shown: Mutex<Shown>,
     /// Whether the video encoder of an ffmpeg works, for the ffmpeg that was asked about last: asking is slow.
     encoders: Mutex<Option<(PathBuf, bool)>>,
+    /// The app has waited as long as it would for a recording, and is going: asked to exit again (which is how it goes) it is let
+    /// through, and does not wait another time.
+    exiting: AtomicBool,
 }
 
 /// The recorder: one recording at a time, started, paused, stopped or thrown away by the windows, the tray and the shortcut.
@@ -241,6 +245,7 @@ impl Recorder {
                     last_told: None,
                 }),
                 encoders: Mutex::new(None),
+                exiting: AtomicBool::new(false),
             }),
         }
     }
@@ -497,7 +502,7 @@ impl Recorder {
                 .finish_recording(&id, &folder, &finished)
                 .map_err(|e| stop_failed(&e)),
             // Nothing was recorded: there is nothing to keep, and no job to start.
-            Err(e) if e.kind() == io::ErrorKind::InvalidData => {
+            Err(e) if nothing_was_recorded(&e, &folder) => {
                 meetings.discard_folder(&folder);
                 meetings.library_changed();
                 Err(views::error(
@@ -606,7 +611,11 @@ impl Recorder {
     /// a start that is under way), and `then` is called when that is done, or after `wait` at the longest. Returns whether quitting
     /// has to wait for that: `false` with no recording, and then `then` is not called.
     pub fn finish_before_exit(&self, wait: Duration, then: impl FnOnce() + Send + 'static) -> bool {
-        if matches!(*lock(&self.inner.slot), Slot::Idle) {
+        // `then` is what asks for the exit again: that one is not to wait, whatever the recording is doing (a mix that takes longer
+        // than the app waits, a dialog of the desktop that nobody answers).
+        if self.inner.exiting.load(Ordering::SeqCst)
+            || matches!(*lock(&self.inner.slot), Slot::Idle)
+        {
             return false;
         }
         let (done, finished) = mpsc::channel::<()>();
@@ -621,10 +630,13 @@ impl Recorder {
             log::warn!("Could not put the recording together before quitting: {e}");
             return false;
         }
+        let waiter = self.clone();
         let waiting = std::thread::Builder::new()
             .name("recording-quit-wait".into())
             .spawn(move || {
                 let _ = finished.recv_timeout(wait);
+                // Done, or given up on: the app goes now, and what is still being put together is finished by the next start.
+                waiter.inner.exiting.store(true, Ordering::SeqCst);
                 then();
             });
         if let Err(e) = waiting {
@@ -686,7 +698,8 @@ fn quiet(options: &RecordOptions) -> Levels {
 /// What the app does when it is asked to exit, `code` being how (`None`: the last window was closed, which does not end a tray app).
 /// A quit while a recording goes on, or is being started or put together, waits for it to be put together (for `wait` at the most)
 /// and then calls `exit` with the code; the caller then does not exit now, which is what `true` says. With no recording, or no quit,
-/// nothing is done and `exit` is not called.
+/// nothing is done and `exit` is not called. `exit` asks for the exit again, and that call is let through (`false`) once the wait is
+/// over, finished or given up: the app does not wait twice.
 pub fn before_exit(
     recorder: &Recorder,
     wait: Duration,
@@ -791,6 +804,14 @@ impl Inner {
     }
 }
 
+/// Whether `error` of putting together the recording in `folder` says that nothing was recorded, which is when its folder has nothing
+/// to keep. `InvalidData` is also what a stem that cannot be read gives, and then the files are all that is left of the recording: the
+/// one case of nothing recorded is the one in which the marker was removed (`finalize` removes it so that no start-up tries the folder
+/// again), and any other error leaves it, for another try.
+fn nothing_was_recorded(error: &io::Error, folder: &Path) -> bool {
+    error.kind() == io::ErrorKind::InvalidData && !folder.join(MARKER).exists()
+}
+
 /// A recording that could not be put together (its files are kept, and the next start of the app tries again).
 fn stop_failed(error: &io::Error) -> ErrorView {
     views::error(
@@ -818,7 +839,16 @@ pub fn recover_library(meetings: &Meetings, ffmpeg: Option<&Path>) -> usize {
             continue;
         }
         let id = entry.file_name().to_string_lossy().into_owned();
-        match recover(&folder, ffmpeg) {
+        // The recording that goes on has its marker too: whoever holds the place of the meeting owns the folder, and a folder that is
+        // owned is not touched (a recording may be started while this runs, which is as long as the biggest mix takes). The place is
+        // held while the recording is put together, and let go for its job.
+        let Ok(hold) = meetings.registry.hold(&id) else {
+            log::info!("The recording {id} is in hand: not recovered");
+            continue;
+        };
+        let found = recover(&folder, ffmpeg);
+        drop(hold);
+        match found {
             None => {}
             Some(Ok(mut finished)) => {
                 finished.notes.insert(0, INTERRUPTED.to_owned());
@@ -830,7 +860,7 @@ pub fn recover_library(meetings: &Meetings, ffmpeg: Option<&Path>) -> usize {
                     Err(e) => log::warn!("Could not start the job of the recording {id}: {e}"),
                 }
             }
-            Some(Err(e)) if e.kind() == io::ErrorKind::InvalidData => {
+            Some(Err(e)) if nothing_was_recorded(&e, &folder) => {
                 log::info!("The recording {id} that was cut off has nothing in it: removed");
                 meetings.discard_folder(&folder);
             }

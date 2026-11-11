@@ -1,6 +1,7 @@
 //! The recorder against scripted sources (`FakeCapturer`), a scripted pipeline and a library in a temporary folder.
 
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -715,17 +716,22 @@ impl RunningSource for HeldSource {
     }
 }
 
-#[test]
-fn the_shortcut_pressed_while_a_recording_is_put_together_does_nothing() {
+/// A recorder whose recordings are "being put together" for as long as the test does not send on the channel it gets.
+fn rig_that_holds_the_stop() -> (Rig, mpsc::Sender<()>) {
     let (release, held) = mpsc::channel::<()>();
-    let fake = Arc::new(FakeCapturer::new().tone(Track::Mic, 440.0));
     let capturer = Arc::new(HoldsStop {
-        inner: fake,
+        inner: Arc::new(FakeCapturer::new().tone(Track::Mic, 440.0)),
         release: Arc::new(Mutex::new(held)),
     });
     let rig = Rig::with(FakeCapturer::new(), |deps| {
         deps.capturer = Arc::new(move |_| -> Arc<dyn Capturer> { capturer.clone() });
     });
+    (rig, release)
+}
+
+#[test]
+fn the_shortcut_pressed_while_a_recording_is_put_together_does_nothing() {
+    let (rig, release) = rig_that_holds_the_stop();
     rig.recorder.start(audio(true, false)).unwrap();
     rig.record_a_moment();
     let recorder = rig.recorder.clone();
@@ -887,6 +893,63 @@ fn quitting_gives_up_waiting_after_the_time_it_was_given() {
         starting.join().unwrap().unwrap_err().key,
         "recording.error.portal_cancelled"
     );
+}
+
+#[test]
+fn a_quit_that_gave_up_waiting_lets_the_next_one_through() {
+    // `exit` asks for the exit again, which comes back to `before_exit`: it must not wait another time, or the app could never end.
+    let rig = Rig::with(FakeCapturer::new(), |deps| {
+        deps.capturer =
+            Arc::new(|_| -> Arc<dyn Capturer> { Arc::new(Waits(Duration::from_secs(3))) });
+    });
+    let recorder = rig.recorder.clone();
+    let starting = std::thread::spawn(move || recorder.start(audio(true, false)));
+    wait_until("the start to begin", || rig.phase() == Phase::Starting);
+    let (told, heard) = mpsc::channel();
+
+    assert!(before_exit(
+        &rig.recorder,
+        Duration::from_millis(100),
+        Some(0),
+        move |code| {
+            let _ = told.send(code);
+        }
+    ));
+    assert_eq!(heard.recv_timeout(PATIENCE).unwrap(), 0);
+
+    // The start is still going on, and the exit that `exit` asked for is let through.
+    assert_eq!(rig.phase(), Phase::Starting);
+    assert!(!before_exit(&rig.recorder, QUIT_WAIT, Some(0), |_| {
+        panic!("it must not wait again")
+    }));
+    starting.join().unwrap().unwrap_err();
+}
+
+#[test]
+fn a_quit_that_gave_up_on_a_recording_being_put_together_lets_the_next_one_through() {
+    // A long mix keeps the recording in hand for longer than a quit waits.
+    let (rig, release) = rig_that_holds_the_stop();
+    rig.recorder.start(audio(true, false)).unwrap();
+    rig.record_a_moment();
+    let (told, heard) = mpsc::channel();
+
+    assert!(before_exit(
+        &rig.recorder,
+        Duration::from_millis(100),
+        Some(7),
+        move |code| {
+            let _ = told.send(code);
+        }
+    ));
+    assert_eq!(heard.recv_timeout(PATIENCE).unwrap(), 7);
+
+    assert_eq!(rig.phase(), Phase::Finishing, "it is still in hand");
+    assert!(!before_exit(&rig.recorder, QUIT_WAIT, Some(7), |_| {
+        panic!("it must not wait again")
+    }));
+    // Quitting did not end the recording's own work: what is being put together is finished, if the app is still there to.
+    release.send(()).unwrap();
+    rig.wait_for_idle();
 }
 
 // ---- the picker
@@ -1108,6 +1171,96 @@ fn an_interrupted_recording_with_nothing_in_it_is_removed_at_start_up() {
 
     assert!(!folder.exists(), "an empty recording is not a meeting");
     assert!(rig.backend.calls().is_empty());
+}
+
+#[test]
+fn a_recording_that_is_going_on_is_not_finished_by_the_recovery_of_the_start_up() {
+    // The recovery runs on a thread of its own, as long as the biggest mix takes, and a recording may be started meanwhile (a
+    // click, the shortcut, `--record` at launch): its marker is in a folder of the library like the one of a recording that was cut off.
+    let rig = Rig::new();
+    rig.recorder.start(audio(true, false)).unwrap();
+    let id = rig.meeting_id();
+    let folder = rig.library.join(&id);
+    assert!(folder.join(MARKER).is_file());
+    rig.record_a_moment();
+
+    assert_eq!(recover_library(&rig.meetings, None), 0);
+
+    // It goes on as it was: its marker and its stem are there, and it is put together by its own stop.
+    assert_eq!(rig.phase(), Phase::Recording);
+    assert!(folder.join(MARKER).is_file());
+    assert!(folder.join("mic.wav").is_file());
+    assert!(rig.backend.calls().is_empty(), "no job was started on it");
+    rig.recorder.stop().unwrap();
+    let meta = rig.meta(&id);
+    assert!(meta.duration.is_some_and(|seconds| seconds > 0.0));
+    assert!(Path::new(&meta.media).is_file());
+    wait_until("the job to start", || !rig.backend.calls().is_empty());
+}
+
+#[test]
+fn the_recovery_does_not_hold_the_place_of_a_recording_it_has_finished() {
+    // The job of the recovered recording needs the place that the recovery held while it worked.
+    let rig = Rig::new();
+    let folder = cut_off_recording(&rig.library, "2026-11-10 10-00-00");
+
+    assert_eq!(recover_library(&rig.meetings, None), 1);
+
+    assert!(rig
+        .meetings
+        .registry
+        .status("2026-11-10 10-00-00")
+        .is_some());
+    assert!(folder.join(files::META).is_file());
+    wait_until("the job to start", || !rig.backend.calls().is_empty());
+}
+
+/// A stem of a second of tone in `folder`.
+fn write_stem(folder: &Path, name: &str) {
+    let mut stem = StemWriter::create(&folder.join(name), 48_000).unwrap();
+    let tone = dictate_services::record::fakes::sine(440.0, 48_000, 0, 48_000);
+    stem.push(Duration::ZERO, &tone).unwrap();
+    stem.finish().unwrap();
+}
+
+#[test]
+fn a_stem_that_cannot_be_read_costs_nothing_that_was_recorded() {
+    // What cannot be read is `InvalidData` too, like a folder with nothing in it, but the files are all that is left of the
+    // recording: the next start tries again, and no file is removed for this.
+    let rig = Rig::new();
+    let folder = cut_off_recording(&rig.library, "2026-11-10 10-00-00");
+    write_stem(&folder, "system.wav");
+    fs::write(folder.join("mic.wav"), b"this is not a stem").unwrap();
+
+    assert_eq!(recover_library(&rig.meetings, None), 0);
+
+    assert!(folder.is_dir(), "the folder is kept");
+    assert!(
+        folder.join(MARKER).is_file(),
+        "and the marker, for the next try"
+    );
+    assert!(
+        folder.join("system.wav").is_file(),
+        "and the stem that is fine"
+    );
+    assert!(folder.join("mic.wav").is_file());
+    assert!(folder.join(files::META).is_file());
+    assert!(rig.backend.calls().is_empty(), "no job without a recording");
+}
+
+#[test]
+fn only_a_folder_that_lost_its_marker_has_nothing_recorded() {
+    let dir = tempfile::tempdir().unwrap();
+    let invalid = || io::Error::new(io::ErrorKind::InvalidData, "nothing was recorded");
+    let other = || io::Error::other("the disk is full");
+
+    // The marker is removed by the one case of "nothing was recorded": any other error leaves it for another try.
+    fs::write(dir.path().join(MARKER), b"{}").unwrap();
+    assert!(!nothing_was_recorded(&invalid(), dir.path()));
+    assert!(!nothing_was_recorded(&other(), dir.path()));
+    fs::remove_file(dir.path().join(MARKER)).unwrap();
+    assert!(nothing_was_recorded(&invalid(), dir.path()));
+    assert!(!nothing_was_recorded(&other(), dir.path()));
 }
 
 // ---- the restore token of the portal
