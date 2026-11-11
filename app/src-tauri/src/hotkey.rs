@@ -1,6 +1,8 @@
-//! The global shortcut that starts and stops dictation, and `dictate --toggle`, which does the same from a script.
+//! The global shortcuts, and `dictate --toggle` and `dictate --record`, which do the same from a script.
 //!
-//! Every way of hearing the key ends as [`HotkeyEvent`]s on one channel, which the dictation controller reads.
+//! The shortcut that starts and stops dictation can be changed in Settings. Every way of hearing its key ends as [`HotkeyEvent`]s
+//! on one channel, which the dictation controller reads. The shortcut of the recording (Ctrl+Alt+R, as in the Swift app) is fixed:
+//! it has a channel of its own, and each press of it starts or stops a recording.
 
 use std::io;
 use std::str::FromStr;
@@ -14,7 +16,7 @@ use serde::Serialize;
 use tauri::Emitter;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
 use crate::state::lock;
 
@@ -152,6 +154,8 @@ pub struct Hotkeys {
     registry: Option<Arc<dyn Registry>>,
     /// Where the keys of the shortcut go through: Settings pauses it, the controller can reset it.
     gate: Arc<Mutex<Gate>>,
+    /// Where the keys of the shortcut of the recording go through: Settings pauses it too.
+    record_gate: Option<Arc<Mutex<Gate>>>,
     state: Arc<Mutex<State>>,
 }
 
@@ -170,8 +174,15 @@ impl Hotkeys {
         Hotkeys {
             registry,
             gate,
+            record_gate: None,
             state: Arc::new(Mutex::new(State { status, registered })),
         }
+    }
+
+    /// The gate of the shortcut of the recording, which Settings pauses with the other one.
+    pub fn with_record_gate(mut self, gate: Arc<Mutex<Gate>>) -> Hotkeys {
+        self.record_gate = Some(gate);
+        self
     }
 
     pub fn status(&self) -> HotkeyStatus {
@@ -185,9 +196,14 @@ impl Hotkeys {
     }
 
     /// Settings is recording a new shortcut: while it is, the keys are not sent on, so that a press of the old
-    /// shortcut doesn't start a dictation. It ends by itself after a while, in case nobody says it is over.
+    /// shortcut doesn't start a dictation, and one of Ctrl+Alt+R no recording of the screen. It ends by itself after a while, in
+    /// case nobody says it is over.
     pub fn set_recording(&self, active: bool) {
-        lock(&self.gate).set_recording(active, Instant::now());
+        let now = Instant::now();
+        lock(&self.gate).set_recording(active, now);
+        if let Some(gate) = &self.record_gate {
+            lock(gate).set_recording(active, now);
+        }
     }
 
     /// Changes the status as the desktop's portal tells things. The new status.
@@ -202,6 +218,10 @@ impl Hotkeys {
     pub fn change(&self, store: &SettingsStore, accel: &str) -> Result<(), ChangeError> {
         let accel = accel.trim();
         let shortcut = parse_accelerator(accel)?;
+        // The key of the recording is not for dictation: the desktop would give it to one of the two only.
+        if parse_accelerator(RECORD_ACCEL).is_ok_and(|reserved| reserved == shortcut) {
+            return Err(ChangeError::Taken);
+        }
         let save = || {
             store
                 .update(|settings| settings.hotkey = accel.to_string())
@@ -271,6 +291,71 @@ fn is_function_key(shortcut: &Shortcut) -> bool {
 /// Whether the arguments of a launch ask for `--toggle`.
 pub fn wants_toggle<S: AsRef<str>>(args: &[S]) -> bool {
     args.iter().any(|arg| arg.as_ref() == "--toggle")
+}
+
+/// Whether the arguments of a launch ask for `--record`: the same as pressing the shortcut of the recording once.
+pub fn wants_record<S: AsRef<str>>(args: &[S]) -> bool {
+    args.iter().any(|arg| arg.as_ref() == "--record")
+}
+
+/// The shortcut of the recording. It is not changed in Settings, as in the Swift app (which shows it there, read only).
+pub const RECORD_ACCEL: &str = "Ctrl+Alt+R";
+
+/// The shortcut of the recording as the person reads it: symbols on the Mac, names elsewhere.
+pub fn record_label() -> String {
+    label_of(RECORD_ACCEL)
+}
+
+/// The shortcuts the app asks the GlobalShortcuts portal for: each one has an id, which the compositor keeps what the user chose
+/// under, and the words its dialog shows.
+#[cfg(any(test, target_os = "linux"))]
+struct PortalShortcut {
+    id: &'static str,
+    description: &'static str,
+    /// What the app wishes the trigger to be, as the specification writes it; the user may choose another in the dialog.
+    preferred_trigger: Option<String>,
+}
+
+/// Which of the two shortcuts the portal speaks of.
+#[cfg(any(test, target_os = "linux"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PortalKey {
+    Dictate,
+    Record,
+}
+
+#[cfg(any(test, target_os = "linux"))]
+const PORTAL_DICTATE: &str = "dictate";
+#[cfg(any(test, target_os = "linux"))]
+const PORTAL_RECORD: &str = "record";
+
+/// The shortcut of an id the portal names, `None` for one that is not ours.
+#[cfg(any(test, target_os = "linux"))]
+fn portal_key(id: &str) -> Option<PortalKey> {
+    match id {
+        PORTAL_DICTATE => Some(PortalKey::Dictate),
+        PORTAL_RECORD => Some(PortalKey::Record),
+        _ => None,
+    }
+}
+
+/// The two shortcuts to bind: dictation, with `dictate_trigger` as its wish, and the recording.
+#[cfg(any(test, target_os = "linux"))]
+fn portal_shortcuts(dictate_trigger: Option<String>) -> [PortalShortcut; 2] {
+    [
+        PortalShortcut {
+            id: PORTAL_DICTATE,
+            description: "Hold to dictate",
+            preferred_trigger: dictate_trigger,
+        },
+        PortalShortcut {
+            id: PORTAL_RECORD,
+            description: "Start or stop a recording",
+            preferred_trigger: parse_accelerator(RECORD_ACCEL)
+                .ok()
+                .and_then(|shortcut| portal_trigger(&shortcut)),
+        },
+    ]
 }
 
 /// The shortcut as the portal is asked for it, in the words of the freedesktop shortcuts specification: modifiers
@@ -500,23 +585,44 @@ impl Registry for PluginRegistry {
 /// shortcut works, and the app manages the [`Hotkeys`] that the commands `set_hotkey` and `hotkey_status` use. A
 /// shortcut that can't be had is not an error: the app goes on without it and Settings says why.
 pub fn start(app: &AppHandle, accel: &str, tx: UnboundedSender<HotkeyEvent>) -> HotkeyStatus {
+    // The shortcut of the recording has a channel of its own, which each press of the key goes through to the recorder.
+    let (record_tx, record_rx) = unbounded_channel();
     #[cfg(target_os = "linux")]
     let hotkeys = if wayland_session() {
-        start_portal(app, accel, tx)
+        start_portal(app, accel, tx, record_tx)
     } else {
-        start_global(app, accel, tx)
+        start_global(app, accel, tx, record_tx)
     };
     #[cfg(not(target_os = "linux"))]
-    let hotkeys = start_global(app, accel, tx);
+    let hotkeys = start_global(app, accel, tx, record_tx);
+    listen_for_record(app.clone(), record_rx);
 
     let status = hotkeys.status();
     app.manage(hotkeys);
     status
 }
 
+/// What the shortcut of the recording does: each press starts a recording, or stops the one that goes on. Nothing is held, so the
+/// releases are not heard.
+fn listen_for_record(app: AppHandle, mut keys: UnboundedReceiver<HotkeyEvent>) {
+    tauri::async_runtime::spawn(async move {
+        while let Some(event) = keys.recv().await {
+            if event == HotkeyEvent::Pressed {
+                crate::recording::toggle(&app);
+            }
+        }
+    });
+}
+
 /// The shortcut is grabbed through the plugin (macOS, Windows and X11).
-fn start_global(app: &AppHandle, accel: &str, tx: UnboundedSender<HotkeyEvent>) -> Hotkeys {
+fn start_global(
+    app: &AppHandle,
+    accel: &str,
+    tx: UnboundedSender<HotkeyEvent>,
+    record_tx: UnboundedSender<HotkeyEvent>,
+) -> Hotkeys {
     let gate = Gate::shared(release_debounce(), tx);
+    let record_gate = Gate::shared(release_debounce(), record_tx);
     let registry = Arc::new(PluginRegistry {
         app: app.clone(),
         gate: Arc::clone(&gate),
@@ -539,21 +645,45 @@ fn start_global(app: &AppHandle, accel: &str, tx: UnboundedSender<HotkeyEvent>) 
             }
         },
     };
-    Hotkeys::new(Some(registry), gate, status, registered)
+    // After the other one: a person who chose Ctrl+Alt+R for dictation (before the recording had it) keeps it.
+    grab_record_shortcut(app, &record_gate);
+    Hotkeys::new(Some(registry), gate, status, registered).with_record_gate(record_gate)
+}
+
+/// Grabs the shortcut of the recording. It is not Settings' to change, so a key that is taken by another app is no state to show
+/// there: the app goes on without it, as the Swift app did.
+fn grab_record_shortcut(app: &AppHandle, gate: &Arc<Mutex<Gate>>) {
+    let registry = PluginRegistry {
+        app: app.clone(),
+        gate: Arc::clone(gate),
+    };
+    let result = parse_accelerator(RECORD_ACCEL)
+        .map_err(|_| "it is not a shortcut".to_owned())
+        .and_then(|shortcut| registry.register(shortcut));
+    if let Err(e) = result {
+        log::warn!("Could not register the shortcut {RECORD_ACCEL} of the recording: {e}");
+    }
 }
 
 /// The shortcut is the desktop's (Wayland): the app asks the portal to bind it and hears it from there. The portal can
 /// take as long as the user takes to confirm, so the status starts as the shortcut that was asked for and changes
 /// when the desktop answers.
 #[cfg(target_os = "linux")]
-fn start_portal(app: &AppHandle, accel: &str, tx: UnboundedSender<HotkeyEvent>) -> Hotkeys {
+fn start_portal(
+    app: &AppHandle,
+    accel: &str,
+    tx: UnboundedSender<HotkeyEvent>,
+    record_tx: UnboundedSender<HotkeyEvent>,
+) -> Hotkeys {
     let gate = Gate::shared(Duration::ZERO, tx);
+    let record_gate = Gate::shared(Duration::ZERO, record_tx);
     let status = HotkeyStatus {
         label: label_of(accel),
         backend: Backend::Portal,
         error: None,
     };
-    let hotkeys = Hotkeys::new(None, Arc::clone(&gate), status, None);
+    let hotkeys = Hotkeys::new(None, Arc::clone(&gate), status, None)
+        .with_record_gate(Arc::clone(&record_gate));
     let preferred = parse_accelerator(accel)
         .ok()
         .and_then(|shortcut| portal_trigger(&shortcut));
@@ -561,8 +691,9 @@ fn start_portal(app: &AppHandle, accel: &str, tx: UnboundedSender<HotkeyEvent>) 
         app: app.clone(),
         hotkeys: hotkeys.clone(),
         gate,
+        record_gate,
     };
-    tauri::async_runtime::spawn(portal::run(events, preferred));
+    tauri::async_runtime::spawn(portal::run(events, portal_shortcuts(preferred)));
     hotkeys
 }
 
@@ -572,6 +703,7 @@ struct PortalEvents {
     app: AppHandle,
     hotkeys: Hotkeys,
     gate: Arc<Mutex<Gate>>,
+    record_gate: Arc<Mutex<Gate>>,
 }
 
 #[cfg(target_os = "linux")]
@@ -616,8 +748,12 @@ impl portal::Events for PortalEvents {
         });
     }
 
-    fn key(&self, down: bool) {
-        key_event(&self.gate, down, Instant::now());
+    fn key(&self, which: PortalKey, down: bool) {
+        let gate = match which {
+            PortalKey::Dictate => &self.gate,
+            PortalKey::Record => &self.record_gate,
+        };
+        key_event(gate, down, Instant::now());
     }
 }
 
@@ -635,6 +771,7 @@ mod tests {
     use super::*;
     use crate::test_support::FakeRegistry;
     use dictate_services::dictation::lang::display_hotkey;
+    use dictate_services::settings::Settings;
     use std::str::FromStr;
     use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 
@@ -1034,7 +1171,60 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_portal_registers_two_shortcuts() {
+        let shortcuts = portal_shortcuts(Some("CTRL+ALT+space".to_owned()));
+
+        // Dictation first, then the recording: each under its own id, so that the compositor keeps what the user chose for each.
+        let ids: Vec<&str> = shortcuts.iter().map(|shortcut| shortcut.id).collect();
+        assert_eq!(ids, ["dictate", "record"]);
+        assert_eq!(
+            shortcuts[0].preferred_trigger.as_deref(),
+            Some("CTRL+ALT+space")
+        );
+        assert_eq!(
+            shortcuts[1].preferred_trigger.as_deref(),
+            Some("CTRL+ALT+r")
+        );
+        // What the compositor's dialog says each is for: not the same words, and none empty.
+        assert!(shortcuts
+            .iter()
+            .all(|shortcut| !shortcut.description.is_empty()));
+        assert_ne!(shortcuts[0].description, shortcuts[1].description);
+
+        // A dictation shortcut that Dictate has no name for is left to the desktop; the recording's wish does not depend on it.
+        let without = portal_shortcuts(None);
+        assert_eq!(without[0].preferred_trigger, None);
+        assert_eq!(without[1].preferred_trigger.as_deref(), Some("CTRL+ALT+r"));
+    }
+
+    #[test]
+    fn what_the_portal_says_is_told_by_the_id_of_the_shortcut() {
+        assert_eq!(portal_key("dictate"), Some(PortalKey::Dictate));
+        assert_eq!(portal_key("record"), Some(PortalKey::Record));
+        // A shortcut of an older version, or of another app's session, is nothing of ours.
+        assert_eq!(portal_key("hold"), None);
+        assert_eq!(portal_key(""), None);
+    }
+
     // ---- the arguments of a launch
+
+    #[test]
+    fn wants_record_reads_the_flag() {
+        assert!(wants_record(&["dictate", "--record"]));
+        assert!(wants_record(&["/usr/bin/dictate", "--other", "--record"]));
+        assert!(!wants_record(&["dictate"]));
+        assert!(!wants_record(&[
+            "dictate",
+            "--recorded",
+            "record",
+            "-record"
+        ]));
+        assert!(!wants_record::<&str>(&[]));
+        // The two flags are separate: one does not ask for the other.
+        assert!(!wants_record(&["dictate", "--toggle"]));
+        assert!(!wants_toggle(&["dictate", "--record"]));
+    }
 
     #[test]
     fn toggle_is_found_among_the_arguments_of_a_launch() {
@@ -1118,6 +1308,69 @@ mod tests {
         c.hotkeys.set_recording(false);
         key_event(&gate, true, Instant::now());
         assert_eq!(c.events.try_recv(), Ok(HotkeyEvent::Pressed));
+    }
+
+    #[test]
+    fn settings_recording_a_shortcut_keeps_the_recording_shortcut_from_recording_too() {
+        let c = changing();
+        let (tx, mut heard) = unbounded_channel();
+        let record_gate = Gate::shared(Duration::ZERO, tx);
+        let hotkeys = c.hotkeys.clone().with_record_gate(Arc::clone(&record_gate));
+
+        // Pressing Ctrl+Alt+R to choose it must not start a recording on the screen.
+        hotkeys.set_recording(true);
+        key_event(&record_gate, true, Instant::now());
+        key_event(&record_gate, false, Instant::now());
+        assert!(heard.try_recv().is_err());
+
+        hotkeys.set_recording(false);
+        key_event(&record_gate, true, Instant::now());
+        assert_eq!(heard.try_recv(), Ok(HotkeyEvent::Pressed));
+    }
+
+    #[test]
+    fn the_recording_shortcut_is_ctrl_alt_r_as_the_person_reads_it() {
+        assert!(parse_accelerator(RECORD_ACCEL).is_ok());
+        assert_eq!(
+            record_label(),
+            if cfg!(target_os = "macos") {
+                "\u{2303}\u{2325}R"
+            } else {
+                "Ctrl+Alt+R"
+            }
+        );
+    }
+
+    #[test]
+    fn the_shortcut_of_the_recording_cannot_be_taken_for_dictation() {
+        let c = changing();
+
+        for accel in ["Ctrl+Alt+R", "ctrl+alt+r", "Alt+Ctrl+R"] {
+            let err = c.hotkeys.change(&c.store, accel).unwrap_err();
+            assert!(matches!(err, ChangeError::Taken), "{accel}: {err:?}");
+        }
+
+        assert_eq!(c.registry.registered(), vec![shortcut("Ctrl+Alt+Space")]);
+        assert_eq!(c.store.get().hotkey, "Ctrl+Alt+Space", "nothing was saved");
+        assert_eq!(c.registry.calls(), 1, "only the registration of the start");
+    }
+
+    #[test]
+    fn where_the_desktop_owns_the_shortcuts_the_recording_one_is_refused_for_dictation_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, _) = SettingsStore::open(dir.path().join("settings.json"));
+        let status = HotkeyStatus {
+            label: "Ctrl+Alt+Space".into(),
+            backend: Backend::Portal,
+            error: None,
+        };
+        let hotkeys = Hotkeys::new(None, quiet_gate(), status, None);
+
+        assert!(matches!(
+            hotkeys.change(&store, "Ctrl+Alt+R"),
+            Err(ChangeError::Taken)
+        ));
+        assert_eq!(store.get().hotkey, Settings::default().hotkey);
     }
 
     #[test]

@@ -81,6 +81,8 @@ impl<R: Runtime> Surface for AppSurface<R> {
                 log::warn!("Could not tell the {label} window how the recording goes: {e}");
             }
         }
+        // The tray says how to stop the recording, and on macOS counts it. This only notes it: nothing here waits.
+        tray::recording_changed(&self.0, view);
     }
 
     fn show_hud(&self) {
@@ -89,6 +91,25 @@ impl<R: Runtime> Surface for AppSurface<R> {
 
     fn hide_hud(&self) {
         hud::hide(&self.0);
+    }
+}
+
+/// Why the shortcut or `--record` did not do what it was asked.
+#[derive(Debug, PartialEq)]
+pub enum ToggleError {
+    /// A window is what was recorded last, and which window is not kept (it may be gone): only the picker can say. Nothing was begun.
+    NeedsPicker,
+    /// The recording could not begin: the picker shows why.
+    Start(ErrorView),
+    /// The recording could not be put together: a banner says so.
+    Stop(ErrorView),
+}
+
+/// What the shortcut and `--record` do, for the recorder of the app (there is none until the app has started it).
+pub fn toggle<R: Runtime>(app: &AppHandle<R>) {
+    match app.try_state::<Recorder>() {
+        Some(recorder) => recorder.toggle(app),
+        None => log::info!("A recording was asked for before the recorder is ready"),
     }
 }
 
@@ -401,6 +422,10 @@ impl Recorder {
             }
         };
 
+        // The bar goes up while the slot still says that the sources are being started: nobody can take the recording to end it until
+        // it is running, so the bar is shown before whoever ends the recording hides it. After the slot is running a recording that
+        // ended at once would be put together, and the bar hidden, before this showed it, and it would stay over an idle recorder.
+        deps.surface.show_hud();
         *lock(&inner.slot) = Slot::Running(Box::new(Running {
             session,
             id,
@@ -420,7 +445,6 @@ impl Recorder {
             false,
         );
         self.watch_for_an_end(ends);
-        deps.surface.show_hud();
         deps.meetings.library_changed();
         Ok(())
     }
@@ -562,47 +586,81 @@ impl Recorder {
         result
     }
 
-    /// What the shortcut, the tray and `--record` do: a recording that goes on is stopped, and with none a new one starts with the
-    /// choices that were made last. A recording that is being started or put together is left to finish.
-    pub fn toggle_now(&self) -> Result<(), ErrorView> {
+    /// What the shortcut and `--record` do: a recording that goes on is stopped, and with none a new one starts with the choices that
+    /// were made last. A recording that is being started or put together is left to finish. A window is not among the choices that
+    /// are kept (it may be gone): with a window as the last choice no recording is begun, which is `NeedsPicker`.
+    pub fn toggle_now(&self) -> Result<(), ToggleError> {
         match self.view().phase {
-            Phase::Idle => self.start(views::options_from(&self.inner.deps.settings.get())),
-            Phase::Recording | Phase::Paused => self.stop(),
+            Phase::Idle => {
+                let options = views::options_from(&self.inner.deps.settings.get());
+                if matches!(&options.mode, Mode::Window { id } if id.is_empty()) {
+                    return Err(ToggleError::NeedsPicker);
+                }
+                self.start(options).map_err(ToggleError::Start)
+            }
+            Phase::Recording | Phase::Paused => self.stop().map_err(ToggleError::Stop),
             Phase::Starting | Phase::Finishing => Ok(()),
         }
     }
 
-    /// `toggle_now` off the thread of the shortcut or the menu that asked. What goes wrong is shown as a banner, since there is
-    /// no window of the picker to show it in.
-    #[expect(dead_code, reason = "the tray, the shortcut and `--record` call it")]
-    pub fn toggle(&self, _app: &AppHandle) {
-        let recorder = self.clone();
+    /// `toggle_now` off the thread of the shortcut that asked. What goes wrong is told by `toggle_failed`.
+    pub fn toggle<R: Runtime>(&self, app: &AppHandle<R>) {
+        let (recorder, app) = (self.clone(), app.clone());
         tauri::async_runtime::spawn_blocking(move || {
             if let Err(error) = recorder.toggle_now() {
-                log::warn!(
-                    "The recording shortcut could not do its work: {}",
-                    error.key
-                );
-                recorder.tell(&error);
+                recorder.toggle_failed(&app, error);
             }
         });
     }
 
-    /// Shows `error` as a banner.
+    /// Tells what went wrong with a toggle. A recording that could not begin has the picker opened for it, with the reason shown
+    /// there: what the shortcut could not choose, the person can. A recording that could not be put together is a banner, since
+    /// there is no picker to choose in.
+    fn toggle_failed<R: Runtime>(&self, app: &AppHandle<R>, error: ToggleError) {
+        match error {
+            ToggleError::NeedsPicker => crate::meetings::window::show_recorder(app, None),
+            ToggleError::Start(error) => {
+                log::warn!("The recording shortcut could not start: {}", error.key);
+                crate::meetings::window::show_recorder(app, Some(&error));
+            }
+            ToggleError::Stop(error) => {
+                log::warn!("The recording shortcut could not stop: {}", error.key);
+                self.tell(&error);
+            }
+        }
+    }
+
+    /// What the item of the tray does: with no recording going on it opens the meetings window with the picker, and with one it
+    /// stops it and opens the window, as the Swift app does, so that the meeting it became is there. A recording that could not be
+    /// put together is a banner. This may wait for the sound to be mixed: call it on a blocking thread.
+    pub fn tray_item<R: Runtime>(&self, app: &AppHandle<R>) {
+        match self.view().phase {
+            Phase::Recording | Phase::Paused => match self.stop() {
+                // A recording that ended by itself at that moment has told so already (and its meeting is there to see).
+                Ok(()) => crate::meetings::window::show(app),
+                Err(error) if error.key == crate::meetings::views::key::BUSY => {
+                    crate::meetings::window::show(app);
+                }
+                Err(error) => {
+                    log::warn!("The tray could not stop the recording: {}", error.key);
+                    self.tell(&error);
+                }
+            },
+            // Starting or being put together, a recording is not to be stopped and none can begin: the picker says as much.
+            Phase::Idle | Phase::Starting | Phase::Finishing => {
+                crate::meetings::window::show_recorder(app, None);
+            }
+        }
+    }
+
+    /// Shows `error` as a banner, with what is behind it.
     fn tell(&self, error: &ErrorView) {
-        // `{command}` of a text is what the person can run; `open_settings` is for the window.
-        let detail = error
-            .command
-            .clone()
-            .filter(|command| command != "open_settings")
-            .or_else(|| error.detail.clone())
-            .unwrap_or_default();
         self.inner.deps.notifier.notify(Notice {
             id: String::new(),
             title: String::new(),
             kind: NoticeKind::Recording {
                 key: error.key.clone(),
-                detail,
+                detail: error.detail.clone().unwrap_or_default(),
             },
         });
     }

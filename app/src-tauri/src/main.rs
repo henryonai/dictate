@@ -49,14 +49,20 @@ fn main() {
     let toggle_tx = hotkey_tx.clone();
 
     let builder = tauri::Builder::default()
-        // A second launch ends here: `dictate --toggle` toggles dictation, anything else shows the window of the
-        // first. This plugin must come first.
+        // A second launch ends here: `dictate --toggle` toggles dictation, `dictate --record` starts or stops a recording, anything
+        // else shows the window of the first. This plugin must come first.
         .plugin(tauri_plugin_single_instance::init(
             move |app, args, _cwd| {
-                if hotkey::wants_toggle(&args) {
+                let (toggles, records) = (hotkey::wants_toggle(&args), hotkey::wants_record(&args));
+                if toggles {
                     log::info!("Another launch asked to toggle dictation");
                     let _ = toggle_tx.send(HotkeyEvent::Toggle);
-                } else {
+                }
+                if records {
+                    log::info!("Another launch asked to start or stop a recording");
+                    recording::toggle(app);
+                }
+                if !toggles && !records {
                     log::info!("Another launch was started: showing Settings");
                     tray::show_settings(app);
                 }
@@ -259,9 +265,15 @@ fn setup(
     // What the shortcut, the tray and `dictate --toggle` say goes to the controller as soon as there is one; until then it
     // waits in the channel, `--toggle` of this very launch included.
     dictation::system::start(app.handle().clone(), startup, dictation, hotkey_rx);
-    if hotkey::wants_toggle(&std::env::args().collect::<Vec<_>>()) {
+    let args = std::env::args().collect::<Vec<_>>();
+    if hotkey::wants_toggle(&args) {
         log::info!("Started with --toggle: toggling dictation");
         let _ = hotkey_tx.send(HotkeyEvent::Toggle);
+    }
+    // The recorder is there since the meetings started.
+    if hotkey::wants_record(&args) {
+        log::info!("Started with --record: starting a recording");
+        recording::toggle(app.handle());
     }
 
     if first_launch {
@@ -361,6 +373,16 @@ mod tests {
         "recording_state",
     ];
 
+    /// The commands of the recording bar: what its buttons ask, and the state it draws. Starting a recording and what the picker
+    /// offers are the meetings window's.
+    const RECORDER_COMMANDS: [&str; 5] = [
+        "recording_pause",
+        "recording_resume",
+        "recording_stop",
+        "recording_discard",
+        "recording_state",
+    ];
+
     /// The one command that Settings and the meetings window both ask.
     const SHARED_COMMAND: &str = "media_tools";
 
@@ -396,7 +418,9 @@ mod tests {
             })
             .build(super::context())
             .expect("the app could not be built with its permissions");
-        for label in ["settings", "bubble", "card", "meetings", "stranger"] {
+        for label in [
+            "settings", "bubble", "card", "meetings", "recorder", "stranger",
+        ] {
             WebviewWindowBuilder::new(&app, label, WebviewUrl::default())
                 .build()
                 .expect("a window");
@@ -522,7 +546,7 @@ mod tests {
     }
 
     #[test]
-    fn the_recording_commands_are_the_meetings_windows_and_nobody_elses() {
+    fn the_recording_commands_are_the_meetings_windows_and_the_bar_has_only_five_of_them() {
         let app = app();
         for command in RECORDING_COMMANDS {
             assert!(MEETINGS_COMMANDS.contains(&command), "{command}");
@@ -535,7 +559,69 @@ mod tests {
                     "{window} {command}: {refusal}"
                 );
             }
+            // The bar can't start a recording or ask what there is to record: that is the picker's.
+            if !RECORDER_COMMANDS.contains(&command) {
+                let refusal = asked_by(&app, "recorder", command).expect_err(command);
+                assert!(
+                    refusal.contains("not allowed"),
+                    "recorder {command}: {refusal}"
+                );
+            }
         }
+    }
+
+    #[test]
+    fn the_recorder_window_may_only_pause_resume_stop_discard_and_read_state() {
+        let app = app();
+        for command in RECORDER_COMMANDS {
+            assert!(RECORDING_COMMANDS.contains(&command), "{command}");
+            assert_eq!(asked_by(&app, "recorder", command), Ok(()), "{command}");
+        }
+        // Not starting a recording, nor what the picker lists, nor anything of the library, Settings or the dictation windows.
+        let others = SETTINGS_COMMANDS
+            .into_iter()
+            .chain(PANEL_COMMANDS)
+            .chain(MEETINGS_COMMANDS)
+            .filter(|command| !RECORDER_COMMANDS.contains(command));
+        for command in others {
+            let refusal = asked_by(&app, "recorder", command).expect_err(command);
+            assert!(refusal.contains("not allowed"), "{command}: {refusal}");
+        }
+        // And none of the plugins: the dialogs, the notifications and the opener are opened from Rust.
+        for command in [
+            "plugin:dialog|open",
+            "plugin:dialog|save",
+            "plugin:notification|notify",
+            "plugin:opener|open_path",
+            "plugin:opener|open_url",
+            "plugin:autostart|enable",
+        ] {
+            let refusal = asked_by(&app, "recorder", command).expect_err(command);
+            assert!(refusal.contains("not allowed"), "{command}: {refusal}");
+        }
+        // Nobody else gets what the bar has by being named in its capability.
+        for window in ["settings", "bubble", "card", "stranger"] {
+            for command in ["recording_pause", "recording_discard"] {
+                assert!(
+                    asked_by(&app, window, command).is_err(),
+                    "{window} {command}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_capability_of_the_recorder_is_its_five_commands_and_listening_for_events() {
+        let (windows, commands, others) = capability(include_str!("../capabilities/recorder.json"));
+
+        assert_eq!(windows, ["recorder"]);
+        let wanted: BTreeSet<String> = RECORDER_COMMANDS.into_iter().map(str::to_owned).collect();
+        assert_eq!(commands, wanted);
+        // The state of the recording (`recording-state`); no more of the core.
+        assert_eq!(
+            others,
+            ["core:event:allow-listen", "core:event:allow-unlisten"]
+        );
     }
 
     /// The commands a capability file gives (`allow-get-settings` is `get_settings`), and what else it names.

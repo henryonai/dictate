@@ -20,6 +20,8 @@ use dictate_services::record::{
     Capturer, EndReason, Mode, Note, RecordOptions, RunningSource, SourceEvent, StartError, Track,
 };
 use dictate_services::settings::{SettingsStore, UiLanguage};
+use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
+use tauri::{Listener, Manager};
 
 use super::views::{Phase, RecordingView, ScreenAvailability};
 use super::*;
@@ -758,6 +760,288 @@ fn the_shortcut_pressed_while_a_recording_is_put_together_does_nothing() {
     assert_eq!(rig.folders().len(), 1);
 }
 
+/// A mock app with the meetings window made (a page that is there to hear the picker asked for), and what that window hears of it.
+fn app_with_the_meetings_window() -> (tauri::App<MockRuntime>, Arc<Mutex<Vec<serde_json::Value>>>) {
+    let app = mock_builder()
+        .build(mock_context(noop_assets()))
+        .expect("a mock app");
+    crate::meetings::window::show(app.handle());
+    let window = app
+        .get_webview_window(crate::meetings::window::LABEL)
+        .expect("the meetings window");
+    let heard = Arc::new(Mutex::new(Vec::new()));
+    let sink = heard.clone();
+    window.listen(crate::meetings::window::OPEN_RECORDER_EVENT, move |event| {
+        lock(&sink).push(serde_json::from_str(event.payload()).unwrap());
+    });
+    (app, heard)
+}
+
+#[test]
+fn the_shortcut_does_not_start_a_recording_of_a_window_that_nobody_chose() {
+    // A window is not kept from one recording to the next (it may be gone): the shortcut has none to start with.
+    let rig = Rig::new();
+    rig.settings
+        .update(|s| s.record_mode = "window".into())
+        .unwrap();
+
+    let toggled = rig.recorder.toggle_now();
+
+    assert_eq!(toggled, Err(ToggleError::NeedsPicker));
+    assert_eq!(rig.phase(), Phase::Idle);
+    assert!(
+        rig.folders().is_empty(),
+        "no folder for a recording that cannot be"
+    );
+    assert!(rig.fake.started().is_empty());
+    assert_eq!(rig.surface.shown.load(Ordering::SeqCst), 0);
+    assert!(!rig.jobs.is_active(&Job::Recording));
+}
+
+#[test]
+fn a_start_from_the_shortcut_that_fails_comes_back_as_a_start_error_for_the_picker() {
+    let rig = Rig::new();
+    rig.set_ffmpeg(None);
+    rig.settings
+        .update(|s| s.record_mode = "screen".into())
+        .unwrap();
+
+    let toggled = rig.recorder.toggle_now();
+
+    match toggled {
+        Err(ToggleError::Start(error)) => assert_eq!(error.key, "recording.error.needs_ffmpeg"),
+        other => panic!("{other:?}"),
+    }
+    assert!(rig.folders().is_empty());
+}
+
+#[test]
+fn a_stop_from_the_shortcut_that_fails_comes_back_as_a_stop_error_for_a_banner() {
+    // The microphone delivers nothing: what is stopped has nothing in it.
+    let rig = Rig::using(FakeCapturer::new());
+    rig.settings
+        .update(|s| {
+            s.record_mode = "audio".into();
+            s.record_mic = true;
+            s.record_system_audio = false;
+        })
+        .unwrap();
+    rig.recorder.toggle_now().unwrap();
+
+    let toggled = rig.recorder.toggle_now();
+
+    match toggled {
+        Err(ToggleError::Stop(error)) => {
+            assert_eq!(error.key, "recording.error.nothing_recorded");
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(rig.phase(), Phase::Idle);
+}
+
+#[test]
+fn a_start_that_fails_from_the_shortcut_opens_the_picker_with_the_error_and_shows_no_banner() {
+    let rig = Rig::new();
+    let (app, heard) = app_with_the_meetings_window();
+    let error = views::start_error(StartError::NeedsFfmpeg);
+
+    rig.recorder
+        .toggle_failed(app.handle(), ToggleError::Start(error.clone()));
+
+    let heard = lock(&heard).clone();
+    assert_eq!(heard.len(), 1, "{heard:?}");
+    assert_eq!(heard[0]["error"]["key"], "recording.error.needs_ffmpeg");
+    assert_eq!(heard[0]["error"]["command"], error.command.unwrap());
+    assert!(rig.notices().is_empty(), "the picker says it, not a banner");
+}
+
+#[test]
+fn a_shortcut_with_nothing_to_start_with_opens_the_picker_with_no_error() {
+    let rig = Rig::new();
+    let (app, heard) = app_with_the_meetings_window();
+
+    rig.recorder
+        .toggle_failed(app.handle(), ToggleError::NeedsPicker);
+
+    assert_eq!(*lock(&heard), [serde_json::json!({ "error": null })]);
+    assert!(rig.notices().is_empty());
+}
+
+#[test]
+fn a_stop_that_fails_from_the_shortcut_is_a_banner_and_does_not_open_the_picker() {
+    let rig = Rig::new();
+    let (app, heard) = app_with_the_meetings_window();
+    let error = views::error(
+        "Other",
+        "recording.error.stop_failed",
+        Some("disk full".into()),
+        None,
+    );
+
+    rig.recorder
+        .toggle_failed(app.handle(), ToggleError::Stop(error));
+
+    assert!(lock(&heard).is_empty());
+    let notices = rig.notices();
+    assert_eq!(notices.len(), 1);
+    assert_eq!(
+        notices[0].kind,
+        NoticeKind::Recording {
+            key: "recording.error.stop_failed".into(),
+            detail: "disk full".into(),
+        }
+    );
+}
+
+#[test]
+fn the_shortcut_of_the_app_starts_and_stops_the_recorder_it_manages() {
+    let rig = Rig::new();
+    rig.settings
+        .update(|s| {
+            s.record_mode = "audio".into();
+            s.record_mic = true;
+            s.record_system_audio = false;
+        })
+        .unwrap();
+    let app = mock_builder()
+        .build(mock_context(noop_assets()))
+        .expect("a mock app");
+    app.manage(rig.recorder.clone());
+
+    toggle(app.handle());
+    wait_until("the recording", || rig.phase() == Phase::Recording);
+    rig.record_a_moment();
+    toggle(app.handle());
+
+    rig.wait_for_idle();
+    wait_until("the job to start", || !rig.backend.calls().is_empty());
+}
+
+#[test]
+fn the_item_of_the_tray_opens_the_picker_when_nothing_is_recorded() {
+    let rig = Rig::new();
+    let (app, heard) = app_with_the_meetings_window();
+
+    rig.recorder.tray_item(app.handle());
+
+    assert_eq!(*lock(&heard), [serde_json::json!({ "error": null })]);
+    assert_eq!(
+        rig.phase(),
+        Phase::Idle,
+        "choosing is the picker's, not the item's"
+    );
+    assert!(rig.folders().is_empty());
+}
+
+#[test]
+fn the_item_of_the_tray_stops_the_recording_that_goes_on_and_opens_the_library() {
+    let rig = Rig::new();
+    rig.recorder.start(audio(true, false)).unwrap();
+    rig.record_a_moment();
+    let app = mock_builder()
+        .build(mock_context(noop_assets()))
+        .expect("a mock app");
+    assert!(app
+        .get_webview_window(crate::meetings::window::LABEL)
+        .is_none());
+
+    rig.recorder.tray_item(app.handle());
+
+    assert_eq!(rig.phase(), Phase::Idle);
+    wait_until("the job to start", || !rig.backend.calls().is_empty());
+    // As the Swift app does, the library opens to show the meeting that the recording became.
+    assert!(app
+        .get_webview_window(crate::meetings::window::LABEL)
+        .is_some());
+    assert!(rig.notices().is_empty());
+}
+
+#[test]
+fn the_item_of_the_tray_tells_by_a_banner_when_the_stop_fails() {
+    // The microphone delivers nothing: what is stopped has nothing in it.
+    let rig = Rig::using(FakeCapturer::new());
+    rig.recorder.start(audio(true, false)).unwrap();
+    let (app, heard) = app_with_the_meetings_window();
+
+    rig.recorder.tray_item(app.handle());
+
+    assert_eq!(rig.phase(), Phase::Idle);
+    assert!(lock(&heard).is_empty(), "no picker for a stop");
+    let notices = rig.notices();
+    assert_eq!(notices.len(), 1);
+    assert_eq!(
+        notices[0].kind,
+        NoticeKind::Recording {
+            key: "recording.error.nothing_recorded".into(),
+            detail: String::new(),
+        }
+    );
+}
+
+// ---- the bar
+
+/// A bar that is slow to come up, as the first one is (its window is made): `show_hud` takes as long as the test lets it. The bar is
+/// left as the last call to it made it.
+struct SlowBar {
+    entered: AtomicBool,
+    release: Mutex<mpsc::Receiver<()>>,
+    visible: AtomicBool,
+}
+
+impl Surface for SlowBar {
+    fn state(&self, _: &RecordingView) {}
+    fn show_hud(&self) {
+        self.entered.store(true, Ordering::SeqCst);
+        // Held until the test lets go (or gives up).
+        let _ = lock(&self.release).recv_timeout(PATIENCE);
+        self.visible.store(true, Ordering::SeqCst);
+    }
+    fn hide_hud(&self) {
+        self.visible.store(false, Ordering::SeqCst);
+    }
+}
+
+#[test]
+fn a_recording_that_ends_as_the_bar_comes_up_does_not_leave_the_bar_over_an_idle_recorder() {
+    let (release, held) = mpsc::channel::<()>();
+    let bar = Arc::new(SlowBar {
+        entered: AtomicBool::new(false),
+        release: Mutex::new(held),
+        visible: AtomicBool::new(false),
+    });
+    let rig = Rig::with(FakeCapturer::new().tone(Track::Mic, 440.0), |deps| {
+        deps.surface = bar.clone();
+    });
+    let recorder = rig.recorder.clone();
+    let starting = std::thread::spawn(move || recorder.start(audio(true, false)));
+    wait_until("the bar to be asked for", || {
+        bar.entered.load(Ordering::SeqCst)
+    });
+
+    // The source ends while the bar is still coming up.
+    rig.fake.send_ended(Track::Mic, EndReason::DisplayGone);
+    wait_until("the end to be told", || rig.phase() == Phase::Finishing);
+    // Whoever puts the recording together does it now, or once the start is over: either way the bar must not be asked to hide
+    // before it was asked to show, which is all the order that matters. (A recording that is put together at once is idle here.)
+    let give_up = Instant::now() + Duration::from_millis(500);
+    while rig.phase() != Phase::Idle && Instant::now() < give_up {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    release.send(()).unwrap();
+    starting.join().unwrap().unwrap();
+    rig.wait_for_idle();
+    // The recorder is idle as soon as it says so; the bar is hidden right after that.
+    let give_up = Instant::now() + Duration::from_secs(1);
+    while bar.visible.load(Ordering::SeqCst) && Instant::now() < give_up {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    assert!(
+        !bar.visible.load(Ordering::SeqCst),
+        "the bar was shown after the recording was over"
+    );
+}
+
 // ---- quitting
 
 #[test]
@@ -1427,37 +1711,6 @@ fn a_bar_that_is_not_made_yet_is_no_error_for_the_state() {
         .handle()
         .emit_to(hud::LABEL, STATE_EVENT, RecordingView::idle())
         .is_ok());
-}
-
-#[test]
-fn a_start_from_the_shortcut_that_fails_is_a_banner_with_what_the_person_can_run() {
-    let rig = Rig::new();
-    rig.set_ffmpeg(None);
-    rig.settings
-        .update(|s| s.record_mode = "screen".into())
-        .unwrap();
-
-    let error = rig.recorder.toggle_now().unwrap_err();
-    rig.recorder.tell(&error);
-
-    let notices = rig.notices();
-    assert_eq!(notices.len(), 1);
-    let command = dictate_services::media::tools::install_command(
-        dictate_services::media::tools::Tool::Ffmpeg,
-    );
-    assert_eq!(
-        notices[0].kind,
-        NoticeKind::Recording {
-            key: "recording.error.needs_ffmpeg".into(),
-            detail: command.into(),
-        }
-    );
-    // A recording that has not begun has no meeting to name.
-    assert_eq!(
-        (notices[0].id.as_str(), notices[0].title.as_str()),
-        ("", "")
-    );
-    assert!(rig.folders().is_empty());
 }
 
 #[test]
