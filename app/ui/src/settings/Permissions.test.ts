@@ -7,7 +7,7 @@ import { setLanguage } from "../lib/i18n";
 import { stubApi } from "../test-helpers";
 import Permissions from "./Permissions.svelte";
 
-const NOT_MAC: PermissionsView = { microphone: "not_needed", accessibility: "not_needed" };
+const NOT_MAC: PermissionsView = { microphone: "not_needed", accessibility: "not_needed", screen: "not_needed" };
 
 beforeEach(() => {
   stubApi();
@@ -19,8 +19,11 @@ afterEach(() => {
   setLanguage("en");
 });
 
-const status = (microphone: PermissionsView["microphone"], accessibility: PermissionsView["accessibility"]) =>
-  vi.mocked(api.permissionsStatus).mockResolvedValue({ microphone, accessibility });
+const status = (
+  microphone: PermissionsView["microphone"],
+  accessibility: PermissionsView["accessibility"],
+  screen: PermissionsView["screen"] = "granted",
+) => vi.mocked(api.permissionsStatus).mockResolvedValue({ microphone, accessibility, screen });
 
 const row = (name: string) => screen.getByRole("listitem", { name });
 
@@ -33,7 +36,7 @@ test("permissions_rows_only_on_macos: the section is there when the system has p
   expect(row("Accessibility")).toBeInTheDocument();
   unmount();
 
-  // Windows and Linux say "not needed" for both: nothing is shown, not even the heading.
+  // Windows and Linux say "not needed" for all of them: nothing is shown, not even the heading.
   vi.mocked(api.permissionsStatus).mockClear();
   vi.mocked(api.permissionsStatus).mockResolvedValue(NOT_MAC);
   render(Permissions);
@@ -173,4 +176,45 @@ test("speaks Vietnamese when the interface does", async () => {
   expect(await screen.findByRole("heading", { name: "Quyền truy cập" })).toBeInTheDocument();
   expect(screen.getAllByRole("button", { name: "Cấp quyền…" })).toHaveLength(2);
   expect(screen.getAllByRole("button", { name: "Mở System Settings" })).toHaveLength(1);
+});
+
+test("the_screen_row_is_shown_on_macos_only: Screen Recording is a row of the section, and there is none where the system asks for nothing", async () => {
+  status("granted", "granted", "granted");
+  const { unmount } = render(Permissions);
+
+  const screenRow = await screen.findByRole("listitem", { name: "Screen Recording" });
+  expect(within(screenRow).getByText("Allowed")).toBeInTheDocument();
+  expect(screenRow).toHaveTextContent("Needed to record the screen and the sound of the system.");
+  expect(within(screenRow).queryByRole("button")).not.toBeInTheDocument();
+  unmount();
+
+  vi.mocked(api.permissionsStatus).mockClear();
+  vi.mocked(api.permissionsStatus).mockResolvedValue(NOT_MAC);
+  render(Permissions);
+  await vi.waitFor(() => expect(api.permissionsStatus).toHaveBeenCalled());
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(screen.queryByRole("listitem", { name: "Screen Recording" })).not.toBeInTheDocument();
+});
+
+test("a Screen Recording that is off has both buttons, which ask the system for the screen's permission", async () => {
+  const user = userEvent.setup();
+  // macOS can't say that it was never asked: until it is on, the screen is "not allowed".
+  status("granted", "granted", "denied");
+  render(Permissions);
+  const screenRow = await screen.findByRole("listitem", { name: "Screen Recording" });
+
+  expect(within(screenRow).getByText("Not allowed")).toBeInTheDocument();
+  await user.click(within(screenRow).getByRole("button", { name: "Grant access…" }));
+  expect(api.requestPermission).toHaveBeenCalledExactlyOnceWith("screen");
+  await user.click(within(screenRow).getByRole("button", { name: "Open System Settings" }));
+  expect(api.openPermissionSettings).toHaveBeenCalledExactlyOnceWith("screen");
+});
+
+test("Screen Recording has words in Vietnamese too", async () => {
+  setLanguage("vi");
+  status("granted", "granted", "denied");
+  render(Permissions);
+
+  const screenRow = await screen.findByRole("listitem", { name: "Screen Recording" });
+  expect(screenRow).toHaveTextContent("Cần để quay màn hình và âm thanh hệ thống.");
 });

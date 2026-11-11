@@ -10,12 +10,16 @@ import type {
   MediaView,
   MeetingDetail,
   MeetingRow,
+  OpenRecorder,
   Readiness,
+  RecordingView,
   Settings,
   SettingsTab,
   SettingsView,
+  SourcesView,
   SummaryView,
 } from "./lib/api";
+import { IDLE_RECORDING } from "./lib/recording";
 import { SettingsStore } from "./lib/settings-store.svelte";
 import type { PanelState } from "./panel/state";
 
@@ -110,7 +114,11 @@ export function stubApi() {
     ytDlpCommand: "brew install yt-dlp ffmpeg",
   });
   // Not a Mac: no permissions, so no section.
-  vi.spyOn(api, "permissionsStatus").mockResolvedValue({ microphone: "not_needed", accessibility: "not_needed" });
+  vi.spyOn(api, "permissionsStatus").mockResolvedValue({
+    microphone: "not_needed",
+    accessibility: "not_needed",
+    screen: "not_needed",
+  });
   vi.spyOn(api, "requestPermission").mockResolvedValue();
   vi.spyOn(api, "openPermissionSettings").mockResolvedValue();
   vi.spyOn(api, "openUrl").mockResolvedValue();
@@ -387,6 +395,71 @@ export class FakeMedia extends EventTarget {
   }
 }
 
+/** A recording as the Rust side reports it while it goes on: both tracks on and quiet, and no notes. */
+export function fakeRecording(overrides: Partial<RecordingView> = {}): RecordingView {
+  return {
+    phase: "recording",
+    elapsedMs: 0,
+    levels: { mic: 0, system: 0 },
+    mode: { kind: "screen", display: null },
+    meetingId: "2026-03-02 11-00-00",
+    notes: [],
+    ...overrides,
+  };
+}
+
+export { IDLE_RECORDING };
+
+/** What the picker is offered on a desktop that can record the screen: one display, two windows, and the choices of a first start. */
+export function fakeSources(overrides: Partial<SourcesView> = {}): SourcesView {
+  return {
+    displays: [{ id: "1", name: "Display 1 (2560x1440)", app: null }],
+    windows: [
+      { id: "42", name: "Safari — Docs", app: "Safari" },
+      { id: "77", name: "Zoom — Weekly sync", app: "Zoom" },
+    ],
+    pickerIsTheSystem: false,
+    screen: "ready",
+    ffmpegCommand: "brew install ffmpeg",
+    last: { mode: { kind: "screen", display: null }, quality: "standard", mic: true, system_audio: true },
+    ...overrides,
+  };
+}
+
+/**
+ * Stubs the calls of the recording, which the picker of the meetings window and the recording bar share: nothing is recorded, and
+ * `sources` is what there is to record. Returns a way to send the events (the state of the recording, and the ask for the picker).
+ */
+export function stubRecordingApi(sources: SourcesView = fakeSources()) {
+  const stateListeners = new Set<(view: RecordingView) => void>();
+  const openListeners = new Set<(open: OpenRecorder) => void>();
+  const listener = <T>(set: Set<T>) => async (handler: T) => {
+    set.add(handler);
+    return () => {
+      set.delete(handler);
+    };
+  };
+
+  vi.spyOn(api, "recordingSources").mockResolvedValue(sources);
+  vi.spyOn(api, "recordingStart").mockResolvedValue();
+  vi.spyOn(api, "recordingPause").mockResolvedValue();
+  vi.spyOn(api, "recordingResume").mockResolvedValue();
+  vi.spyOn(api, "recordingStop").mockResolvedValue();
+  vi.spyOn(api, "recordingDiscard").mockResolvedValue();
+  vi.spyOn(api, "recordingState").mockResolvedValue(IDLE_RECORDING);
+  vi.spyOn(api, "onRecordingState").mockImplementation(listener(stateListeners));
+  vi.spyOn(api, "onOpenRecorder").mockImplementation(listener(openListeners));
+
+  return {
+    /** The recorder reports how the recording goes. */
+    sendRecordingState: (view: RecordingView) => stateListeners.forEach((handler) => handler(view)),
+    /** The tray, the shortcut or `--record` ask for the picker, to a window that is there. */
+    sendOpenRecorder: (open: OpenRecorder = { error: null }) => openListeners.forEach((handler) => handler(open)),
+    /** How many listeners of the state of the recording, and of the ask for the picker, are on now. */
+    recordingListeners: () => ({ state: stateListeners.size, open: openListeners.size }),
+  };
+}
+
 /**
  * Stubs every call of the meetings window with a calm answer: the library holds `rows`, and the detail of a row is
  * `fakeDetail` of it. A test changes the calls it cares about with `vi.mocked(api.meetingRetry).mockRejectedValue(...)`.
@@ -431,8 +504,10 @@ export function stubMeetingsApi(rows: MeetingRow[] = []) {
   vi.spyOn(api, "onMeetingsChanged").mockImplementation(listener(changedListeners));
   vi.spyOn(api, "onFileDrop").mockImplementation(listener(dropListeners));
   vi.spyOn(api, "onMeetingsHidden").mockImplementation(listener(hiddenListeners));
+  const recording = stubRecordingApi();
 
   return {
+    ...recording,
     emitJob: (job: JobView) => jobListeners.forEach((handler) => handler(job)),
     emitChanged: () => changedListeners.forEach((handler) => handler()),
     emitDrop: (event: FileDropEvent) => dropListeners.forEach((handler) => handler(event)),

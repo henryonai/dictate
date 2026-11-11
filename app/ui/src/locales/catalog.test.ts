@@ -112,3 +112,49 @@ describe("what the meetings window asks for, the locales have", () => {
     }
   });
 });
+
+describe("what the recording asks for, the locales have", () => {
+  const uiSrc = join(dirname(fileURLToPath(import.meta.url)), "..");
+  const repoRoot = join(uiSrc, "../../..");
+
+  const keysIn = (source: string, pattern: RegExp) => [...new Set([...source.matchAll(pattern)].map((match) => match[1]))];
+
+  test("every text of the picker and of the bar has words in both locales", () => {
+    const files = [
+      ...readdirSync(join(uiSrc, "meetings")).filter((name) => name.endsWith(".svelte")).map((name) => join("meetings", name)),
+      ...readdirSync(join(uiSrc, "recorder")).filter((name) => name.endsWith(".svelte")).map((name) => join("recorder", name)),
+    ];
+    const keys = files.flatMap((file) =>
+      keysIn(readFileSync(join(uiSrc, file), "utf8"), /"(recording\.[a-z_]+(?:\.[a-z_]+)*)"/g),
+    );
+    expect(new Set(keys).size).toBeGreaterThan(30);
+    for (const key of new Set(keys)) {
+      for (const locale of [en, vi] as Record<string, string>[]) {
+        expect(locale[key], key).toBeTruthy();
+      }
+    }
+  });
+
+  test("every text that the recorder sends the windows by its key (why a start failed, why a recording ended) has words in both locales", () => {
+    const keys = ["views.rs", "mod.rs"].flatMap((file) => {
+      const source = readFileSync(join(repoRoot, "app/src-tauri/src/recording", file), "utf8");
+      // `views.rs` has its tests in the file, after `mod tests`: their fixtures name keys too, and those are not the recorder's (the
+      // tests of `mod.rs` are in a file of their own).
+      const code = source.slice(0, source.indexOf("#[cfg(test)]\nmod tests {") >= 0 ? source.indexOf("#[cfg(test)]\nmod tests {") : undefined);
+      return keysIn(code, /"(recording\.(?:error|ended)\.[a-z_]+)"/g);
+    });
+    expect(keys.length).toBeGreaterThanOrEqual(15);
+    for (const key of keys) {
+      for (const locale of [en, vi] as Record<string, string>[]) {
+        expect(locale[key], key).toBeTruthy();
+      }
+    }
+  });
+
+  test("the bar's tooltip for a track is made from the words of its name and of what it hears", () => {
+    for (const locale of [en, vi] as Record<string, string>[]) {
+      expect(locale["recording.hud.hearing"]).toContain("{name}");
+      expect(locale["recording.hud.quiet"]).toContain("{name}");
+    }
+  });
+});

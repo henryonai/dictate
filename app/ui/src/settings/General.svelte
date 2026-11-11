@@ -2,6 +2,7 @@
   import { api, errorText } from "../lib/api";
   import type { UiLanguage } from "../lib/api";
   import { t } from "../lib/i18n";
+  import { recordHotkey } from "../lib/recording";
   import type { SettingsStore } from "../lib/settings-store.svelte";
   import ChoiceOrText from "./ChoiceOrText.svelte";
   import Field from "./Field.svelte";
@@ -112,6 +113,12 @@
 
 <section class="group" aria-labelledby="general-meetings">
   <h2 id="general-meetings">{t("general.meetings")}</h2>
+  <!-- The recording has one shortcut, which is not set here: it is shown so that it is known. -->
+  <div class="field">
+    <label for="record-hotkey">{t("general.record_hotkey")}</label>
+    <span class="field-control"><input id="record-hotkey" type="text" readonly value={recordHotkey()} /></span>
+  </div>
+  <p class="hint">{t("general.record_hotkey_hint")}</p>
   <button type="button" onclick={openMeetingsFolder}>{t("general.open_meetings")}</button>
   {#if folderError}
     <p class="error">{folderError}</p>

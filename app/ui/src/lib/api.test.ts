@@ -1,7 +1,8 @@
 import { clearMocks, mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import { emit } from "@tauri-apps/api/event";
 import { afterEach, describe, expect, test } from "vitest";
-import { api, asErrorView } from "./api";
+import { api, asErrorView, takeOpenRecorder } from "./api";
+import type { RecordOptions } from "./api";
 import { fakePanelState, fakeSettings } from "../test-helpers";
 
 type Call = { cmd: string; args: unknown };
@@ -23,6 +24,12 @@ afterEach(() => clearMocks());
 
 describe("each wrapper calls its command with the argument names the Rust side expects", () => {
   const settings = fakeSettings();
+  const options: RecordOptions = {
+    mode: { kind: "window", id: "42" },
+    quality: "sharp",
+    mic: true,
+    system_audio: false,
+  };
   const cases: [string, string, unknown, () => Promise<unknown>][] = [
     ["getSettings", "get_settings", undefined, () => api.getSettings()],
     ["saveSettings", "save_settings", { settings }, () => api.saveSettings(settings)],
@@ -87,6 +94,13 @@ describe("each wrapper calls its command with the argument names the Rust side e
     ["copyText", "copy_text", { text: "brew install yt-dlp" }, () => api.copyText("brew install yt-dlp")],
     ["meetingsOpenSettings", "meetings_open_settings", { tab: "accounts" }, () => api.meetingsOpenSettings("accounts")],
     ["meetingsReadiness", "meetings_readiness", undefined, () => api.meetingsReadiness()],
+    ["recordingSources", "recording_sources", undefined, () => api.recordingSources()],
+    ["recordingStart", "recording_start", { options }, () => api.recordingStart(options)],
+    ["recordingPause", "recording_pause", undefined, () => api.recordingPause()],
+    ["recordingResume", "recording_resume", undefined, () => api.recordingResume()],
+    ["recordingStop", "recording_stop", undefined, () => api.recordingStop()],
+    ["recordingDiscard", "recording_discard", undefined, () => api.recordingDiscard()],
+    ["recordingState", "recording_state", undefined, () => api.recordingState()],
     ["openUrl", "plugin:opener|open_url", { url: "https://example.com/keys" }, () => api.openUrl("https://example.com/keys")],
   ];
 
@@ -103,7 +117,7 @@ describe("each wrapper calls its command with the argument names the Rust side e
   });
 });
 
-describe("the eight commands that reject with an ErrorView always do, whatever the failure was", () => {
+describe("the commands that reject with an ErrorView always do, whatever the failure was", () => {
   const cases: [string, () => Promise<unknown>][] = [
     ["meetingsImportLink", () => api.meetingsImportLink("https://youtu.be/x")],
     ["meetingRerun", () => api.meetingRerun("m1")],
@@ -113,6 +127,12 @@ describe("the eight commands that reject with an ErrorView always do, whatever t
     ["meetingAsk", () => api.meetingAsk("m1", "Who?")],
     ["meetingExport", () => api.meetingExport("m1")],
     ["meetingOpenMedia", () => api.meetingOpenMedia("m1")],
+    [
+      "recordingStart",
+      () => api.recordingStart({ mode: { kind: "audio" }, quality: "standard", mic: true, system_audio: true }),
+    ],
+    ["recordingStop", () => api.recordingStop()],
+    ["recordingDiscard", () => api.recordingDiscard()],
   ];
 
   test.each(cases)("%s rejects with the view the Rust side sent, as it is", async (_name, run) => {
@@ -141,6 +161,7 @@ describe("the eight commands that reject with an ErrorView always do, whatever t
     });
     await expect(api.meetingDetail("m1")).rejects.toBe("The recording was not found.");
     await expect(api.meetingSetTask("m1", 0, true)).rejects.toBe("The recording was not found.");
+    await expect(api.recordingPause()).rejects.toBe("The recording was not found.");
   });
 });
 
@@ -300,5 +321,80 @@ describe("the files dropped on the window", () => {
     stop();
     await emit("tauri://drag-drop", { paths: ["/a/c.mp4"], position });
     expect(heard).toHaveLength(3);
+  });
+});
+
+test("the recording-state event brings the state of the recording as the Rust side sends it, until it is removed", async () => {
+  recordCalls();
+  const heard: unknown[] = [];
+  const stop = await api.onRecordingState((view) => heard.push(view));
+
+  const view = {
+    phase: "recording",
+    elapsedMs: 1500,
+    levels: { mic: 0.25, system: null },
+    mode: { kind: "audio" },
+    meetingId: "2026-03-02 10-00-00",
+    notes: [{ track: "mic", note: { kind: "silent" } }],
+  };
+  await emit("recording-state", view);
+  expect(heard).toEqual([view]);
+
+  stop();
+  await emit("recording-state", view);
+  expect(heard).toHaveLength(1);
+});
+
+test("the meetings-open-recorder event asks for the picker, with the error that is to be shown, until it is removed", async () => {
+  recordCalls();
+  const heard: unknown[] = [];
+  const stop = await api.onOpenRecorder((open) => heard.push(open));
+
+  const error = { kind: "MissingTool", key: "recording.error.needs_ffmpeg", detail: null, command: "brew install ffmpeg" };
+  await emit("meetings-open-recorder", { error: null });
+  await emit("meetings-open-recorder", { error });
+  expect(heard).toEqual([{ error: null }, { error }]);
+
+  stop();
+  await emit("meetings-open-recorder", { error: null });
+  expect(heard).toHaveLength(2);
+});
+
+describe("the ask for the picker that a window made for it was given", () => {
+  const key = "__dictateOpenRecorder";
+  const globals = window as unknown as Record<string, unknown>;
+
+  afterEach(() => {
+    delete globals[key];
+  });
+
+  test("is read once, and gone when it was", () => {
+    globals[key] = { error: null };
+
+    expect(takeOpenRecorder()).toEqual({ error: null });
+    expect(key in window).toBe(false);
+    expect(takeOpenRecorder()).toBeNull();
+  });
+
+  test("brings the error that the picker is to show", () => {
+    const error = { kind: "Other", key: "recording.error.source", detail: "no display found", command: null };
+    globals[key] = { error };
+
+    expect(takeOpenRecorder()).toEqual({ error });
+  });
+
+  test("is nothing for a window that was not made for the picker, or one that has something else there", () => {
+    expect(takeOpenRecorder()).toBeNull();
+
+    globals[key] = "yes";
+    expect(takeOpenRecorder()).toBeNull();
+    // What is there is taken away all the same: it is not the Rust side's.
+    expect(key in window).toBe(false);
+  });
+
+  test("an ask without an error is an ask all the same", () => {
+    globals[key] = {};
+
+    expect(takeOpenRecorder()).toEqual({ error: null });
   });
 });

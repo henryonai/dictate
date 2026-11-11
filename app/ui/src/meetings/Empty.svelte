@@ -4,8 +4,8 @@
   import { onMac } from "../panel/state";
   import LinkForm from "./LinkForm.svelte";
 
-  // What the window shows when the library has nothing yet: where to start, and whether what is needed is ready. The cards
-  // for recording the screen and the rows for its permissions are not here: recording is not part of this window yet.
+  // What the window shows when the library has nothing yet: where to start (a recording of the screen, a file, a link), and
+  // whether what is needed is ready. The permissions of the recording are Settings' to show, not this window's.
   let { store }: { store: MeetingsStore } = $props();
 
   /** How the paste is written: ⌘V on a Mac, Ctrl+V elsewhere. */
@@ -30,6 +30,12 @@
   <p class="sub">{t("meetings.empty.sub")}</p>
 
   <div class="cards">
+    {#if !store.isRecording}
+      <button type="button" class="card wide" onclick={() => store.openRecorder()}>
+        <strong>{t("meetings.empty.record_title")}</strong>
+        <span class="hint">{t("meetings.empty.record_sub")}</span>
+      </button>
+    {/if}
     <button type="button" class="card" onclick={() => store.pickFiles()}>
       <strong>{t("meetings.empty.file_title")}</strong>
       <span class="hint">{t("meetings.empty.file_sub")}</span>
@@ -82,6 +88,9 @@
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 10px;
+  }
+  .card.wide {
+    grid-column: 1 / -1;
   }
   button.card:hover {
     border-color: var(--accent);

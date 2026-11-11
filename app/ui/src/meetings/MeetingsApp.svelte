@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { api, errorText } from "../lib/api";
+  import { api, errorText, takeOpenRecorder } from "../lib/api";
   import { t } from "../lib/i18n";
   import { MeetingsStore } from "../lib/meetings-store.svelte";
   import Detail from "./Detail.svelte";
@@ -8,6 +8,7 @@
   import ImportBar from "./ImportBar.svelte";
   import List from "./List.svelte";
   import LogSheet from "./LogSheet.svelte";
+  import RecordPicker from "./RecordPicker.svelte";
 
   // The meetings window: the library of recordings with what is going on in each, and the ways to add more (a file, a link, a
   // drop, a paste).
@@ -17,6 +18,11 @@
   let dragging = $state(false);
 
   onMount(() => {
+    // A window that was made for the picker has the ask for it in a global (the page was not there to hear an event): it is read
+    // first, and taken away. The asks that come later are events, heard after. An ask is the same ask either way: the picker is
+    // open once.
+    const asked = takeOpenRecorder();
+    if (asked) store.openRecorder(asked.error);
     // The language is the settings': `start` reads it (with what is ready) and the store makes the window speak it.
     // A failure is said in the notice: a window that can't start must not be a blank one.
     store.start().catch((e: unknown) => store.notify(errorText(e)));
@@ -27,9 +33,14 @@
       store.notify(errorText(e));
       return () => {};
     });
+    const stopAsks = api.onOpenRecorder((open) => store.openRecorder(open.error)).catch((e: unknown) => {
+      store.notify(errorText(e));
+      return () => {};
+    });
     return () => {
       store.stop();
       void stopDrops.then((stop) => stop());
+      void stopAsks.then((stop) => stop());
     };
   });
 
@@ -67,7 +78,7 @@
 
   {#if !store.loaded}
     <!-- The list is being read. -->
-  {:else if store.rows.length === 0 && store.query.trim() === ""}
+  {:else if store.items.length === 0 && store.query.trim() === ""}
     <div class="scroll"><Empty {store} /></div>
   {:else}
     <div class="body">
@@ -79,6 +90,10 @@
   {/if}
 
   <LogSheet {store} />
+
+  {#if store.recorder}
+    <RecordPicker {store} />
+  {/if}
 
   {#if dragging}
     <div class="drop-overlay" role="presentation">{t("meetings.drop.overlay")}</div>

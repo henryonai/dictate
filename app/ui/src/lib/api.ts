@@ -77,12 +77,14 @@ export interface HotkeyStatus {
  * which is how the Settings window knows to show no Permissions section.
  */
 export type PermissionState = "granted" | "denied" | "not_determined" | "not_needed";
-/** The permissions of macOS that dictation uses. */
-export type PermissionKind = "microphone" | "accessibility";
+/** The permissions of macOS that the app uses: dictation's two, and Screen Recording for the recording. */
+export type PermissionKind = "microphone" | "accessibility" | "screen";
 
 export interface PermissionsView {
   microphone: PermissionState;
   accessibility: PermissionState;
+  /** macOS can't say that Screen Recording was never asked: until it is on, this is `denied`. */
+  screen: PermissionState;
 }
 
 export interface ModelView {
@@ -314,6 +316,95 @@ export interface Readiness {
   language: "en" | "vi";
 }
 
+// ---- The recording. The shapes mirror app/src-tauri/src/recording/{views,commands}.rs; `RecordOptions` keeps the names of its Rust
+// fields (`system_audio`), the rest is in camelCase.
+
+export type RecordQuality = "small" | "standard" | "sharp";
+
+/** What is recorded: a display (`null` is the main one), one window by the id of `SourcesView.windows`, or sound alone. */
+export type RecordMode = { kind: "screen"; display: string | null } | { kind: "window"; id: string } | { kind: "audio" };
+
+/** What the person chose for a recording. */
+export interface RecordOptions {
+  mode: RecordMode;
+  quality: RecordQuality;
+  /** The microphone. */
+  mic: boolean;
+  /** What the system plays. */
+  system_audio: boolean;
+}
+
+/** A display or a window that can be recorded, as the picker lists it. */
+export interface SourceInfo {
+  /** What `RecordMode` takes to name it. */
+  id: string;
+  /** What the picker shows. */
+  name: string;
+  app: string | null;
+}
+
+/** Whether the screen can be recorded here, and if not, why. */
+export type ScreenAvailability = "ready" | "needs_permission" | "needs_ffmpeg" | "no_video_encoder" | "portal_unavailable";
+
+/** What the picker offers, and what it had the last time. */
+export interface SourcesView {
+  displays: SourceInfo[];
+  windows: SourceInfo[];
+  /** The system asks the person what to share (the portal of Linux): there is no list to show. */
+  pickerIsTheSystem: boolean;
+  screen: ScreenAvailability;
+  /** What installs ffmpeg with the usual package manager of this system. */
+  ffmpegCommand: string;
+  last: RecordOptions;
+}
+
+export type RecordingPhase = "idle" | "starting" | "recording" | "paused" | "finishing";
+
+/** A source of a recording. */
+export type RecordingTrack = "mic" | "system" | "screen";
+
+/**
+ * Something about a track that the person should be told, though the recording goes on: it hears only silence, its device was lost and
+ * another was taken up (what came between is silence), or its device was lost and the track is off for the rest of the recording.
+ */
+export type RecordingNote = { kind: "silent" } | { kind: "restarted"; detail: string } | { kind: "off"; detail: string };
+
+/** How the recording goes: the `recording-state` event and `recording_state` carry one. */
+export interface RecordingView {
+  phase: RecordingPhase;
+  /** How much of the recording there is, without the time it was paused. */
+  elapsedMs: number;
+  /** 0 to 1; `null` for a track that is off. */
+  levels: { mic: number | null; system: number | null };
+  mode: RecordMode | null;
+  /** The recording that this one is becoming: its folder is in the library while the recording goes on. */
+  meetingId: string | null;
+  /** The latest note of each track that has one. */
+  notes: { track: RecordingTrack; note: RecordingNote }[];
+}
+
+/** What the meetings window is told when the picker is asked for: why a recording did not begin, if that is why. */
+export interface OpenRecorder {
+  error: ErrorView | null;
+}
+
+/** The global that a meetings window made for the picker has before its page runs (`meetings::window::OPEN_RECORDER_GLOBAL`). */
+const OPEN_RECORDER_GLOBAL = "__dictateOpenRecorder";
+
+/**
+ * The ask for the picker that the window was made with, read once: a page that is not there yet can't hear `meetings-open-recorder`,
+ * so the Rust side leaves the ask where the page finds it when it mounts. It is taken away when it is read. `null` for a window that
+ * was not made for the picker.
+ */
+export function takeOpenRecorder(): OpenRecorder | null {
+  const globals = window as unknown as Record<string, unknown>;
+  const given = globals[OPEN_RECORDER_GLOBAL];
+  delete globals[OPEN_RECORDER_GLOBAL];
+  if (typeof given !== "object" || given === null) return null;
+  const error = (given as { error?: unknown }).error;
+  return { error: isErrorView(error) ? error : null };
+}
+
 /** What the window hears of a file dragged over it: the paths come with a drop. */
 export type FileDropEvent = { type: "enter" } | { type: "leave" } | { type: "drop"; paths: string[] };
 
@@ -400,6 +491,21 @@ export const api = {
   meetingsOpenSettings: (tab: SettingsTab) => invoke<void>("meetings_open_settings", { tab }),
   meetingsReadiness: () => invoke<Readiness>("meetings_readiness"),
 
+  // The recording. The picker (the meetings window) asks what there is to record and starts; the bar (its own window) has the buttons
+  // and the state. Three commands reject with an `ErrorView`: `recordingStart`, `recordingStop` and `recordingDiscard`.
+  /** What the picker offers, and the choices it had the last time. */
+  recordingSources: () => invoke<SourcesView>("recording_sources"),
+  /** Resolves when the recording has begun (which can be as long as a person takes to answer the desktop). Rejects with an `ErrorView`. */
+  recordingStart: (options: RecordOptions) => invokeView<void>("recording_start", { options }),
+  recordingPause: () => invoke<void>("recording_pause"),
+  recordingResume: () => invoke<void>("recording_resume"),
+  /** Ends the recording and starts its meeting. Resolves when the recording is put together. Rejects with an `ErrorView`. */
+  recordingStop: () => invokeView<void>("recording_stop"),
+  /** Throws the recording away. Rejects with an `ErrorView`. */
+  recordingDiscard: () => invokeView<void>("recording_discard"),
+  /** How the recording is now: for a window that opens in the middle of one. */
+  recordingState: () => invoke<RecordingView>("recording_state"),
+
   // The two floating windows of dictation (the bubble and the card).
   /** The BCP-47 codes of the language menu, in the order it shows them. */
   dictationLanguages: () => invoke<DictationLanguages>("dictation_languages"),
@@ -473,6 +579,12 @@ export const api = {
       else if (drag.type === "enter") handler({ type: "enter" });
       else if (drag.type === "leave") handler({ type: "leave" });
     }),
+  /** The recording began, went on (at most every 50 ms), paused, resumed or ended (to the meetings window and the bar). Resolves with the function that stops listening. */
+  onRecordingState: (handler: (view: RecordingView) => void) =>
+    listen<RecordingView>("recording-state", (event) => handler(event.payload)),
+  /** The tray, the shortcut or `--record` ask the meetings window for the picker (to a window that is there: see `takeOpenRecorder` for one that is made). Resolves with the function that stops listening. */
+  onOpenRecorder: (handler: (open: OpenRecorder) => void) =>
+    listen<OpenRecorder>("meetings-open-recorder", (event) => handler(event.payload)),
   /** Both panel windows hear every state. Resolves with the function that stops listening. */
   onPanelState: (handler: (state: PanelState) => void) =>
     listen<PanelState>("panel-state", (event) => handler(event.payload)),
