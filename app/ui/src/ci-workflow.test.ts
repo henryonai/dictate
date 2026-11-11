@@ -163,23 +163,27 @@ describe("the speaker models of a folder that has a Vietnamese name", () => {
   });
 });
 
-describe("the recording of the screen, tried on the Windows runner", () => {
+describe("the recording of the screen on the Windows runner", () => {
   const TEST = "windows_records_three_seconds_of_the_primary_monitor";
-  const experiment = () => stepsOf("test").find((step) => step.includes(TEST));
+  const recording = () => stepsOf("test").find((step) => step.includes(TEST));
 
-  test("a step of the test job runs the real recording test, on Windows only, and its result fails nothing", () => {
-    const step = experiment();
+  test("a step of the test job runs the real recording test, on Windows only, and a red result fails the job", () => {
+    const step = recording();
     expect(step).toBeDefined();
+    expect(job("test")).toContain("windows-latest");
+    expect(step).toContain("- name: Record the primary monitor (Windows)\n");
     expect(step).toContain("if: runner.os == 'Windows'");
-    // Whether a runner can capture its own screen is not known yet: until it is, a red result is information and not a failure.
-    expect(step).toContain("continue-on-error: true");
+    // The runner recorded its own screen on every run since the step was added as an experiment, so it is a step like the others: an
+    // experiment had `continue-on-error: true`, which turns a failure into a pass.
+    expect(step).not.toContain("continue-on-error");
+    expect(step).not.toContain("experiment");
     expect(step).toMatch(/DICTATE_TEST_SCREEN: "?1"?\n/);
     // The test is ignored: it runs only when it is asked for, and by its name.
     expect(step).toMatch(/cargo test .*-- .*--ignored .*windows_records_three_seconds_of_the_primary_monitor/);
   });
 
-  test("it comes after the tests that do fail the job, so that its result does not hide theirs", () => {
-    const step = experiment();
+  test("it comes after the main run of the tests, so that a failure there is told first", () => {
+    const step = recording();
     expect(step).toBeDefined();
     const main = job("test").indexOf("run: cargo test --all --locked");
     expect(main).toBeGreaterThan(-1);
