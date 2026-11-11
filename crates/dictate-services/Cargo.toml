@@ -74,8 +74,9 @@ objc2-core-foundation = { version = "0.3.2", default-features = false, features 
 # Which display is the main one (CGMainDisplayID), for the picker of displays and for a recording that names none. The same bindings again.
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGDirectDisplay"] }
 # The screen and the system's audio of a recording, from one ScreenCaptureKit stream (record::capture::macos). Its build
-# script compiles a Swift bridge with `swift build`, which needs Xcode or the Command Line Tools with the macOS 13 SDK.
-# `macos_15_0` turns on every call up to macOS 15; a system that is older says `FeatureNotAvailable` at run time.
+# script compiles a Swift bridge with `swift build`, which needs Xcode 16 or the Command Line Tools with the macOS 15 SDK: `macos_15_0`
+# turns on every call up to macOS 15, and the build script stops, saying so, when the SDK is older than a feature asks for. The program
+# that is built runs on macOS 13: a system that is older than 15 says `FeatureNotAvailable` at run time.
 # Pinned: the crate has had six breaking releases in six months, so a move up is a decision with its changelog read.
 screencapturekit = { version = "=11.1.2", features = ["macos_15_0"] }
 
