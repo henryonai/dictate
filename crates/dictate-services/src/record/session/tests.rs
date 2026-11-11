@@ -730,8 +730,22 @@ fn pausing_removes_the_paused_time_from_every_track() {
     slack.sleep(2000);
     let (resumed_from, resumed_after) = bracket(|| session.resume());
     slack.sleep(2000);
+    // Another thread has the clock as the stop is asked for (the pump or the ticker, put aside by a busy machine while it
+    // holds it, does that): the recording ends when the stop gets the clock, and not when it asked.
+    let gate = session.gate.clone();
+    let (taken, is_taken) = std::sync::mpsc::channel();
+    let holder = std::thread::spawn(move || {
+        let _held = lock(&gate);
+        taken.send(()).unwrap();
+        sleep(250);
+    });
+    is_taken.recv().unwrap();
     let asked = Instant::now();
     let finished = session.stop().unwrap();
+    // The clock stopped between the stop being asked for and the sources being stopped, which comes after it: how long the
+    // stop waited for the clock is within these two instants, whatever it was, and does not have to be guessed at.
+    let stopped_by = fake.first_stop_at().expect("the sources were stopped");
+    holder.join().unwrap();
 
     // It ran from the start to the stop, less the time it was paused: which is at least the 2 s that were slept, and
     // is between the instants of the two calls (each was made somewhere between the instants around it).
@@ -741,19 +755,20 @@ fn pausing_removes_the_paused_time_from_every_track() {
         paused_least >= 2.0 - slack.tolerance(),
         "{paused_least} s paused"
     );
-    let ran = reference.active_at(asked);
+    let ran_least = reference.active_at(asked);
+    let ran_most = reference.active_at(stopped_by);
     assert_lasted(
         finished.duration,
-        ran - paused_most,
-        ran - paused_least,
+        ran_least - paused_most,
+        ran_most - paused_least,
         FRAME_SECONDS,
         &slack,
     );
     // And none of it is what was delivered while it was paused: the recording is shorter than the time it took by
     // what was slept in the pause.
     assert!(
-        finished.duration < ran - 2.0 + slack.tolerance() + FRAME_SECONDS,
-        "{} s of {ran} s",
+        finished.duration < ran_most - 2.0 + slack.tolerance() + FRAME_SECONDS,
+        "{} s of {ran_most} s",
         finished.duration
     );
     let name = name_of(&finished.media);
@@ -761,13 +776,14 @@ fn pausing_removes_the_paused_time_from_every_track() {
     assert_video_as_long(&finished.media, &ffmpeg, finished.duration);
     assert_decodes_as_long(&finished.media, &ffmpeg, finished.duration);
     // While it was paused the time stood still, and the state said so: all the reports of it have the same time, and
-    // it is the time of the instant of the pause.
+    // it is the time of the instant of the pause. (A report that comes after the stop has the clock closed, which stands
+    // still too, at another time: it is not one of the pause.)
     let paused: Vec<Duration> = states
         .lock()
         .unwrap()
         .iter()
-        .filter_map(|(_, state)| match state {
-            SessionState::Paused { active, .. } => Some(*active),
+        .filter_map(|(seen, state)| match state {
+            SessionState::Paused { active, .. } if *seen <= resumed_after => Some(*active),
             _ => None,
         })
         .collect();

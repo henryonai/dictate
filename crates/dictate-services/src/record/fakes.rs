@@ -64,6 +64,8 @@ struct Script {
 struct Log {
     started: Vec<Track>,
     stopped: Vec<Track>,
+    /// When the first track began to be stopped.
+    first_stop: Option<Instant>,
     senders: HashMap<Track, Sender<SourceEvent>>,
     ended: HashMap<Track, Instant>,
 }
@@ -145,6 +147,12 @@ impl FakeCapturer {
     /// The tracks that were stopped, in the order they were.
     pub fn stopped(&self) -> Vec<Track> {
         lock(&self.log).stopped.clone()
+    }
+
+    /// When the first track began to be stopped, noted as `stop` was called on it: the session stops the sources after it has
+    /// stopped the clock, so the clock stopped no later than this. `None` when no track has been stopped.
+    pub fn first_stop_at(&self) -> Option<Instant> {
+        lock(&self.log).first_stop
     }
 
     /// When the end of `track` was sent (by `ends_after` or `send_ended`): noted just before it was, so that whoever
@@ -335,6 +343,7 @@ struct FakeSource {
 
 impl RunningSource for FakeSource {
     fn stop(mut self: Box<Self>) {
+        lock(&self.log).first_stop.get_or_insert_with(Instant::now);
         // Dropping the sender is the stop; the thread is gone when this returns, as a real source's is.
         drop(self.stop.take());
         if let Some(thread) = self.thread.take() {
