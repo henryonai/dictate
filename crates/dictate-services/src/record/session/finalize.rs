@@ -42,8 +42,11 @@ pub(super) struct Hints {
 /// Puts the files of the recording in `folder` together: the stems are made as long as the longest of them (and of the
 /// video, and no shorter than a second) and mixed into `audio.m4a` (`recording.wav` where there is no encoder for
 /// it); a screen recording has the sound put under its video, as `recording.mp4` (`.webm`). What was put together is
-/// removed, with `recording.json`; what is the result stays: the sound, and the video (when it could not be put
-/// together with the sound, it is the `media`, and the sound is where it was made).
+/// removed, with `recording.json`; what is the result stays: the sound, and the video. When the video could not be put
+/// together with the sound (ffmpeg failed, or is not there), the sound is the `media` (the pipeline decodes the media,
+/// and a video with no sound under it has nothing in it to transcribe) and the video is kept beside it as `video.*`, with
+/// a note. A video is the `media` only when there is no sound at all (and then it is the recording, even one that ffmpeg
+/// could not read).
 ///
 /// Whatever stops it before the sound is mixed (`Err`) leaves every file as it was, `recording.json` among them:
 /// nothing that was recorded is lost to it. The exception is a folder that has no sound and no video at all, which has
@@ -140,14 +143,17 @@ pub(super) fn finalize_with(
     // An error here leaves the stems, the video and the marker for another try.
     let mixed = mix_stems(&paths, folder, ffmpeg, &CancellationToken::new())?;
 
+    // What the pipeline decodes is the media, and a video that is not put under the sound has none: when it is not, the
+    // media is the sound, and the video is kept beside it as `video.*`.
     let media = match (video, ffmpeg) {
         (None, _) => mixed.path.clone(),
         (Some(video), None) => {
             notes.push(format!(
-                "ffmpeg was not found, so the sound could not be put under the video: the video is kept as it is, and the sound is in {}.",
+                "ffmpeg was not found, so the sound could not be put under the video: the video is kept as {}, and the sound is the recording ({}).",
+                name_of(&video.path),
                 name_of(&mixed.path)
             ));
-            video.path
+            mixed.path.clone()
         }
         (Some(video), Some(ffmpeg)) => {
             let limit = hints.mux_limit.unwrap_or_else(|| mux_limit(mixed.duration));
@@ -165,11 +171,12 @@ pub(super) fn finalize_with(
                 }
                 Err(e) => {
                     notes.push(format!(
-                        "The sound could not be put under the video ({}): the video is kept as it is, and the sound is in {}.",
+                        "The sound could not be put under the video ({}): the video is kept as {}, and the sound is the recording ({}).",
                         detail(&e),
+                        name_of(&video.path),
                         name_of(&mixed.path)
                     ));
-                    video.path
+                    mixed.path.clone()
                 }
             }
         }
@@ -512,7 +519,7 @@ mod tests {
     }
 
     #[test]
-    fn without_ffmpeg_the_video_stays_as_it_is_and_the_sound_is_kept() {
+    fn without_ffmpeg_the_sound_is_the_media_and_the_video_is_kept_beside_it() {
         let Some(ffmpeg) = real_ffmpeg() else { return };
         let dir = tempfile::tempdir().unwrap();
         let video = encode_video(dir.path(), &ffmpeg, 2);
@@ -521,11 +528,24 @@ mod tests {
         // No AAC encoder either on Linux: the sound is a `recording.wav` there.
         let finished = finalize(dir.path(), None).unwrap();
 
-        assert_eq!(finished.media, video);
+        // The pipeline decodes the media: a video that has no sound under it would give it nothing to transcribe.
+        assert!(
+            is_sound_file(&name_of(&finished.media)),
+            "{:?}",
+            finished.media
+        );
+        assert!(finished.media.is_file());
+        assert!(video.is_file(), "the video is kept");
         assert_eq!(finished.notes.len(), 1, "{:?}", finished.notes);
         assert!(finished.notes[0].contains("ffmpeg"), "{:?}", finished.notes);
+        assert!(
+            finished.notes[0].contains("video.mp"),
+            "{:?}",
+            finished.notes
+        );
         let left = names(dir.path());
         assert!(!left.contains(&"mic.wav".to_owned()), "{left:?}");
+        assert!(!left.contains(&MARKER.to_owned()), "{left:?}");
     }
 
     #[test]
@@ -700,7 +720,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn a_mux_that_fails_keeps_the_video_as_the_media_and_the_sound() {
+    fn a_mux_that_fails_makes_the_sound_the_media_and_keeps_the_video_beside_it() {
         let Some(real) = real_ffmpeg() else { return };
         let dir = tempfile::tempdir().unwrap();
         let tools = tempfile::tempdir().unwrap();
@@ -712,9 +732,21 @@ mod tests {
 
         let finished = finalize(dir.path(), Some(&ffmpeg)).unwrap();
 
-        assert_eq!(finished.media, video);
+        // The pipeline decodes the media, and a video that is not under the sound has none: the sound is what it is given.
+        assert!(
+            is_sound_file(&name_of(&finished.media)),
+            "{:?}",
+            finished.media
+        );
+        assert_eq!(finished.media.parent(), Some(dir.path()));
+        assert!(
+            (finished.duration - 2.0).abs() < 0.1,
+            "{}",
+            finished.duration
+        );
+        assert!(video.is_file(), "the video is kept as {}", name_of(&video));
         assert_eq!(finished.notes.len(), 1, "{:?}", finished.notes);
-        // The note says what ffmpeg said, not that the audio encoder could not start.
+        // The note says what ffmpeg said, not that the audio encoder could not start, and where the video is.
         assert!(
             finished.notes[0].contains("Invalid data"),
             "{:?}",
@@ -725,13 +757,15 @@ mod tests {
             "{:?}",
             finished.notes
         );
+        assert!(
+            finished.notes[0].contains(&name_of(&video)),
+            "{:?}",
+            finished.notes
+        );
         let left = names(dir.path());
         assert!(
             !left.contains(&"mic.wav".to_owned()) && !left.contains(&MARKER.to_owned()),
             "{left:?}"
-        );
-        assert!(
-            left.contains(&"audio.m4a".to_owned()) || left.contains(&"recording.wav".to_owned())
         );
         assert!(
             !left
@@ -743,7 +777,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn a_mux_that_hangs_is_given_up_and_the_video_is_kept() {
+    fn a_mux_that_hangs_is_given_up_and_the_sound_is_the_media() {
         let Some(real) = real_ffmpeg() else { return };
         let dir = tempfile::tempdir().unwrap();
         let tools = tempfile::tempdir().unwrap();
@@ -763,7 +797,12 @@ mod tests {
             "{:?}",
             started.elapsed()
         );
-        assert_eq!(finished.media, video);
+        assert!(
+            is_sound_file(&name_of(&finished.media)),
+            "{:?}",
+            finished.media
+        );
+        assert!(video.is_file(), "the video is kept");
         assert!(
             finished.notes[0].contains("did not finish"),
             "{:?}",
