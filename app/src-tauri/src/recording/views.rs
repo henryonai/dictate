@@ -119,6 +119,11 @@ pub fn error(kind: &str, key: &str, detail: Option<String>, command: Option<Stri
     }
 }
 
+/// What installs `parec`, which Linux records the system's audio with: it is in the package `pulseaudio-utils`, which the
+/// PulseAudio server of PipeWire comes with too. No other system needs it, so this is not one of the tools that
+/// `install_command` is asked for.
+const PAREC_INSTALL_COMMAND: &str = "sudo apt install pulseaudio-utils";
+
 /// The key of the text for a recording that could not begin, and what goes in it.
 pub fn start_error(error: StartError) -> ErrorView {
     let ffmpeg = || install_command(Tool::Ffmpeg).to_owned();
@@ -138,6 +143,12 @@ pub fn start_error(error: StartError) -> ErrorView {
             "recording.error.needs_ffmpeg",
             None,
             Some(ffmpeg()),
+        ),
+        StartError::NeedsParec => self::error(
+            "MissingTool",
+            "recording.error.needs_parec",
+            None,
+            Some(PAREC_INSTALL_COMMAND.to_owned()),
         ),
         StartError::NoVideoEncoder => self::error(
             "MissingTool",
@@ -362,6 +373,7 @@ mod tests {
             "recording.error.needs_screen_permission"
         );
         assert_eq!(key(StartError::NeedsFfmpeg), "recording.error.needs_ffmpeg");
+        assert_eq!(key(StartError::NeedsParec), "recording.error.needs_parec");
         assert_eq!(
             key(StartError::NoVideoEncoder),
             "recording.error.no_video_encoder"
@@ -390,6 +402,14 @@ mod tests {
             Some(install_command(Tool::Ffmpeg))
         );
         assert_eq!(ffmpeg.kind, "MissingTool");
+        // `parec` is what Linux records the system's audio with: the package that has it is named, like the one of ffmpeg.
+        let parec = start_error(StartError::NeedsParec);
+        assert_eq!(parec.kind, "MissingTool");
+        assert_eq!(
+            parec.command.as_deref(),
+            Some("sudo apt install pulseaudio-utils")
+        );
+        assert_eq!(parec.detail, None);
         let source = start_error(StartError::Source("no display found".into()));
         assert_eq!(source.detail.as_deref(), Some("no display found"));
         assert_eq!(source.command, None);

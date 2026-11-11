@@ -149,6 +149,8 @@ pub enum StartError {
     NeedsFfmpeg,
     /// ffmpeg has no video encoder that works here.
     NoVideoEncoder,
+    /// The system's audio of Linux, with no `parec` (the package `pulseaudio-utils`) to record it with.
+    NeedsParec,
     PortalUnavailable,
     PortalCancelled,
     WindowGone,

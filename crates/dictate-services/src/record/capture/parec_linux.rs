@@ -2,8 +2,8 @@
 //! speakers) and writes it to its standard output, which a thread reads in blocks of 20 ms.
 //!
 //! Without `parec` (the package `pulseaudio-utils`, which PipeWire's PulseAudio server comes with as well) there is no
-//! system audio: the start fails with `StartError::Source("parec")`, which whoever shows it to the user turns into the
-//! advice to install it. `parec` that goes away while it records (the sound server stopped) ends the track.
+//! system audio: the start fails with `StartError::NeedsParec`, which whoever shows it to the user turns into the advice
+//! to install it. `parec` that goes away while it records (the sound server stopped) ends the track.
 //!
 //! `parec` is started as the leader of a process group, which is killed when the source is stopped or dropped: nothing
 //! of it is left running, whatever happens to the recording.
@@ -66,7 +66,7 @@ fn start_with(
     let mut command = StdCommandWrap::from(command);
     command.wrap(ProcessGroup::leader());
     let mut child = command.spawn().map_err(|e| match e.kind() {
-        ErrorKind::NotFound => StartError::Source("parec".into()),
+        ErrorKind::NotFound => StartError::NeedsParec,
         _ => StartError::Source(format!("could not start parec: {e}")),
     })?;
     let (Some(stdout), Some(stderr)) = (child.stdout().take(), child.stderr().take()) else {
@@ -298,12 +298,27 @@ mod tests {
     }
 
     #[test]
-    fn a_parec_that_is_not_installed_is_reported_by_its_name() {
+    fn a_parec_that_is_not_installed_is_a_start_that_needs_it() {
         let (tx, _rx) = mpsc::channel();
 
         let started = start_with(Path::new("dictate-test-no-such-program"), tx);
 
-        assert_eq!(started.err(), Some(StartError::Source("parec".into())));
+        assert_eq!(started.err(), Some(StartError::NeedsParec));
+    }
+
+    #[test]
+    fn a_parec_that_cannot_be_started_for_another_reason_says_why() {
+        // A file that is there and cannot be run is not a missing program: the install advice would be wrong.
+        let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("parec");
+        std::fs::write(&program, "not a program").unwrap();
+        let (tx, _rx) = mpsc::channel();
+
+        let started = start_with(&program, tx);
+
+        assert!(
+            matches!(started.err(), Some(StartError::Source(why)) if why.starts_with("could not start parec")),
+        );
     }
 
     #[test]

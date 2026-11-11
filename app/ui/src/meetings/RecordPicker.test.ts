@@ -336,6 +336,22 @@ test("a start that fails for a missing tool has the command to copy next to the 
   expect(api.copyText).toHaveBeenCalledExactlyOnceWith("brew install ffmpeg");
 });
 
+test("a start that fails for the want of parec (Linux, system audio on) has the command to install it next to the error", async () => {
+  const user = userEvent.setup();
+  await open();
+  vi.mocked(api.recordingStart).mockRejectedValue(
+    fakeError({ kind: "MissingTool", key: "recording.error.needs_parec", detail: null, command: "sudo apt install pulseaudio-utils" }),
+  );
+
+  await user.click(start());
+
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Recording the system's audio needs parec. Turn system audio off, or install it: sudo apt install pulseaudio-utils",
+  );
+  await user.click(screen.getByRole("button", { name: "Copy install command" }));
+  expect(api.copyText).toHaveBeenCalledExactlyOnceWith("sudo apt install pulseaudio-utils");
+});
+
 test("a start that fails for the permission has the button to System Settings next to the error", async () => {
   const user = userEvent.setup();
   await open();

@@ -252,6 +252,11 @@ pub const TEXTS: &[(&str, &str, &str)] = &[
         "Quay màn hình cần ffmpeg: {command}",
     ),
     (
+        "recording.error.needs_parec",
+        "Recording the system's audio needs parec. Turn system audio off, or install it: {command}",
+        "Quay âm thanh hệ thống cần parec. Hãy tắt âm thanh hệ thống, hoặc cài nó: {command}",
+    ),
+    (
         "recording.error.no_video_encoder",
         "This ffmpeg has no video encoder that works on this computer. Install a full build: {command}",
         "ffmpeg này không có bộ mã hóa video chạy được trên máy này. Hãy cài bản đầy đủ: {command}",
@@ -539,6 +544,7 @@ mod tests {
             "recording.error.nothing_to_record",
             "recording.error.needs_screen_permission",
             "recording.error.needs_ffmpeg",
+            "recording.error.needs_parec",
             "recording.error.no_video_encoder",
             "recording.error.portal_unavailable",
             "recording.error.portal_cancelled",

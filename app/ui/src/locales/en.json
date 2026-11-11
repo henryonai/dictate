@@ -390,6 +390,7 @@
   "recording.error.nothing_to_record": "Turn on at least system audio or the microphone.",
   "recording.error.needs_screen_permission": "No Screen Recording permission. Turn on Dictate in System Settings → Privacy & Security → Screen & System Audio Recording, then reopen the app.",
   "recording.error.needs_ffmpeg": "Recording the screen needs ffmpeg: {command}",
+  "recording.error.needs_parec": "Recording the system's audio needs parec. Turn system audio off, or install it: {command}",
   "recording.error.no_video_encoder": "This ffmpeg has no video encoder that works on this computer. Install a full build: {command}",
   "recording.error.portal_unavailable": "This desktop can't share the screen with apps.",
   "recording.error.portal_cancelled": "Nothing was chosen to share, so the recording did not start.",
