@@ -447,6 +447,7 @@ export function stubRecordingApi(sources: SourcesView = fakeSources()) {
   vi.spyOn(api, "recordingStop").mockResolvedValue();
   vi.spyOn(api, "recordingDiscard").mockResolvedValue();
   vi.spyOn(api, "recordingState").mockResolvedValue(IDLE_RECORDING);
+  vi.spyOn(api, "recordingBarResized").mockResolvedValue();
   vi.spyOn(api, "onRecordingState").mockImplementation(listener(stateListeners));
   vi.spyOn(api, "onOpenRecorder").mockImplementation(listener(openListeners));
 

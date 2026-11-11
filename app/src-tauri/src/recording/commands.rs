@@ -1,13 +1,13 @@
 //! The commands of the recorder, which the meetings window asks (and the bar, which has `recording_pause`, `recording_resume`,
 //! `recording_stop`, `recording_discard` and `recording_state`). Each is in `capabilities/meetings.json` and in the manifest of
-//! `build.rs`.
+//! `build.rs`. The bar has one more that is its own, `recording_bar_resized` (`capabilities/recorder.json` only).
 //!
 //! What can take long (starting, stopping, asking the system what can be recorded) is done on a blocking thread.
 
 use dictate_services::record::RecordOptions;
-use tauri::State;
+use tauri::{AppHandle, State};
 
-use super::{Recorder, RecordingView, SourcesView};
+use super::{hud, Recorder, RecordingView, SourcesView};
 use crate::commands::blocking;
 use crate::meetings::views::ErrorView;
 
@@ -64,4 +64,13 @@ pub async fn recording_discard(recorder: State<'_, Recorder>) -> Result<(), Erro
 #[tauri::command]
 pub async fn recording_state(recorder: State<'_, Recorder>) -> Result<RecordingView, String> {
     Ok(recorder.view())
+}
+
+/// The page of the bar measured its capsule and the room around it for its shadow, in points: the window is sized to it, about the middle
+/// of where it is. A window that is wider than what it draws takes the clicks of the windows under it, so it is not left as wide as it
+/// can be. Only the bar's page may ask (`capabilities/recorder.json`).
+#[tauri::command]
+pub async fn recording_bar_resized(app: AppHandle, width: f64, height: f64) -> Result<(), String> {
+    // Sizing a window calls the system, which is not for the thread that runs the interface.
+    blocking(move || hud::resize(&app, width, height)).await
 }

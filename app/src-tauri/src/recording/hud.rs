@@ -14,8 +14,8 @@
 //! (the same as the meetings window): the recorder calls them from the thread of whoever starts or ends the recording.
 
 use tauri::{
-    AppHandle, LogicalPosition, Manager, PhysicalPosition, PhysicalRect, Runtime, WebviewUrl,
-    WebviewWindow, WebviewWindowBuilder,
+    AppHandle, LogicalPosition, LogicalSize, Manager, PhysicalPosition, PhysicalRect, Runtime,
+    WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
 
 use super::views::Phase;
@@ -27,11 +27,18 @@ pub const LABEL: &str = "recorder";
 /// The page of the bar, in the folder of the UI's build.
 const PAGE: &str = "recorder.html";
 
-/// How big the bar is, in points: the capsule and room around it for its shadow. The page can't change it, so the width is what the
-/// capsule needs in its worst cases (both sounds with notes, an hour on the clock, a longer language): `recorder/layout.test.ts` of
-/// the UI adds them up against this number.
+/// How big the bar is when it is made, and the most that it is given, in points: the capsule and room around it for its shadow. It is
+/// what the capsule needs in its worst cases (both sounds with notes, an hour on the clock, a longer language): `recorder/layout.test.ts`
+/// of the UI adds them up against this number. The window is not that wide while it shows: the page measures its capsule and tells
+/// (`recording_bar_resized`), and the window is sized to it, because a window that is wider than what it draws takes the clicks of the
+/// windows under it, where it is transparent (the system has no way to let the clicks through some of a window).
 const WIDTH: f64 = 680.0;
 const HEIGHT: f64 = 64.0;
+
+/// The least width and the least and most height that the window of the bar is given by what the page measured.
+const MIN_WIDTH: f64 = 160.0;
+const MIN_HEIGHT: f64 = 32.0;
+const MAX_HEIGHT: f64 = 128.0;
 
 /// How far below the top of the work area the bar stands, in points.
 const TOP_GAP: f64 = 12.0;
@@ -275,6 +282,54 @@ fn plain_set_visible<R: Runtime>(window: &WebviewWindow<R>, visible: bool) {
     }
 }
 
+/// The size that the window of the bar is given for what the page measured, in points: the width between [`MIN_WIDTH`] and [`WIDTH`], the
+/// height between [`MIN_HEIGHT`] and [`MAX_HEIGHT`]. `None` for what is no size (not a number, not above zero): the window stays as it is.
+fn bar_size(width: f64, height: f64) -> Option<(f64, f64)> {
+    let is_size = |side: f64| side.is_finite() && side > 0.0;
+    (is_size(width) && is_size(height)).then(|| {
+        (
+            width.clamp(MIN_WIDTH, WIDTH),
+            height.clamp(MIN_HEIGHT, MAX_HEIGHT),
+        )
+    })
+}
+
+/// Where the left edge of a window that is `old` wide and starts at `left` goes when it is `new` wide, so that its middle stays where it
+/// is: the bar is in the middle of the screen, or where the person dragged it, and it grows and shrinks about that.
+fn left_after_resize(left: f64, old: f64, new: f64) -> f64 {
+    left + (old - new) / 2.0
+}
+
+/// Sizes the bar to what its page measured (the capsule and the room for its shadow, in points), about the middle of where it is. A bar
+/// that was never made stays unmade.
+pub fn resize<R: Runtime>(app: &AppHandle<R>, width: f64, height: f64) {
+    let Some((width, height)) = bar_size(width, height) else {
+        return;
+    };
+    let Some(window) = app.get_webview_window(LABEL) else {
+        return;
+    };
+    // In points of the window's own screen, as the size is given: the left edge moves by half of what the width changes by.
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let moved = match (window.outer_position(), window.outer_size()) {
+        (Ok(at), Ok(size)) => {
+            let left = left_after_resize(
+                f64::from(at.x) / scale,
+                f64::from(size.width) / scale,
+                width,
+            );
+            window.set_position(LogicalPosition::new(left, f64::from(at.y) / scale))
+        }
+        (Err(e), _) | (_, Err(e)) => {
+            log::warn!("Could not find where the recording bar is to keep its middle: {e}");
+            Ok(())
+        }
+    };
+    if let Err(e) = moved.and_then(|()| window.set_size(LogicalSize::new(width, height))) {
+        log::warn!("Could not size the recording bar: {e}");
+    }
+}
+
 /// Puts the window at the top and in the middle of the primary screen.
 fn place<R: Runtime>(window: &WebviewWindow<R>) {
     let monitor = match window.primary_monitor() {
@@ -286,7 +341,11 @@ fn place<R: Runtime>(window: &WebviewWindow<R>) {
         }
     };
     let scale = monitor.scale_factor();
-    let at = top_centre(monitor.work_area(), scale);
+    // As wide as it is now: the page sized it to its capsule (and it is [`WIDTH`] before the page has measured).
+    let width = window.outer_size().map_or(WIDTH, |size| {
+        f64::from(size.width) / window.scale_factor().unwrap_or(scale)
+    });
+    let at = top_centre(monitor.work_area(), scale, width);
     // macOS counts in points of one space for every screen, and turns pixels to points with the scale of the screen the window is
     // on now, which is not always this one. Elsewhere the pixels are of the screen the window goes to.
     let placed = if cfg!(target_os = "macos") {
@@ -303,9 +362,10 @@ fn place<R: Runtime>(window: &WebviewWindow<R>) {
 }
 
 /// Where the top left corner of the bar goes, in pixels, for a screen whose work area is `area` and which has `scale` pixels to the
-/// point: in the middle, and `TOP_GAP` points below the top. A screen narrower than the bar has it start at its left edge.
-fn top_centre(area: &PhysicalRect<i32, u32>, scale: f64) -> PhysicalPosition<i32> {
-    let width = (WIDTH * scale).round() as i32;
+/// point, when the bar is `width` points wide: in the middle, and `TOP_GAP` points below the top. A screen narrower than the bar has it
+/// start at its left edge.
+fn top_centre(area: &PhysicalRect<i32, u32>, scale: f64, width: f64) -> PhysicalPosition<i32> {
+    let width = (width * scale).round() as i32;
     let room = i32::try_from(area.size.width).unwrap_or(i32::MAX) - width;
     PhysicalPosition::new(
         area.position.x + room.max(0) / 2,
@@ -433,32 +493,97 @@ mod tests {
     fn the_bar_is_12_points_below_the_top_of_the_work_area_and_in_the_middle() {
         // 680 points wide on a screen of 1920 pixels with a menu bar of 25: the centre, and 12 below the bar.
         assert_eq!(
-            top_centre(&area(0, 25, 1920, 1055), 1.0),
+            top_centre(&area(0, 25, 1920, 1055), 1.0, 680.0),
             PhysicalPosition::new(620, 37)
         );
         // On a screen of twice the pixels the points are twice the pixels too.
         assert_eq!(
-            top_centre(&area(0, 50, 3840, 2110), 2.0),
+            top_centre(&area(0, 50, 3840, 2110), 2.0, 680.0),
             PhysicalPosition::new(1240, 74)
         );
         // The primary screen need not start at the origin of the desktop.
         assert_eq!(
-            top_centre(&area(-1920, 0, 1920, 1040), 1.0),
+            top_centre(&area(-1920, 0, 1920, 1040), 1.0, 680.0),
             PhysicalPosition::new(-1300, 12)
         );
         // A scale that makes the size and the gap of the bar a fraction of a pixel (904.4 and 15.96): the nearest pixel.
         assert_eq!(
-            top_centre(&area(0, 0, 1920, 1080), 1.33),
+            top_centre(&area(0, 0, 1920, 1080), 1.33, 680.0),
             PhysicalPosition::new(508, 16)
+        );
+    }
+
+    #[test]
+    fn a_bar_that_is_as_wide_as_its_capsule_is_in_the_middle_too() {
+        // The window is as wide as what the page measured: 436 points on a screen of 1920 pixels.
+        assert_eq!(
+            top_centre(&area(0, 25, 1920, 1055), 1.0, 436.0),
+            PhysicalPosition::new(742, 37)
+        );
+        assert_eq!(
+            top_centre(&area(0, 50, 3840, 2110), 2.0, 436.0),
+            PhysicalPosition::new(1484, 74)
         );
     }
 
     #[test]
     fn a_screen_narrower_than_the_bar_does_not_push_it_off_the_left_edge() {
         assert_eq!(
-            top_centre(&area(100, 0, 400, 800), 1.0),
+            top_centre(&area(100, 0, 400, 800), 1.0, WIDTH),
             PhysicalPosition::new(100, 12)
         );
+    }
+
+    #[test]
+    fn the_size_that_the_page_measured_is_kept_between_what_a_bar_can_be() {
+        assert_eq!(bar_size(436.0, 64.0), Some((436.0, 64.0)));
+        // Wider than the most the bar is given (what the capsule needs in its worst case): it is that.
+        assert_eq!(bar_size(WIDTH + 500.0, 64.0), Some((WIDTH, 64.0)));
+        assert_eq!(bar_size(WIDTH, 64.0), Some((WIDTH, 64.0)));
+        // Narrower or lower than a bar can be: the least.
+        assert_eq!(bar_size(10.0, 64.0), Some((MIN_WIDTH, 64.0)));
+        assert_eq!(bar_size(436.0, 2.0), Some((436.0, MIN_HEIGHT)));
+        assert_eq!(bar_size(436.0, 4000.0), Some((436.0, MAX_HEIGHT)));
+        // What is no size at all is not a size to give a window: it stays as it is.
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.0, -50.0] {
+            assert_eq!(bar_size(bad, 64.0), None, "{bad}");
+            assert_eq!(bar_size(436.0, bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_bar_that_changes_its_width_keeps_the_middle_where_it_is() {
+        // In the middle of a 1920 screen at the start (680 wide, from 620), and shrunk to its capsule (436) and back.
+        assert_eq!(left_after_resize(620.0, 680.0, 436.0), 742.0);
+        assert_eq!(left_after_resize(742.0, 436.0, 680.0), 620.0);
+        // The same width is the same place.
+        assert_eq!(left_after_resize(742.0, 436.0, 436.0), 742.0);
+        // A bar that the person dragged somewhere keeps its middle there: it is not taken back to the middle of the screen.
+        assert_eq!(left_after_resize(100.0, 436.0, 500.0), 68.0);
+        // A fraction of a point is a fraction of the middle: the middle does not move.
+        assert_eq!(left_after_resize(0.0, 101.0, 100.0), 0.5);
+    }
+
+    #[test]
+    fn a_bar_that_was_never_made_is_not_made_by_the_size_of_its_page() {
+        let app = app();
+
+        resize(app.handle(), 436.0, 64.0);
+
+        assert!(app.handle().webview_windows().is_empty());
+    }
+
+    #[test]
+    fn a_bar_that_is_there_is_resized_and_stays_one_window() {
+        let app = app();
+        let handle = app.handle();
+        show(handle);
+
+        resize(handle, 436.0, 64.0);
+        resize(handle, f64::NAN, 64.0);
+        resize(handle, 5_000.0, 5_000.0);
+
+        assert_eq!(handle.webview_windows().len(), 1);
     }
 
     #[test]

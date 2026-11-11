@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import { api } from "../lib/api";
   import type { RecordingNote, RecordingTrack, RecordingView } from "../lib/api";
   import { formatClock } from "../lib/days";
@@ -26,6 +27,11 @@
     mic: "recording.hud.mic",
     screen: "recording.hud.screen",
   };
+
+  /** The page that has the capsule and the room round it for its shadow: its size is the size of the window. */
+  let stage: HTMLElement | undefined = $state();
+  /** The size last told to the Rust side, so that the same size is told once. */
+  let told = { width: 0, height: 0 };
 
   let view = $state.raw<RecordingView>(IDLE_RECORDING);
   /** The question "Discard this recording?" is asked. The recording goes on while it is. */
@@ -126,6 +132,41 @@
     }
   }
 
+  // The window is sized to what is drawn: a window that is wider than the capsule takes the clicks of the windows under it where it is
+  // transparent. The page is as wide as its capsule (not as its window, so that a capsule that grows is seen to grow), and the Rust side
+  // sizes the window to what is told here about the middle of where it is.
+  function measure() {
+    if (!stage || view.phase === "idle") return;
+    const box = stage.getBoundingClientRect();
+    // Whole pixels, rounded up, so that the window is never a fraction too small.
+    const width = Math.ceil(box.width);
+    const height = Math.ceil(box.height);
+    if (width <= 0 || height <= 0) return;
+    if (width === told.width && height === told.height) return;
+    told = { width, height };
+    api.recordingBarResized(width, height).catch((e: unknown) => console.warn("Could not tell the size:", e));
+  }
+
+  $effect(() => {
+    if (!stage) return;
+    const resizes = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(() => measure());
+    resizes?.observe(stage);
+    return () => resizes?.disconnect();
+  });
+
+  // The bar shows, or turns into the question, or into "Saving…": it is measured once it is drawn, whether or not the observer heard of
+  // it. (Not at each report of the time: the observer sees the clock grow.) The window is hidden between recordings and comes back with
+  // the size it had, so the first size of a recording is told again.
+  const phase = $derived(view.phase);
+  $effect(() => {
+    if (phase === "idle") {
+      told = { width: 0, height: 0 };
+      return;
+    }
+    void asking;
+    void tick().then(measure);
+  });
+
   const noteOf = (track: RecordingTrack) => notes.find((entry) => entry.track === track)?.note;
   const tooltip = (name: string, level: number | null) =>
     t(hearsSound(level) ? "recording.hud.hearing" : "recording.hud.quiet", { name });
@@ -139,7 +180,7 @@
   </span>
 {/snippet}
 
-<main>
+<main bind:this={stage}>
   {#if view.phase !== "idle"}
     <div class="capsule" data-tauri-drag-region>
       <span
@@ -231,16 +272,19 @@
 </main>
 
 <style>
+  /* As wide as the capsule and no wider, and in the middle of the window while the window is not yet sized to it. */
   main {
-    display: flex;
-    justify-content: center;
+    width: max-content;
+    margin: 0 auto;
     padding: 6px 12px;
   }
+  /* The most that it is: the window of the bar is as wide as `WIDTH` of `hud.rs` at the most, less the margin of the page. It is a length
+     and not 100%, so that the capsule is the size of its content and not of the window. */
   .capsule {
     display: flex;
     align-items: center;
     gap: 8px;
-    max-width: 100%;
+    max-width: 656px;
     height: 52px;
     padding: 0 10px 0 16px;
     white-space: nowrap;

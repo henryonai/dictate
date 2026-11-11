@@ -150,6 +150,7 @@ fn main() {
             recording::commands::recording_stop,
             recording::commands::recording_discard,
             recording::commands::recording_state,
+            recording::commands::recording_bar_resized,
             panel::dictation_languages,
             panel::dictation_stop,
             panel::dictation_cancel,
@@ -393,6 +394,9 @@ mod tests {
     /// from the settings.
     const BAR_SHARED_COMMAND: &str = "panel_language";
 
+    /// The command that only the recording bar has: its page tells how big its capsule is, and the window is sized to it.
+    const BAR_ONLY_COMMAND: &str = "recording_bar_resized";
+
     /// The commands of the two floating windows.
     const PANEL_COMMANDS: [&str; 18] = [
         "dictation_languages",
@@ -518,6 +522,7 @@ mod tests {
             .into_iter()
             .chain(PANEL_COMMANDS)
             .chain(MEETINGS_COMMANDS)
+            .chain([BAR_ONLY_COMMAND])
         {
             assert!(asked_by(&app, "stranger", command).is_err(), "{command}");
         }
@@ -585,8 +590,10 @@ mod tests {
             assert!(RECORDING_COMMANDS.contains(&command), "{command}");
             assert_eq!(asked_by(&app, "recorder", command), Ok(()), "{command}");
         }
-        // It speaks the language of the settings, which it asks for as the floating dictation windows do.
+        // It speaks the language of the settings, which it asks for as the floating dictation windows do, and it tells how big its
+        // capsule is.
         assert_eq!(asked_by(&app, "recorder", BAR_SHARED_COMMAND), Ok(()));
+        assert_eq!(asked_by(&app, "recorder", BAR_ONLY_COMMAND), Ok(()));
         // Not starting a recording, nor what the picker lists, nor anything of the library, Settings or the dictation windows.
         let others = SETTINGS_COMMANDS
             .into_iter()
@@ -630,7 +637,7 @@ mod tests {
         assert_eq!(windows, ["recorder"]);
         let wanted: BTreeSet<String> = RECORDER_COMMANDS
             .into_iter()
-            .chain([BAR_SHARED_COMMAND])
+            .chain([BAR_SHARED_COMMAND, BAR_ONLY_COMMAND])
             .map(str::to_owned)
             .collect();
         assert_eq!(commands, wanted);
@@ -644,6 +651,26 @@ mod tests {
                 "core:window:allow-start-dragging"
             ]
         );
+    }
+
+    #[test]
+    fn only_the_bar_may_tell_how_big_its_capsule_is() {
+        let app = app();
+
+        assert_eq!(asked_by(&app, "recorder", BAR_ONLY_COMMAND), Ok(()));
+        // The size of the bar's window is its page's to say: no other window may size it, and it is not in their capabilities.
+        for window in ["settings", "bubble", "card", "meetings", "stranger"] {
+            let refusal = asked_by(&app, window, BAR_ONLY_COMMAND).expect_err(window);
+            assert!(refusal.contains("not allowed"), "{window}: {refusal}");
+        }
+        for file in [
+            include_str!("../capabilities/default.json"),
+            include_str!("../capabilities/panel.json"),
+            include_str!("../capabilities/meetings.json"),
+        ] {
+            let (_, commands, _) = capability(file);
+            assert!(!commands.contains(BAR_ONLY_COMMAND));
+        }
     }
 
     #[test]
@@ -800,6 +827,7 @@ mod tests {
             .into_iter()
             .chain(PANEL_COMMANDS)
             .chain(MEETINGS_COMMANDS)
+            .chain([BAR_ONLY_COMMAND])
             .map(str::to_owned)
             .collect();
         for build in as_checked_out(include_str!("../build.rs")) {

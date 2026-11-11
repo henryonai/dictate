@@ -138,6 +138,15 @@ test("the notes are not clipped before the meters: they keep their size and the 
   expect(rule(".capsule")).not.toMatch(/overflow/);
 });
 
+test("the capsule is as wide as its content, at most the window less the margin of the page, as a length and not a share of the window", () => {
+  // The window is sized to the capsule: a capsule that was a share of the window would be the size of the window it sized, and would
+  // never be seen to grow. The page is as wide as its capsule (`max-content`), and the capsule is held to a length that is the room.
+  expect(px(".capsule", "max-width")).toBe(room);
+  expect(rule(".capsule")).not.toMatch(/max-width:\s*[\d.]+%/);
+  expect(rule(".capsule")).not.toMatch(/(?:^|[\s;])width:\s*[\d.]+%/);
+  expect(rule("main")).toMatch(/width:\s*max-content/);
+});
+
 test("the room of the window is what the Rust side gives the bar, less the margin of the page", () => {
   expect(hud).toMatch(/const WIDTH: f64 = \d+(\.\d+)?;/);
   expect(sidePadding("main").left).toBe(sidePadding("main").right);

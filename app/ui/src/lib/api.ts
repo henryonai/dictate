@@ -505,6 +505,11 @@ export const api = {
   recordingDiscard: () => invokeView<void>("recording_discard"),
   /** How the recording is now: for a window that opens in the middle of one. */
   recordingState: () => invoke<RecordingView>("recording_state"),
+  /**
+   * What the bar's page measured of its capsule and the room round it, in CSS pixels: the Rust side sizes the window of the bar to it, about
+   * its middle (a window wider than what it draws takes the clicks of the windows under it). Only the bar may ask.
+   */
+  recordingBarResized: (width: number, height: number) => invoke<void>("recording_bar_resized", { width, height }),
 
   // The two floating windows of dictation (the bubble and the card).
   /** The BCP-47 codes of the language menu, in the order it shows them. */

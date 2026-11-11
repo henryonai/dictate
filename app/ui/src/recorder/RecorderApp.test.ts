@@ -14,6 +14,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
   setLanguage("en");
 });
@@ -420,6 +421,108 @@ test("vietnamese: paused, saving and the notes", async () => {
 
   events.sendRecordingState(fakeRecording({ phase: "finishing", levels: { mic: null, system: null } }));
   expect(await screen.findByRole("button", { name: "Đang lưu…" })).toBeDisabled();
+});
+
+/** A `ResizeObserver` that tells when a test says so, and what it observes. */
+function stubObserver() {
+  let notify: ResizeObserverCallback | undefined;
+  const observed: Element[] = [];
+  const disconnect = vi.fn();
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      constructor(callback: ResizeObserverCallback) {
+        notify = callback;
+      }
+      observe(element: Element) {
+        observed.push(element);
+      }
+      unobserve() {}
+      disconnect = disconnect;
+    },
+  );
+  return { observed, disconnect, resize: () => notify?.([], {} as ResizeObserver) };
+}
+
+const box = (width: number, height: number) => ({ x: 0, y: 0, left: 0, top: 0, right: width, bottom: height, width, height, toJSON() {} });
+
+test("the size of the capsule and the room round it is told to the Rust side, which sizes the window to it", async () => {
+  const observer = stubObserver();
+  const measure = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(box(435.3, 63.2));
+
+  await open();
+  observer.resize();
+
+  // In whole pixels, rounded up, so that the window is never a fraction too small.
+  await vi.waitFor(() => expect(api.recordingBarResized).toHaveBeenCalledWith(436, 64));
+  // What is observed is the page that has the capsule and its margin, and not the window: the window is sized to it, and what is
+  // sized to the window would not be seen to grow.
+  expect(observer.observed).toEqual([document.querySelector("main")]);
+
+  // The same size is not told twice, and a new one is: a note takes room.
+  observer.resize();
+  expect(vi.mocked(api.recordingBarResized).mock.calls.filter(([w, h]) => w === 436 && h === 64)).toHaveLength(1);
+  measure.mockReturnValue(box(520.5, 63.2));
+  observer.resize();
+  await vi.waitFor(() => expect(api.recordingBarResized).toHaveBeenLastCalledWith(521, 64));
+});
+
+test("the size of what is drawn is told when the bar first shows, whether or not the observer was heard", async () => {
+  stubObserver();
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(box(400, 64));
+
+  await open();
+
+  await vi.waitFor(() => expect(api.recordingBarResized).toHaveBeenCalledWith(400, 64));
+});
+
+test("an idle bar tells no size: there is no capsule, and the window is hidden", async () => {
+  const observer = stubObserver();
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(box(24, 12));
+
+  await open(IDLE_RECORDING);
+  observer.resize();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  expect(api.recordingBarResized).not.toHaveBeenCalled();
+});
+
+test("a size that is the same at the next recording is told again, since the window was hidden between", async () => {
+  const observer = stubObserver();
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(box(400, 64));
+  await open();
+  await vi.waitFor(() => expect(api.recordingBarResized).toHaveBeenCalledTimes(1));
+
+  events.sendRecordingState(IDLE_RECORDING);
+  await vi.waitFor(() => expect(screen.queryByRole("button")).not.toBeInTheDocument());
+  events.sendRecordingState(fakeRecording({ phase: "recording", elapsedMs: 0 }));
+  await screen.findByRole("button", { name: "Stop & summarize" });
+  observer.resize();
+
+  await vi.waitFor(() => expect(api.recordingBarResized).toHaveBeenCalledTimes(2));
+});
+
+test("a size that can't be told is a warning and nothing else", async () => {
+  const observer = stubObserver();
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(box(400, 64));
+  await open();
+  vi.mocked(api.recordingBarResized).mockRejectedValue("The window is gone.");
+
+  observer.resize();
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(box(450, 64));
+  observer.resize();
+
+  await vi.waitFor(() => expect(console.warn).toHaveBeenCalledWith("Could not tell the size:", "The window is gone."));
+  expect(screen.getByRole("button", { name: "Stop & summarize" })).toBeEnabled();
+});
+
+test("the observer goes with the page", async () => {
+  const observer = stubObserver();
+  const view = await open();
+
+  view.unmount();
+
+  expect(observer.disconnect).toHaveBeenCalled();
 });
 
 test("the bar hears the recording until it goes away", async () => {

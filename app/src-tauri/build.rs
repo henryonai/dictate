@@ -58,6 +58,8 @@ const COMMANDS: &[&str] = &[
     "recording_stop",
     "recording_discard",
     "recording_state",
+    // The bar's own: its page tells how big its capsule is.
+    "recording_bar_resized",
     // The bubble, the chip and the card.
     "dictation_languages",
     "dictation_stop",

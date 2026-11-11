@@ -101,6 +101,7 @@ describe("each wrapper calls its command with the argument names the Rust side e
     ["recordingStop", "recording_stop", undefined, () => api.recordingStop()],
     ["recordingDiscard", "recording_discard", undefined, () => api.recordingDiscard()],
     ["recordingState", "recording_state", undefined, () => api.recordingState()],
+    ["recordingBarResized", "recording_bar_resized", { width: 436, height: 64 }, () => api.recordingBarResized(436, 64)],
     ["openUrl", "plugin:opener|open_url", { url: "https://example.com/keys" }, () => api.openUrl("https://example.com/keys")],
   ];
 
