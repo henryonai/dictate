@@ -1,11 +1,13 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "recorder",
-  "description": "What the recording bar may do: hear the state it draws, and pause, resume, stop or throw away the recording. Starting one is the meetings window's.",
+  "description": "What the recording bar may do: hear the state it draws, ask for the language it speaks, be dragged by its capsule, and pause, resume, stop or throw away the recording. Starting one is the meetings window's.",
   "windows": ["recorder"],
   "permissions": [
     "core:event:allow-listen",
     "core:event:allow-unlisten",
+    "core:window:allow-start-dragging",
+    "allow-panel-language",
     "allow-recording-pause",
     "allow-recording-resume",
     "allow-recording-stop",

@@ -329,7 +329,7 @@ mod tests {
     ];
 
     /// The commands of the meetings window.
-    const MEETINGS_COMMANDS: [&str; 29] = [
+    const MEETINGS_COMMANDS: [&str; 30] = [
         "meetings_list",
         "meeting_detail",
         "meetings_pick_files",
@@ -352,6 +352,9 @@ mod tests {
         "meetings_open_settings",
         "meetings_readiness",
         "media_tools",
+        // The pane of System Settings where Screen Recording is turned on: what the picker's button and the error of a start that was
+        // refused for the permission open.
+        "open_permission_settings",
         // The recording: what the picker offers, and starting, pausing, stopping and throwing away.
         "recording_sources",
         "recording_start",
@@ -383,8 +386,12 @@ mod tests {
         "recording_state",
     ];
 
-    /// The one command that Settings and the meetings window both ask.
-    const SHARED_COMMAND: &str = "media_tools";
+    /// The commands that Settings and the meetings window both ask: the tools of the system, and the panes of System Settings.
+    const SHARED_COMMANDS: [&str; 2] = ["media_tools", "open_permission_settings"];
+
+    /// The one command that the recording bar shares with the floating dictation windows: the language of the UI, which it can't read
+    /// from the settings.
+    const BAR_SHARED_COMMAND: &str = "panel_language";
 
     /// The commands of the two floating windows.
     const PANEL_COMMANDS: [&str; 18] = [
@@ -462,10 +469,11 @@ mod tests {
             let refusal = asked_by(&app, "settings", command).expect_err(command);
             assert!(refusal.contains("not allowed"), "{command}: {refusal}");
         }
-        // The library is the meetings window's: Settings has only the tools of the system in common with it.
+        // The library is the meetings window's: Settings has only the tools of the system and the panes of System Settings in common
+        // with it.
         for command in MEETINGS_COMMANDS
             .into_iter()
-            .filter(|c| *c != SHARED_COMMAND)
+            .filter(|c| !SHARED_COMMANDS.contains(c))
         {
             let refusal = asked_by(&app, "settings", command).expect_err(command);
             assert!(refusal.contains("not allowed"), "{command}: {refusal}");
@@ -577,12 +585,16 @@ mod tests {
             assert!(RECORDING_COMMANDS.contains(&command), "{command}");
             assert_eq!(asked_by(&app, "recorder", command), Ok(()), "{command}");
         }
+        // It speaks the language of the settings, which it asks for as the floating dictation windows do.
+        assert_eq!(asked_by(&app, "recorder", BAR_SHARED_COMMAND), Ok(()));
         // Not starting a recording, nor what the picker lists, nor anything of the library, Settings or the dictation windows.
         let others = SETTINGS_COMMANDS
             .into_iter()
             .chain(PANEL_COMMANDS)
             .chain(MEETINGS_COMMANDS)
-            .filter(|command| !RECORDER_COMMANDS.contains(command));
+            .filter(|command| {
+                !RECORDER_COMMANDS.contains(command) && *command != BAR_SHARED_COMMAND
+            });
         for command in others {
             let refusal = asked_by(&app, "recorder", command).expect_err(command);
             assert!(refusal.contains("not allowed"), "{command}: {refusal}");
@@ -611,17 +623,58 @@ mod tests {
     }
 
     #[test]
-    fn the_capability_of_the_recorder_is_its_five_commands_and_listening_for_events() {
+    fn the_capability_of_the_recorder_is_its_five_commands_the_language_listening_for_events_and_being_dragged(
+    ) {
         let (windows, commands, others) = capability(include_str!("../capabilities/recorder.json"));
 
         assert_eq!(windows, ["recorder"]);
-        let wanted: BTreeSet<String> = RECORDER_COMMANDS.into_iter().map(str::to_owned).collect();
+        let wanted: BTreeSet<String> = RECORDER_COMMANDS
+            .into_iter()
+            .chain([BAR_SHARED_COMMAND])
+            .map(str::to_owned)
+            .collect();
         assert_eq!(commands, wanted);
-        // The state of the recording (`recording-state`); no more of the core.
+        // The state of the recording (`recording-state`), and the page's drag region (`data-tauri-drag-region`) asking the window to be
+        // moved; no more of the core.
         assert_eq!(
             others,
-            ["core:event:allow-listen", "core:event:allow-unlisten"]
+            [
+                "core:event:allow-listen",
+                "core:event:allow-unlisten",
+                "core:window:allow-start-dragging"
+            ]
         );
+    }
+
+    #[test]
+    fn only_the_bar_may_ask_for_its_window_to_be_dragged() {
+        let app = app();
+
+        // What its page asks when the capsule is pressed: not refused (what the window does with it, in a window that is not
+        // real, is not what is tested).
+        let drag = asked_by(&app, "recorder", "plugin:window|start_dragging");
+        assert!(
+            !drag
+                .clone()
+                .is_err_and(|refusal| refusal.contains("not allowed")),
+            "{drag:?}"
+        );
+        for window in ["settings", "bubble", "card", "meetings", "stranger"] {
+            let refusal = asked_by(&app, window, "plugin:window|start_dragging")
+                .expect_err("a window that is not the bar");
+            assert!(refusal.contains("not allowed"), "{window}: {refusal}");
+        }
+        // And nothing else of the windows: the bar can't move, close or resize any window by asking.
+        for command in [
+            "plugin:window|close",
+            "plugin:window|set_size",
+            "plugin:window|hide",
+            "plugin:window|destroy",
+            "plugin:window|toggle_maximize",
+        ] {
+            let refusal = asked_by(&app, "recorder", command).expect_err(command);
+            assert!(refusal.contains("not allowed"), "{command}: {refusal}");
+        }
     }
 
     /// The commands a capability file gives (`allow-get-settings` is `get_settings`), and what else it names.
@@ -663,13 +716,13 @@ mod tests {
     }
 
     #[test]
-    fn no_command_of_meetings_is_in_the_other_capabilities_except_the_one_that_is_shared() {
+    fn no_command_of_meetings_is_in_the_other_capabilities_except_the_ones_that_are_shared() {
         let (_, settings, _) = capability(include_str!("../capabilities/default.json"));
         let (_, panels, _) = capability(include_str!("../capabilities/panel.json"));
         for command in MEETINGS_COMMANDS {
             assert_eq!(
                 settings.contains(command),
-                command == SHARED_COMMAND,
+                SHARED_COMMANDS.contains(&command),
                 "{command} in default.json"
             );
             assert!(!panels.contains(command), "{command} in panel.json");

@@ -2,8 +2,9 @@
 //! first time a recording begins (its page is `recorder.html`), shown when a recording begins and hidden when it is over.
 //!
 //! It stands at the top and in the middle of the primary screen, 12 points below the top of the part that no menu bar covers, and
-//! each time it is shown it goes back there: where the person dragged it is not kept (as in the Swift app). It never takes the
-//! focus. On macOS it is a non-activating panel (as the bubble of the dictation is), elsewhere a window that refuses the focus.
+//! each time it is shown it goes back there: where the person dragged it (by its capsule, on every system) is not kept (as in the
+//! Swift app). It never takes the focus. On macOS it is a non-activating panel (as the bubble of the dictation is), elsewhere a
+//! window that refuses the focus.
 //!
 //! What a recording of the screen would otherwise show of the app is kept out of it: the bar asks the system to leave its content
 //! out of any capture of the screen on every OS, and on Windows so do the other windows of the app while a recording goes on. macOS
@@ -210,7 +211,8 @@ fn make_panel<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .transparent(true)
         .has_shadow(false)
         .hides_on_deactivate(false)
-        // Dragged by its background, as the bar of the Swift app is: the page has no drag handle to give.
+        // Dragged by its background, as the bar of the Swift app is. The page also has a drag region (`data-tauri-drag-region` on the
+        // capsule, which every system uses, this one too), and `capabilities/recorder.json` lets it ask for the window to be moved.
         .movable_by_window_background(true)
         .with_window(shaped)
         .build()
