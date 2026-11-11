@@ -55,7 +55,10 @@ impl StemWriter {
                 "the source of a stem needs a sample rate",
             ));
         }
-        let writer = hound::WavWriter::create(path, spec()).map_err(into_io_error)?;
+        let mut writer = hound::WavWriter::create(path, spec()).map_err(into_io_error)?;
+        // The header is written to the file now, and not with the first second of sound: a source that says nothing for a
+        // while (a system that plays no sound) must not leave a file that is shorter than a header for a crash to find.
+        writer.flush().map_err(into_io_error)?;
         Ok(StemWriter {
             writer,
             source_rate,
@@ -386,6 +389,21 @@ mod tests {
         let written = StemWriter::create(&path, 44_100).unwrap().finish().unwrap();
         assert_eq!(written, 0.0);
         assert!(read(&path).1.is_empty());
+    }
+
+    #[test]
+    fn a_stem_that_was_just_made_is_a_file_that_can_be_read() {
+        // A source that has not delivered a second of sound (a system that plays none, on Windows) leaves a stem that a
+        // crash finds as it is: it must be a WAV with no samples, and not a file with a header that was never written.
+        let dir = tempfile::tempdir().unwrap();
+        let path = stem_in(&dir);
+        let stem = StemWriter::create(&path, 48_000).unwrap();
+
+        assert!(std::fs::metadata(&path).unwrap().len() >= 44);
+        let reader = hound::WavReader::open(&path).unwrap();
+        assert_eq!(reader.duration(), 0);
+        drop(reader);
+        drop(stem);
     }
 
     #[test]
