@@ -17,7 +17,7 @@ use super::Finished;
 use crate::media::encode::{publish, remove_part, EncodeError};
 use crate::record::marker::MARKER;
 use crate::record::mix::mix_stems;
-use crate::record::stem::{pad_to, STEM_RATE};
+use crate::record::stem::{into_io_error, mend_cut_short, pad_to, STEM_RATE};
 use crate::record::video::{mux_within, probe_seconds, Container};
 use crate::record::Track;
 
@@ -54,7 +54,9 @@ pub(super) struct Hints {
 /// no start-up tries it again.
 ///
 /// A stem that cannot be read (a crash may leave one that is cut inside its header) does not stop that: it is set aside
-/// as `<name>.unreadable`, which is not deleted, and the rest is put together, with a note that says so.
+/// as `<name>.unreadable`, which is not deleted, and the rest is put together, with a note that says so. A stem whose
+/// header says more sound than the file holds (a power cut can leave the header of a flush with less of the sound than
+/// that) is not that: its header is corrected to the sound that is there, with a note, and it is put together as it is.
 ///
 /// A video that is there (`video.*`, or the `video.*.part` of an encoder that did not end) is used: the part is
 /// renamed first. Whoever sweeps the folders for `*.part` files (`meetings::sweep_stale_files` does, at start-up) must
@@ -225,7 +227,8 @@ struct Stem {
 
 /// The stems in `folder`. One with no samples is removed: its track delivered nothing. One that cannot be read at all
 /// (what a crash leaves when it comes before the header of the stem was written, or in the middle of it) is no reason to
-/// lose the others: it is set aside as `<name>.unreadable`, which is not deleted, and `notes` says so.
+/// lose the others: it is set aside as `<name>.unreadable`, which is not deleted, and `notes` says so. One that says
+/// more sound than the file holds (a power cut) is corrected to what it holds, and `notes` says so.
 fn find_stems(folder: &Path, notes: &mut Vec<String>) -> Vec<Stem> {
     let mut stems = Vec::new();
     for (_, name) in STEMS {
@@ -233,8 +236,8 @@ fn find_stems(folder: &Path, notes: &mut Vec<String>) -> Vec<Stem> {
         if !path.is_file() {
             continue;
         }
-        let samples = match hound::WavReader::open(&path) {
-            Ok(reader) => u64::from(reader.duration()),
+        let samples = match stem_samples(&path, notes) {
+            Ok(samples) => samples,
             Err(error) => {
                 set_aside(&path, &error, notes);
                 continue;
@@ -252,9 +255,37 @@ fn find_stems(folder: &Path, notes: &mut Vec<String>) -> Vec<Stem> {
     stems
 }
 
+/// How many samples the stem at `path` holds. A header that says more than the file holds is corrected first: what the
+/// disk has of a stem after a power cut may be the header of its last flush with less sound than that, and reading the
+/// sound to the end that the header says would fail (and with it the whole recording, at every start-up). `notes` says
+/// that it was. An `Err` is a stem that cannot be read, or whose header cannot be corrected.
+fn stem_samples(path: &Path, notes: &mut Vec<String>) -> io::Result<u64> {
+    let samples = hound::WavReader::open(path)
+        .map(|reader| u64::from(reader.duration()))
+        .map_err(into_io_error)?;
+    match mend_cut_short(path) {
+        Ok(false) => Ok(samples),
+        Ok(true) => {
+            let held = hound::WavReader::open(path)
+                .map(|reader| u64::from(reader.duration()))
+                .map_err(into_io_error)?;
+            notes.push(format!(
+                "{} was cut short (the computer may have lost power): its header was corrected to the {:.1} s of sound that the file holds.",
+                name_of(path),
+                held as f64 / f64::from(STEM_RATE)
+            ));
+            Ok(held)
+        }
+        Err(error) => Err(io::Error::new(
+            error.kind(),
+            format!("it says more sound than the file holds, and its header could not be corrected: {error}"),
+        )),
+    }
+}
+
 /// Leaves the stem at `path`, which `error` says cannot be read, out of the recording: it is renamed to `<name>.unreadable`
 /// (and stays where it is when that name is taken, so that nothing is overwritten).
-fn set_aside(path: &Path, error: &hound::Error, notes: &mut Vec<String>) {
+fn set_aside(path: &Path, error: &dyn std::fmt::Display, notes: &mut Vec<String>) {
     let name = name_of(path);
     let aside = path.with_file_name(format!("{name}.unreadable"));
     let kept = if !aside.exists() && fs::rename(path, &aside).is_ok() {
@@ -702,6 +733,137 @@ mod tests {
             "{:?}",
             finished.notes
         );
+    }
+
+    /// The bytes that the header of a stem takes.
+    const HEADER: u64 = 44;
+
+    /// A stem of `seconds` of a tone as a power cut finds it: the disk has the header, which says all of the sound, and
+    /// only `held` bytes of the sound itself (the pages of the file do not reach the disk in the order they were written).
+    fn stem_cut_short(folder: &Path, name: &str, seconds: f32, held: u64) -> PathBuf {
+        let path = tone_stem(folder, name, 440.0, seconds);
+        let file = fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_len(HEADER + held).unwrap();
+        path
+    }
+
+    #[test]
+    fn a_stem_whose_header_says_more_than_the_file_holds_is_recovered_up_to_what_it_holds() {
+        let dir = tempfile::tempdir().unwrap();
+        // The header says 3 s, the file holds 1.5 s; the other stem is whole.
+        stem_cut_short(dir.path(), "mic.wav", 3.0, 2 * 72_000);
+        tone_stem(dir.path(), "system.wav", 880.0, 1.0);
+        write_marker(dir.path());
+
+        let finished = recover(dir.path(), None)
+            .expect("a marker")
+            .expect("a stem that is cut short does not stop the recovery");
+
+        assert!(
+            is_sound_file(&name_of(&finished.media)),
+            "{:?}",
+            finished.media
+        );
+        assert!(finished.media.is_file());
+        assert_eq!(finished.duration, 1.5);
+        assert_eq!(finished.notes.len(), 1, "{:?}", finished.notes);
+        assert!(
+            finished.notes[0].contains("mic.wav") && finished.notes[0].contains("cut short"),
+            "{:?}",
+            finished.notes
+        );
+        // Nothing is left to try again, and nothing was set aside: the stem was good up to where it ends.
+        assert_eq!(names(dir.path()), [name_of(&finished.media)]);
+    }
+
+    #[test]
+    fn a_stem_cut_in_the_middle_of_a_sample_is_rounded_down_to_the_samples_it_holds() {
+        let dir = tempfile::tempdir().unwrap();
+        stem_cut_short(dir.path(), "mic.wav", 3.0, 2 * 96_000 + 1);
+        write_marker(dir.path());
+
+        let finished = recover(dir.path(), None)
+            .expect("a marker")
+            .expect("a stem that is cut in a sample does not stop the recovery");
+
+        assert_eq!(finished.duration, 2.0);
+        assert!(
+            finished.notes.iter().any(|n| n.contains("cut short")),
+            "{:?}",
+            finished.notes
+        );
+        assert_eq!(names(dir.path()), [name_of(&finished.media)]);
+    }
+
+    #[test]
+    fn a_stem_that_holds_all_that_its_header_says_is_left_as_it_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = tone_stem(dir.path(), "mic.wav", 440.0, 1.0);
+        let before = fs::read(&path).unwrap();
+        let mut notes = Vec::new();
+
+        let stems = find_stems(dir.path(), &mut notes);
+
+        assert_eq!(stems.len(), 1);
+        assert_eq!(stems[0].seconds, 1.0);
+        assert!(notes.is_empty(), "{notes:?}");
+        assert_eq!(fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn a_stem_that_holds_more_than_its_header_says_is_left_as_it_is() {
+        // What a program that was killed leaves (the page cache stays whole): the header is a flush behind the sound.
+        let dir = tempfile::tempdir().unwrap();
+        let path = tone_stem(dir.path(), "mic.wav", 440.0, 1.0);
+        let mut bytes = fs::read(&path).unwrap();
+        bytes.extend_from_slice(&[1; 4_000]);
+        fs::write(&path, &bytes).unwrap();
+        let mut notes = Vec::new();
+
+        let stems = find_stems(dir.path(), &mut notes);
+
+        assert_eq!(stems.len(), 1);
+        assert_eq!(stems[0].seconds, 1.0);
+        assert!(notes.is_empty(), "{notes:?}");
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn a_stem_that_is_cut_short_and_cannot_be_corrected_is_set_aside_and_the_other_is_recovered() {
+        let dir = tempfile::tempdir().unwrap();
+        tone_stem(dir.path(), "mic.wav", 440.0, 1.5);
+        let short = stem_cut_short(dir.path(), "system.wav", 3.0, 2 * 48_000);
+        let mut permissions = fs::metadata(&short).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&short, permissions).unwrap();
+        if fs::OpenOptions::new().write(true).open(&short).is_ok() {
+            // A user who may write to everything (root in a container): there is no file that cannot be corrected.
+            return;
+        }
+        write_marker(dir.path());
+
+        let finished = finalize(dir.path(), None).unwrap();
+
+        assert_eq!(finished.duration, 1.5);
+        assert!(
+            finished
+                .notes
+                .iter()
+                .any(|n| n.contains("system.wav") && n.contains("corrected")),
+            "{:?}",
+            finished.notes
+        );
+        let aside = dir.path().join("system.wav.unreadable");
+        assert!(aside.is_file(), "{:?}", names(dir.path()));
+        assert_eq!(
+            fs::metadata(&aside).unwrap().len(),
+            HEADER + 2 * 48_000,
+            "what it holds is kept as it is"
+        );
+        let mut permissions = fs::metadata(&aside).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        permissions.set_readonly(false);
+        fs::set_permissions(&aside, permissions).unwrap();
     }
 
     /// A stand-in for ffmpeg that does what `on_mux` says when it is asked to put the sound under a video, and is

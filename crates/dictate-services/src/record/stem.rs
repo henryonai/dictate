@@ -4,8 +4,8 @@
 //! is.
 
 use crate::audio::resample::StreamResampler;
-use std::fs::File;
-use std::io::{self, BufWriter};
+use std::fs::{File, OpenOptions};
+use std::io::{self, BufWriter, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::time::Duration;
 
@@ -19,6 +19,8 @@ pub const MAX_GAP_FILL: Duration = Duration::from_secs(6 * 3600);
 /// `StemWriter::push` puts the buffer back in its place. Buffers are stamped when they are taken from the device,
 /// and that jitters by milliseconds.
 const TOLERANCE: u64 = 20 * STEM_RATE as u64 / 1000;
+/// The bytes of a sample of a stem (16 bits, one channel).
+const BYTES_PER_SAMPLE: u64 = 2;
 /// The audio between two flushes of the WAV header: a second of it.
 const FLUSH_EVERY: u64 = STEM_RATE as u64;
 
@@ -75,7 +77,8 @@ impl StemWriter {
     /// a while: a system that plays no sound delivers no buffers), and the start of `mono` is dropped when `at` is
     /// more than 20 ms before it (a stamp that is late must not make the stem longer than the recording). Within
     /// 20 ms the buffer follows on from the last as it is. The WAV header is flushed for every second of audio
-    /// written, so that a stem that was never finished is still a file that can be read, up to the last flush.
+    /// written, so that a stem that was never finished is still a file that can be read, up to the last flush (and when a
+    /// power cut left the header with less sound behind it than it says, `mend_cut_short` corrects it).
     pub fn push(&mut self, at: Duration, mono: &[f32]) -> io::Result<()> {
         if mono.is_empty() {
             return Ok(());
@@ -198,6 +201,50 @@ pub fn pad_to(path: &Path, seconds: f64) -> io::Result<()> {
         writer.write_sample(0_i16).map_err(into_io_error)?;
     }
     writer.finalize().map_err(into_io_error)
+}
+
+/// Corrects the header of the stem at `path` when it says more sound than the file holds, and returns whether it did.
+///
+/// `StemWriter` writes the sound and then the header, but the disk is not bound to take the pages of a file in that
+/// order: after a power cut (or a battery that ran out) the header of the last flush may be there with part of its sound
+/// missing, and the stem cannot be read to the end that its header says. The two sizes in the header (of the sound, and
+/// of the whole RIFF) are written again for the whole samples that the file holds. Nothing else is changed: the file is
+/// not shortened (a half sample at its end stays), and no sound is removed.
+///
+/// A stem that holds all that its header says, or more (a program that was killed leaves a header that is a flush
+/// behind, with the sound after it), is left as it is, and so is a file that is not a stem. An `Err` is a file that
+/// cannot be read as a WAV file, or cannot be written to.
+pub(super) fn mend_cut_short(path: &Path) -> io::Result<bool> {
+    let reader = hound::WavReader::open(path).map_err(into_io_error)?;
+    if reader.spec() != spec() {
+        return Ok(false);
+    }
+    let says = u64::from(reader.len()) * BYTES_PER_SAMPLE;
+    // The reader is where the sound starts, and what is before it is the header, whatever chunks it has.
+    let mut file = reader.into_inner();
+    let data_at = file.stream_position()?;
+    let holds = file.get_ref().metadata()?.len().saturating_sub(data_at);
+    drop(file);
+    if holds >= says {
+        return Ok(false);
+    }
+
+    let kept = holds - holds % BYTES_PER_SAMPLE;
+    let too_big = |_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "the sizes of a stem are 32 bits",
+        )
+    };
+    let data_size = u32::try_from(kept).map_err(too_big)?;
+    let riff_size = u32::try_from(data_at - 8 + kept).map_err(too_big)?;
+    let mut file = OpenOptions::new().write(true).open(path)?;
+    // The size of the sound is what is read, and the one that is written first.
+    file.seek(SeekFrom::Start(data_at - 4))?;
+    file.write_all(&data_size.to_le_bytes())?;
+    file.seek(SeekFrom::Start(4))?;
+    file.write_all(&riff_size.to_le_bytes())?;
+    Ok(true)
 }
 
 /// The sample of the stem that `at` is, rounded.
@@ -540,5 +587,148 @@ mod tests {
         crate::audio::wav::write_16k_mono(&path, &[0.0; 160]).unwrap();
         let error = pad_to(&path, 2.0).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    /// The bytes that the header of a stem takes.
+    const HEADER: usize = 44;
+
+    /// A finished stem of `seconds` of a tone, as bytes.
+    fn whole_stem(dir: &tempfile::TempDir, seconds: f32) -> Vec<u8> {
+        let path = stem_in(dir);
+        let mut stem = StemWriter::create(&path, 48_000).unwrap();
+        stem.push(at(0.0), &sine(440.0, 48_000, seconds)).unwrap();
+        stem.finish().unwrap();
+        std::fs::read(&path).unwrap()
+    }
+
+    fn le_u32(bytes: &[u8], at: usize) -> u32 {
+        u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap())
+    }
+
+    #[test]
+    fn a_header_that_says_more_than_the_file_holds_is_corrected_to_what_it_holds() {
+        let dir = tempfile::tempdir().unwrap();
+        let whole = whole_stem(&dir, 2.0);
+        let cut = &whole[..HEADER + 2 * 48_000];
+        let path = stem_in(&dir);
+        std::fs::write(&path, cut).unwrap();
+
+        assert!(mend_cut_short(&path).unwrap());
+
+        let mended = std::fs::read(&path).unwrap();
+        // Nothing of the file is lost, and only the two sizes of the header are different.
+        assert_eq!(mended.len(), cut.len());
+        assert_eq!(le_u32(&mended, 4) as usize, cut.len() - 8);
+        assert_eq!(le_u32(&mended, 40) as usize, 2 * 48_000);
+        assert_eq!(mended[8..40], whole[8..40]);
+        assert_eq!(mended[HEADER..], whole[HEADER..cut.len()]);
+        let (spec, samples) = read(&path);
+        assert_eq!(spec, super::spec());
+        assert_eq!(samples.len(), 48_000);
+        // What was there is what is read: the mix gets the first second of the tone.
+        let expected: Vec<i16> = whole[HEADER..cut.len()]
+            .chunks(2)
+            .map(|b| i16::from_le_bytes([b[0], b[1]]))
+            .collect();
+        assert_eq!(samples, expected);
+    }
+
+    #[test]
+    fn a_stem_cut_in_a_sample_is_corrected_to_the_whole_samples_and_not_shortened() {
+        let dir = tempfile::tempdir().unwrap();
+        let whole = whole_stem(&dir, 2.0);
+        let cut = &whole[..HEADER + 2 * 48_000 + 1];
+        let path = stem_in(&dir);
+        std::fs::write(&path, cut).unwrap();
+
+        assert!(mend_cut_short(&path).unwrap());
+
+        let mended = std::fs::read(&path).unwrap();
+        assert_eq!(mended.len(), cut.len(), "the odd byte is not deleted");
+        assert_eq!(le_u32(&mended, 40) as usize, 2 * 48_000);
+        assert_eq!(le_u32(&mended, 4) as usize, HEADER + 2 * 48_000 - 8);
+        assert_eq!(read(&path).1.len(), 48_000);
+    }
+
+    #[test]
+    fn a_stem_cut_before_its_first_sample_is_corrected_to_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let whole = whole_stem(&dir, 1.0);
+        let path = stem_in(&dir);
+        std::fs::write(&path, &whole[..HEADER]).unwrap();
+
+        assert!(mend_cut_short(&path).unwrap());
+
+        assert!(read(&path).1.is_empty());
+    }
+
+    #[test]
+    fn a_stem_that_holds_what_its_header_says_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let whole = whole_stem(&dir, 1.0);
+        let path = stem_in(&dir);
+
+        assert!(!mend_cut_short(&path).unwrap());
+
+        assert_eq!(std::fs::read(&path).unwrap(), whole);
+    }
+
+    #[test]
+    fn a_stem_that_holds_more_than_its_header_says_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut bytes = whole_stem(&dir, 1.0);
+        bytes.extend_from_slice(&[3; 1_001]);
+        let path = stem_in(&dir);
+        std::fs::write(&path, &bytes).unwrap();
+
+        assert!(!mend_cut_short(&path).unwrap());
+
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn a_file_that_is_not_a_stem_is_left_alone_even_when_it_is_cut_short() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("other.wav");
+        crate::audio::wav::write_16k_mono(&path, &[0.25; 1_600]).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::write(&path, &bytes[..bytes.len() - 100]).unwrap();
+
+        assert!(!mend_cut_short(&path).unwrap());
+
+        assert_eq!(std::fs::read(&path).unwrap(), bytes[..bytes.len() - 100]);
+    }
+
+    #[test]
+    fn the_data_chunk_is_found_where_the_header_has_it() {
+        // Another chunk before the sound: the sizes to correct are not at the 4 and 40 bytes that hound writes them at.
+        let dir = tempfile::tempdir().unwrap();
+        let whole = whole_stem(&dir, 2.0);
+        let mut bytes = whole[..36].to_vec();
+        bytes.extend_from_slice(b"LIST");
+        bytes.extend_from_slice(&4_u32.to_le_bytes());
+        bytes.extend_from_slice(b"INFO");
+        bytes.extend_from_slice(&whole[36..]);
+        let path = stem_in(&dir);
+        std::fs::write(&path, &bytes).unwrap();
+        assert_eq!(read(&path).1.len(), 96_000, "the header says 2 s");
+
+        // A quarter of a second (12 000 samples of 2 bytes) is missing at the end.
+        std::fs::write(&path, &bytes[..bytes.len() - 24_000]).unwrap();
+        assert!(mend_cut_short(&path).unwrap());
+
+        assert_eq!(read(&path).1.len(), 84_000);
+    }
+
+    #[test]
+    fn a_stem_that_is_cut_in_its_header_cannot_be_corrected() {
+        let dir = tempfile::tempdir().unwrap();
+        let whole = whole_stem(&dir, 1.0);
+        let path = stem_in(&dir);
+        std::fs::write(&path, &whole[..20]).unwrap();
+
+        assert!(mend_cut_short(&path).is_err());
+
+        assert_eq!(std::fs::read(&path).unwrap(), whole[..20]);
     }
 }
