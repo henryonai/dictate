@@ -8,11 +8,12 @@ use std::time::{Duration, Instant};
 
 use dictate_core::meetings::library::{files, MeetingLibrary, Meta, SCREEN_SOURCE};
 use dictate_services::media::tools::Tools;
-use dictate_services::meetings::fakes::FakeBackend;
+use dictate_services::meetings::fakes::{gate, FakeBackend, GateControl};
 use dictate_services::record::capture::{SourceInfo, Sources};
 use dictate_services::record::fakes::FakeCapturer;
 use dictate_services::record::marker::{Marker, MARKER};
 use dictate_services::record::quality::Quality;
+use dictate_services::record::session::Levels;
 use dictate_services::record::stem::StemWriter;
 use dictate_services::record::{
     Capturer, EndReason, Mode, Note, RecordOptions, RunningSource, SourceEvent, StartError, Track,
@@ -128,7 +129,20 @@ impl Rig {
         Rig::with(fake, |_| {})
     }
 
+    /// A recorder whose meetings are held at the audio step of their job: what the recording wrote in `meta.json` is read before the
+    /// pipeline writes its own (a length, a title), which it does as soon as it is let go. The job is let go with the control.
+    fn gated(fake: FakeCapturer) -> (Rig, GateControl) {
+        let (held, control) = gate();
+        let mut backend = FakeBackend::new();
+        backend.gates.prepare = Some(held);
+        (Rig::build(fake, backend, |_| {}), control)
+    }
+
     fn with(fake: FakeCapturer, customize: impl FnOnce(&mut Deps)) -> Rig {
+        Rig::build(fake, FakeBackend::new(), customize)
+    }
+
+    fn build(fake: FakeCapturer, backend: FakeBackend, customize: impl FnOnce(&mut Deps)) -> Rig {
         let dir = tempfile::tempdir().unwrap();
         let library = dir.path().join("library");
         fs::create_dir(&library).unwrap();
@@ -136,7 +150,7 @@ impl Rig {
         let settings = Arc::new(store);
         settings.update(|s| s.ui_language = UiLanguage::En).unwrap();
         let heard = Arc::new(Heard::default());
-        let backend = Arc::new(FakeBackend::new());
+        let backend = Arc::new(backend);
         let jobs = Arc::new(Jobs::default());
         let registry = Registry::new(
             jobs.clone(),
@@ -235,10 +249,11 @@ impl Rig {
         self.recorder.view().phase
     }
 
-    /// Waits until the recording has some sound in it.
+    /// Waits until the recording has some sound in it: a third of a second of it, and a buffer of the microphone that was measured.
     fn record_a_moment(&self) {
-        wait_until("some of the recording", || {
-            self.recorder.view().elapsed_ms >= 300
+        wait_until("some sound in the recording", || {
+            let view = self.recorder.view();
+            view.elapsed_ms >= 300 && view.levels.mic.is_some_and(|level| level > 0.0)
         });
     }
 
@@ -397,7 +412,7 @@ fn the_choices_are_remembered_even_when_the_start_is_refused() {
 
 #[test]
 fn a_recording_becomes_a_meeting_with_the_swift_source() {
-    let rig = Rig::new();
+    let (rig, job) = Rig::gated(FakeCapturer::new().tone(Track::Mic, 440.0));
 
     rig.recorder.start(audio(true, false)).unwrap();
     let id = rig.meeting_id();
@@ -417,8 +432,11 @@ fn a_recording_becomes_a_meeting_with_the_swift_source() {
     rig.record_a_moment();
     rig.recorder.stop().unwrap();
 
+    // The job is at its audio step, held: the meeting is as the recording made it.
+    wait_until("the job to start", || !rig.backend.calls().is_empty());
     let meta = rig.meta(&id);
     assert_eq!(meta.source, SCREEN_SOURCE);
+    assert_eq!(meta.title.split(' ').next(), Some("Audio"));
     let media = PathBuf::from(&meta.media);
     assert!(media.is_absolute(), "{media:?}");
     let name = media.file_name().unwrap().to_string_lossy().into_owned();
@@ -432,11 +450,7 @@ fn a_recording_becomes_a_meeting_with_the_swift_source() {
     // The recording's own files are gone, and the marker with them.
     assert!(!rig.library.join(&id).join(MARKER).exists());
     // The job starts at the audio, from the file that was made.
-    wait_until("the job to start", || !rig.backend.calls().is_empty());
-    assert_eq!(
-        rig.backend.calls().first().map(String::as_str),
-        Some("prepare_audio")
-    );
+    assert_eq!(rig.backend.calls(), ["prepare_audio"]);
     assert_eq!(rig.backend.media_seen(), [media]);
     assert_eq!(rig.phase(), Phase::Idle);
     assert!(!rig.jobs.is_active(&Job::Recording));
@@ -445,6 +459,7 @@ fn a_recording_becomes_a_meeting_with_the_swift_source() {
         rig.notices().is_empty(),
         "stopping is not something to be told of"
     );
+    let _ = job.release.send(());
 }
 
 #[test]
@@ -466,13 +481,27 @@ fn the_state_goes_out_as_the_recording_does() {
     assert!(position(Phase::Starting) < position(Phase::Recording));
     assert!(position(Phase::Recording) < position(Phase::Finishing));
     assert_eq!(phases.iter().filter(|p| **p == Phase::Idle).count(), 1);
-    let recording = views
-        .iter()
-        .find(|view| view.phase == Phase::Recording)
-        .unwrap();
-    assert_eq!(recording.mode, Some(Mode::Audio));
-    assert!(recording.meeting_id.is_some());
-    assert!(recording.levels.mic.is_some() && recording.levels.system.is_none());
+    // The meters of the tracks that are on are there from the first state (quiet until the first buffer), and the track that is
+    // off has none, in every state of the recording: the bar does not wait for a buffer to know what to show.
+    assert_eq!(
+        views[0].levels,
+        Levels {
+            mic: Some(0.0),
+            system: None
+        }
+    );
+    for view in views.iter().filter(|view| view.phase == Phase::Recording) {
+        assert_eq!(view.mode, Some(Mode::Audio));
+        assert!(view.meeting_id.is_some(), "{view:?}");
+        assert!(view.levels.mic.is_some(), "{view:?}");
+        assert_eq!(view.levels.system, None, "{view:?}");
+    }
+    // And once sound arrives it shows on the meter.
+    assert!(
+        views.iter().any(|view| view.phase == Phase::Recording
+            && view.levels.mic.is_some_and(|level| level > 0.0)),
+        "{views:?}"
+    );
     assert_eq!(views.last().unwrap(), &RecordingView::idle());
 }
 
@@ -529,14 +558,13 @@ fn pausing_and_resuming_show_in_the_state() {
 
 #[test]
 fn a_recording_that_ends_by_itself_is_made_into_a_meeting_and_the_person_is_told() {
-    let rig = Rig::using(FakeCapturer::new().tone(Track::Mic, 440.0).ends_after(
-        Track::Mic,
-        Duration::from_millis(300),
-        EndReason::DisplayGone,
-    ));
+    let (rig, job) = Rig::gated(FakeCapturer::new().tone(Track::Mic, 440.0));
 
     rig.recorder.start(audio(true, false)).unwrap();
     let id = rig.meeting_id();
+    // The screen goes away once there is sound in the recording (not after a time, which a busy machine may not give it).
+    rig.record_a_moment();
+    rig.fake.send_ended(Track::Mic, EndReason::DisplayGone);
     wait_until("the banner", || !rig.notices().is_empty());
     rig.wait_for_idle();
 
@@ -558,19 +586,15 @@ fn a_recording_that_ends_by_itself_is_made_into_a_meeting_and_the_person_is_told
     wait_until("the job to start", || !rig.backend.calls().is_empty());
     assert!(!rig.jobs.is_active(&Job::Recording));
     assert_eq!(rig.surface.hidden.load(Ordering::SeqCst), 1);
+    let _ = job.release.send(());
 }
 
 #[test]
 fn a_stop_that_comes_as_the_recording_ends_by_itself_is_not_an_error() {
-    let rig = Rig::using(FakeCapturer::new().tone(Track::Mic, 440.0).ends_after(
-        Track::Mic,
-        Duration::from_millis(200),
-        EndReason::WindowClosed,
-    ));
+    let rig = Rig::new();
     rig.recorder.start(audio(true, false)).unwrap();
-    wait_until("the end", || {
-        rig.phase() == Phase::Finishing || rig.phase() == Phase::Idle
-    });
+    rig.record_a_moment();
+    rig.fake.send_ended(Track::Mic, EndReason::WindowClosed);
 
     // Whoever comes first makes the meeting: the other finds it done or on its way.
     let stopped = rig.recorder.stop();
@@ -657,22 +681,74 @@ fn the_shortcut_starts_with_the_last_choices_and_stops_what_it_started() {
     wait_until("the job to start", || !rig.backend.calls().is_empty());
 }
 
+/// A capturer whose sources do not stop until they are let go: the recording is "being put together" for as long as the test wants.
+struct HoldsStop {
+    inner: Arc<FakeCapturer>,
+    release: Arc<Mutex<mpsc::Receiver<()>>>,
+}
+
+struct HeldSource {
+    inner: Box<dyn RunningSource>,
+    release: Arc<Mutex<mpsc::Receiver<()>>>,
+}
+
+impl Capturer for HoldsStop {
+    fn start(
+        &self,
+        track: Track,
+        options: &RecordOptions,
+        tx: mpsc::Sender<SourceEvent>,
+    ) -> Result<Box<dyn RunningSource>, StartError> {
+        let inner = self.inner.start(track, options, tx)?;
+        Ok(Box::new(HeldSource {
+            inner,
+            release: self.release.clone(),
+        }))
+    }
+}
+
+impl RunningSource for HeldSource {
+    fn stop(self: Box<Self>) {
+        // Held until the test lets go (or gives up: the sender is dropped with the test).
+        let _ = lock(&self.release).recv_timeout(PATIENCE);
+        self.inner.stop();
+    }
+}
+
 #[test]
 fn the_shortcut_pressed_while_a_recording_is_put_together_does_nothing() {
-    let rig = Rig::new();
+    let (release, held) = mpsc::channel::<()>();
+    let fake = Arc::new(FakeCapturer::new().tone(Track::Mic, 440.0));
+    let capturer = Arc::new(HoldsStop {
+        inner: fake,
+        release: Arc::new(Mutex::new(held)),
+    });
+    let rig = Rig::with(FakeCapturer::new(), |deps| {
+        deps.capturer = Arc::new(move |_| -> Arc<dyn Capturer> { capturer.clone() });
+    });
     rig.recorder.start(audio(true, false)).unwrap();
     rig.record_a_moment();
     let recorder = rig.recorder.clone();
     let stopping = std::thread::spawn(move || recorder.stop());
-    wait_until("the stop to begin", || {
-        matches!(rig.phase(), Phase::Finishing | Phase::Idle)
+    // The recording is being put together, and stays so: its source does not stop.
+    wait_until("the recording to be put together", || {
+        rig.phase() == Phase::Finishing
     });
 
     // Neither a second stop nor a new recording.
     let toggled = rig.recorder.toggle_now();
 
     assert!(toggled.is_ok());
+    assert_eq!(rig.phase(), Phase::Finishing);
+    assert_eq!(rig.folders().len(), 1, "no new recording was made");
+    assert_eq!(
+        rig.recorder.stop(),
+        Ok(()),
+        "a second stop finds it in hand"
+    );
+    release.send(()).unwrap();
     stopping.join().unwrap().unwrap();
+    rig.wait_for_idle();
     assert_eq!(rig.folders().len(), 1);
 }
 
@@ -961,12 +1037,14 @@ fn cut_off_recording(library: &Path, name: &str) -> PathBuf {
 
 #[test]
 fn an_interrupted_recording_is_recovered_at_start_up() {
-    let rig = Rig::new();
+    let (rig, job) = Rig::gated(FakeCapturer::new());
     let folder = cut_off_recording(&rig.library, "2026-11-10 10-00-00");
 
     let recovered = recover_library(&rig.meetings, None);
 
     assert_eq!(recovered, 1);
+    // Its job is held at the audio, so that what recovery wrote is read before the pipeline writes its own length.
+    wait_until("the job to start", || !rig.backend.calls().is_empty());
     let meta = rig.meta("2026-11-10 10-00-00");
     assert!(
         meta.duration.is_some_and(|seconds| seconds >= 1.0),
@@ -979,7 +1057,6 @@ fn an_interrupted_recording_is_recovered_at_start_up() {
     // The recording's own files are put together, and the job is started (it waits for the start-up to end).
     assert!(!folder.join(MARKER).exists());
     assert!(!folder.join("mic.wav").exists());
-    wait_until("the job to start", || !rig.backend.calls().is_empty());
     assert_eq!(rig.backend.media_seen(), [PathBuf::from(&meta.media)]);
     // And the log says why the recording is shorter than it was meant to be.
     let log = fs::read_to_string(folder.join(files::LOG)).unwrap();
@@ -987,6 +1064,7 @@ fn an_interrupted_recording_is_recovered_at_start_up() {
         log.contains("The recording was interrupted; what was recorded is kept."),
         "{log}"
     );
+    let _ = job.release.send(());
 }
 
 #[test]
@@ -1175,6 +1253,8 @@ fn the_state_is_told_to_the_meetings_window_and_to_the_bar_and_to_no_other() {
 
     AppSurface(app.handle().clone()).state(&RecordingView::idle());
 
+    // The listeners of the mock runtime are called as the event goes out; the wait is for a runtime that would call them later.
+    wait_until("both windows to hear it", || lock(&heard).len() >= 2);
     let mut told: Vec<&str> = lock(&heard).iter().map(|(label, _)| *label).collect();
     told.sort_unstable();
     assert_eq!(told, ["meetings", "recorder"]);
@@ -1229,13 +1309,10 @@ fn a_start_from_the_shortcut_that_fails_is_a_banner_with_what_the_person_can_run
 
 #[test]
 fn a_recording_that_ends_by_itself_with_nothing_in_it_is_told_so_and_leaves_nothing() {
-    let rig = Rig::using(FakeCapturer::new().ends_after(
-        Track::Mic,
-        Duration::from_millis(100),
-        EndReason::WindowClosed,
-    ));
+    let rig = Rig::using(FakeCapturer::new());
 
     rig.recorder.start(audio(true, false)).unwrap();
+    rig.fake.send_ended(Track::Mic, EndReason::WindowClosed);
     wait_until("the banner", || !rig.notices().is_empty());
     rig.wait_for_idle();
 

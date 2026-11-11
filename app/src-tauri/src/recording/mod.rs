@@ -28,7 +28,7 @@ use chrono::Local;
 use dictate_services::media::tools::{install_command, Tool, Tools};
 use dictate_services::record::capture::{list_sources, OsCapturer, Sources};
 use dictate_services::record::marker::MARKER;
-use dictate_services::record::session::{recover, Session, SessionState};
+use dictate_services::record::session::{recover, Levels, Session, SessionState};
 use dictate_services::record::video::pick_codec;
 use dictate_services::record::{Capturer, EndReason, Mode, RecordOptions, StartError};
 use dictate_services::settings::SettingsStore;
@@ -328,6 +328,7 @@ impl Recorder {
             RecordingView {
                 phase: Phase::Starting,
                 mode: Some(options.mode.clone()),
+                levels: quiet(&options),
                 ..RecordingView::idle()
             },
             false,
@@ -670,6 +671,15 @@ impl Recorder {
                 }
             }
         }
+    }
+}
+
+/// The meters of a recording that has not heard anything yet: quiet for each track that is on, and none for one that is off (which is
+/// what the session says of them too).
+fn quiet(options: &RecordOptions) -> Levels {
+    Levels {
+        mic: options.mic.then_some(0.0),
+        system: options.system_audio.then_some(0.0),
     }
 }
 
