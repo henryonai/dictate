@@ -37,9 +37,14 @@
   const paused = $derived(view.phase === "paused");
   const finishing = $derived(view.phase === "finishing");
   const asking = $derived(confirming && !finishing);
-  /** Both meters are on: there is room for their bars, and not for their names (the tooltips and the labels have them). */
-  const compact = $derived(view.levels.system !== null && view.levels.mic !== null);
   const notes = $derived(view.notes);
+  /** The tracks that have a meter: the ones that are on. A track that is off has none. */
+  const metered = $derived(METERED.filter(({ track }) => view.levels[track] !== null));
+  /**
+   * There is room for the bars of the meters and not for their names (the tooltips have them) when two are on, or when a note says
+   * which track it is about: the notes are what the person has to read, and they are not to be cut.
+   */
+  const bare = $derived(metered.length > 1 || notes.length > 0);
 
   // The words follow the language of the settings, which the bar can't read. It is asked when the recording begins, and the state
   // that shows the bar waits for the answer: the bar is not drawn in the language of the time before. States that come meanwhile wait
@@ -152,14 +157,18 @@
         <button type="button" class="pill keep" onclick={() => (confirming = false)}>{t("recording.hud.keep")}</button>
       {:else}
         <span class="divider" aria-hidden="true" data-tauri-drag-region></span>
-        <div class="meters" class:compact data-tauri-drag-region>
-          {#each METERED as { track, name } (track)}
-            {@const level = view.levels[track]}
-            {@const note = noteOf(track)}
-            {#if level !== null}
+        <!-- The notes are on the capsule and not in the group of the meters: that is the part that gives way when the room is short. -->
+        {#each ["system", "mic", "screen"] as const as track (track)}
+          {@const note = noteOf(track)}
+          {#if note}{@render chip(track, note)}{/if}
+        {/each}
+        {#if metered.length > 0}
+          <div class="meters" class:bare data-tauri-drag-region>
+            {#each metered as { track, name } (track)}
+              {@const level = view.levels[track]}
               {@const label = tooltip(t(name), level)}
               <div class="meter" role="img" aria-label={label} title={label} data-tauri-drag-region>
-                <svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                   {#if track === "system"}
                     <path d="M4 10v4M8 7v10M12 4v16M16 8v8M20 11v2" />
                   {:else}
@@ -174,11 +183,9 @@
                   {/each}
                 </span>
               </div>
-            {/if}
-            {#if note}{@render chip(track, note)}{/if}
-          {/each}
-          {#if noteOf("screen")}{@render chip("screen", noteOf("screen")!)}{/if}
-        </div>
+            {/each}
+          </div>
+        {/if}
 
         <button
           type="button"
@@ -284,8 +291,12 @@
   .meter > * {
     pointer-events: none;
   }
-  .meters.compact .label {
+  .meters.bare .label {
     display: none;
+  }
+  .icon {
+    width: 14px;
+    height: 14px;
   }
   .bars {
     display: flex;
@@ -345,7 +356,9 @@
   }
   .stop {
     height: 32px;
+    gap: 6px;
     padding: 0 14px;
+    font-size: 12px;
     font-weight: 600;
     color: #000;
     background: #fff;

@@ -252,7 +252,7 @@ test("a track that hears nothing, one that was reconnected and one that is off a
     }),
   );
 
-  const silent = screen.getByText("Mic: hears nothing");
+  const silent = screen.getByText("Mic: silent");
   expect(silent).toHaveAttribute("title", "Nothing but silence has come from Mic so far.");
   const off = screen.getByText("System is off");
   expect(off).toHaveAttribute("title", "The device of System was lost and could not be taken up again: System is off for the rest of this recording.");
@@ -273,8 +273,59 @@ test("a track that hears nothing, one that was reconnected and one that is off a
     "title",
     "The device of System was lost and the recording went on with the one the system has now. What came between is silence.",
   );
-  expect(screen.queryByText("Mic: hears nothing")).not.toBeInTheDocument();
+  expect(screen.queryByText("Mic: silent")).not.toBeInTheDocument();
   expect(screen.queryByText("System is off")).not.toBeInTheDocument();
+});
+
+test("the notes are on the capsule itself, before the meters and outside the group that gives way when the room is short", async () => {
+  await open(
+    fakeRecording({
+      phase: "recording",
+      levels: { mic: 0, system: 0.3 },
+      notes: [
+        { track: "mic", note: { kind: "silent" } },
+        { track: "system", note: { kind: "restarted", detail: "headphones" } },
+      ],
+    }),
+  );
+
+  const capsule = document.querySelector<HTMLElement>(".capsule")!;
+  const meters = document.querySelector<HTMLElement>(".meters")!;
+  const chips = [...capsule.querySelectorAll<HTMLElement>(".note")];
+  expect(chips.map((chip) => chip.textContent?.trim())).toEqual(["System: reconnected", "Mic: silent"]);
+  for (const chip of chips) {
+    expect(chip.parentElement).toBe(capsule);
+    expect(meters.contains(chip)).toBe(false);
+    expect(chip.compareDocumentPosition(meters) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  }
+});
+
+test("a meter has no name written next to it while a note says what is the matter, or while there are two of them", async () => {
+  await open(fakeRecording({ phase: "recording", levels: { mic: 0.2, system: null } }));
+  expect(document.querySelector(".meters")).not.toHaveClass("bare");
+
+  events.sendRecordingState(fakeRecording({ phase: "recording", levels: { mic: 0.2, system: 0.2 } }));
+  await vi.waitFor(() => expect(document.querySelector(".meters")).toHaveClass("bare"));
+
+  events.sendRecordingState(
+    fakeRecording({ phase: "recording", levels: { mic: 0.2, system: null }, notes: [{ track: "system", note: { kind: "off", detail: "x" } }] }),
+  );
+  await vi.waitFor(() => expect(document.querySelector(".note.off")).toBeInTheDocument());
+  expect(document.querySelector(".meters")).toHaveClass("bare");
+});
+
+test("with no track on there is no group of meters to take room", async () => {
+  await open(
+    fakeRecording({
+      phase: "recording",
+      mode: { kind: "audio" },
+      levels: { mic: null, system: null },
+      notes: [{ track: "mic", note: { kind: "off", detail: "unplugged" } }],
+    }),
+  );
+
+  expect(document.querySelector(".meters")).toBeNull();
+  expect(screen.getByText("Mic is off")).toBeInTheDocument();
 });
 
 test("a recording of sound alone whose only source is off says so, and the bar is still there to stop it", async () => {
@@ -365,7 +416,7 @@ test("vietnamese: paused, saving and the notes", async () => {
   );
   expect(screen.getByRole("img", { name: "Đã tạm dừng" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Tiếp tục quay" })).toBeInTheDocument();
-  expect(screen.getByText("Mic: không nghe thấy gì")).toBeInTheDocument();
+  expect(screen.getByText("Mic: im lặng")).toBeInTheDocument();
 
   events.sendRecordingState(fakeRecording({ phase: "finishing", levels: { mic: null, system: null } }));
   expect(await screen.findByRole("button", { name: "Đang lưu…" })).toBeDisabled();

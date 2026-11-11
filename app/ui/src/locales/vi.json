@@ -438,7 +438,7 @@
   "recording.hud.discard_yes": "Bỏ",
   "recording.hud.keep": "Tiếp tục quay",
   "recording.hud.saving": "Đang lưu…",
-  "recording.hud.note.silent": "{name}: không nghe thấy gì",
+  "recording.hud.note.silent": "{name}: im lặng",
   "recording.hud.note.restarted": "{name}: đã nối lại",
   "recording.hud.note.off": "{name} đã tắt",
   "recording.hud.note.silent_tip": "Từ {name} chưa có gì ngoài im lặng.",

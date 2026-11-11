@@ -438,7 +438,7 @@
   "recording.hud.discard_yes": "Discard",
   "recording.hud.keep": "Keep recording",
   "recording.hud.saving": "Saving…",
-  "recording.hud.note.silent": "{name}: hears nothing",
+  "recording.hud.note.silent": "{name}: silent",
   "recording.hud.note.restarted": "{name}: reconnected",
   "recording.hud.note.off": "{name} is off",
   "recording.hud.note.silent_tip": "Nothing but silence has come from {name} so far.",

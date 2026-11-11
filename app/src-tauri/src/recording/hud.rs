@@ -27,8 +27,10 @@ pub const LABEL: &str = "recorder";
 /// The page of the bar, in the folder of the UI's build.
 const PAGE: &str = "recorder.html";
 
-/// How big the bar is, in points: the capsule and room around it for its shadow.
-const WIDTH: f64 = 520.0;
+/// How big the bar is, in points: the capsule and room around it for its shadow. The page can't change it, so the width is what the
+/// capsule needs in its worst cases (both sounds with notes, an hour on the clock, a longer language): `recorder/layout.test.ts` of
+/// the UI adds them up against this number.
+const WIDTH: f64 = 680.0;
 const HEIGHT: f64 = 64.0;
 
 /// How far below the top of the work area the bar stands, in points.
@@ -429,25 +431,25 @@ mod tests {
 
     #[test]
     fn the_bar_is_12_points_below_the_top_of_the_work_area_and_in_the_middle() {
-        // 520 points wide on a screen of 1920 pixels with a menu bar of 25: the centre, and 12 below the bar.
+        // 680 points wide on a screen of 1920 pixels with a menu bar of 25: the centre, and 12 below the bar.
         assert_eq!(
             top_centre(&area(0, 25, 1920, 1055), 1.0),
-            PhysicalPosition::new(700, 37)
+            PhysicalPosition::new(620, 37)
         );
         // On a screen of twice the pixels the points are twice the pixels too.
         assert_eq!(
             top_centre(&area(0, 50, 3840, 2110), 2.0),
-            PhysicalPosition::new(1400, 74)
+            PhysicalPosition::new(1240, 74)
         );
         // The primary screen need not start at the origin of the desktop.
         assert_eq!(
             top_centre(&area(-1920, 0, 1920, 1040), 1.0),
-            PhysicalPosition::new(-1220, 12)
+            PhysicalPosition::new(-1300, 12)
         );
-        // A scale of one and a half has pixels that are not whole points: the nearest pixel.
+        // A scale that makes the size and the gap of the bar a fraction of a pixel (904.4 and 15.96): the nearest pixel.
         assert_eq!(
-            top_centre(&area(0, 0, 1920, 1080), 1.5),
-            PhysicalPosition::new(570, 18)
+            top_centre(&area(0, 0, 1920, 1080), 1.33),
+            PhysicalPosition::new(508, 16)
         );
     }
 
