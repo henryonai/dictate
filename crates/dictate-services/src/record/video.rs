@@ -152,21 +152,26 @@ pub struct VideoCodec {
 
 /// The encoders to use, best first: the one of the system's own hardware where there is one, and then the ones that
 /// any ffmpeg may have. `pick_codec` goes by what ffmpeg lists, which is what it was built with, and does not try the
-/// encoder: `h264_nvenc`, `h264_qsv` and `h264_amf` are listed whether there is such a card or not.
+/// encoder: `h264_nvenc` and `h264_amf` are listed whether there is such a card or not.
 #[cfg(target_os = "macos")]
 pub const ENCODER_ORDER: &[&str] = &["h264_videotoolbox", "libopenh264", "libx264", "mpeg4"];
 #[cfg(windows)]
-pub const ENCODER_ORDER: &[&str] = &[
+pub const ENCODER_ORDER: &[&str] = WINDOWS_ENCODERS;
+#[cfg(not(any(target_os = "macos", windows)))]
+pub const ENCODER_ORDER: &[&str] = &["libvpx-vp9", "libopenh264", "libx264", "mpeg4"];
+
+/// `ENCODER_ORDER` of Windows, which is here on every system so that a test on any of them can read it. `h264_mf` is Media
+/// Foundation: it uses the encoder of whatever graphics card there is (Intel, AMD, NVIDIA), so `h264_qsv` is not in the
+/// list (the ffmpeg that ships is built without libvpl, and `h264_mf` covers what it would).
+#[cfg_attr(not(windows), allow(dead_code))]
+const WINDOWS_ENCODERS: &[&str] = &[
     "h264_mf",
     "h264_nvenc",
-    "h264_qsv",
     "h264_amf",
     "libopenh264",
     "libx264",
     "mpeg4",
 ];
-#[cfg(not(any(target_os = "macos", windows)))]
-pub const ENCODER_ORDER: &[&str] = &["libvpx-vp9", "libopenh264", "libx264", "mpeg4"];
 
 /// The first of `ENCODER_ORDER` that this ffmpeg has and that works, or `None` when there is none (or ffmpeg cannot
 /// be run).
@@ -587,6 +592,12 @@ fn encoding_arguments(size: (u32, u32), spec: &QualitySpec, codec: &VideoCodec) 
         // The hardware encoder at the speed of the capture, and the software one of the system when there is no
         // hardware (a virtual machine).
         args.extend(words(&["-realtime", "1", "-allow_sw", "1"]));
+    }
+    if codec.encoder == "h264_mf" {
+        // Media Foundation gives the software encoder of Microsoft unless it is asked for the hardware one (the encoder
+        // of the graphics card). Where there is none, ffmpeg cannot start the encoder, and the probe (`works`) passes over
+        // it to the next one.
+        args.extend(words(&["-hw_encoding", "1"]));
     }
     if codec.encoder == "libvpx-vp9" {
         // The speed of the capture too: the encoder is not given the time that its best quality takes. And no
@@ -1009,6 +1020,53 @@ mod tests {
         assert_eq!(pick_from_list(""), None);
         // An encoder that merely starts with the name of one in the list is another encoder.
         assert_eq!(pick_from_list(" V....D libx264rgb  RGB\n"), None);
+    }
+
+    #[test]
+    fn windows_encoder_order_has_no_qsv() {
+        // h264_mf covers the hardware of Intel, AMD and NVIDIA, so the build has no libvpl in it for h264_qsv: a name that
+        // ffmpeg never lists is a candidate that is never there, and nobody should expect it to be.
+        assert!(
+            !WINDOWS_ENCODERS.contains(&"h264_qsv"),
+            "{WINDOWS_ENCODERS:?}"
+        );
+        assert_eq!(
+            WINDOWS_ENCODERS,
+            [
+                "h264_mf",
+                "h264_nvenc",
+                "h264_amf",
+                "libopenh264",
+                "libx264",
+                "mpeg4"
+            ]
+        );
+    }
+
+    #[test]
+    fn h264_mf_is_asked_for_the_hardware_encoder_and_the_others_for_nothing_more() {
+        let arguments = |encoder: &'static str| {
+            encoding_arguments((320, 180), &Quality::Small.spec(), &codec(encoder))
+                .iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+
+        // Without `-hw_encoding 1` Media Foundation gives the software encoder of Microsoft, which is not the one of the
+        // graphics card.
+        assert!(
+            arguments("h264_mf").ends_with("-c:v h264_mf -b:v 1000000 -g 20 -hw_encoding 1"),
+            "{}",
+            arguments("h264_mf")
+        );
+        for other in ["mpeg4", "h264_nvenc", "h264_amf", "h264_videotoolbox"] {
+            assert!(
+                !arguments(other).contains("-hw_encoding"),
+                "{}",
+                arguments(other)
+            );
+        }
     }
 
     #[cfg(not(any(target_os = "macos", windows)))]
