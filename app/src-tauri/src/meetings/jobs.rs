@@ -496,6 +496,7 @@ mod tests {
                 id: id.into(),
                 folder: self.library.folder(id),
                 link: None,
+                notes: Vec::new(),
             }
         }
 

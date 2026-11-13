@@ -72,6 +72,7 @@ impl Fixture {
                 id: "2026-11-10 10-00-00".into(),
                 folder: folder.clone(),
                 link: None,
+                notes: Vec::new(),
             },
             folder,
             original: Some(original),
@@ -97,6 +98,7 @@ impl Fixture {
                 id: "2026-11-10 10-00-00".into(),
                 folder: folder.clone(),
                 link: Some(url.into()),
+                notes: Vec::new(),
             },
             folder,
             original: None,
@@ -1343,6 +1345,47 @@ async fn pipeline_start_at_the_audio_clears_the_log() {
         "{log:?}"
     );
     assert_eq!(log[0], "Audio: 00:10");
+}
+
+#[tokio::test]
+async fn pipeline_the_notes_of_a_recording_lead_the_log_of_its_run_from_scratch() {
+    // The recording wrote its notes in the log when it ended; a run from scratch clears the log, and the notes come first
+    // in the one it starts.
+    let mut fx = Fixture::file("Standup.mp3");
+    let notes = vec![
+        "The video was cut off: what is in it was kept.".to_owned(),
+        "The microphone hears only silence.".to_owned(),
+    ];
+    fx.write("log.txt", &format!("{}\n", notes.join("\n")));
+    fx.job.notes = notes.clone();
+    let backend = FakeBackend::new();
+
+    let ran = run_job(&backend, &fx, StartAt::Audio).await;
+
+    let log = fx.log();
+    assert_eq!(log[..2], notes[..], "{log:?}");
+    assert_eq!(log[2], "Audio: 00:10");
+    assert_eq!(ran.logs()[..2], notes[..], "the window hears them too");
+}
+
+#[tokio::test]
+async fn pipeline_a_run_that_does_not_clear_the_log_does_not_write_the_notes_again() {
+    let mut fx = Fixture::file("Standup.mp3");
+    fx.write("transcript.txt", "[00:00] Already transcribed");
+    fx.write("log.txt", "The microphone hears only silence.\n");
+    fx.job.notes = vec!["The microphone hears only silence.".to_owned()];
+    let backend = FakeBackend::new();
+
+    run_job(&backend, &fx, StartAt::Summary).await;
+
+    let log = fx.log();
+    assert_eq!(
+        log.iter()
+            .filter(|line| line.contains("hears only silence"))
+            .count(),
+        1,
+        "{log:?}"
+    );
 }
 
 #[tokio::test]

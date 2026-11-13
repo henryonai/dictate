@@ -27,8 +27,9 @@ jobs:
   test:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    # A cold Windows run took about 21 of the 30 minutes before sherpa-onnx; its 90 MB library comes on top.
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 45 || 30 }}
+    # A cold Windows run took about 21 of the 30 minutes before sherpa-onnx; its 90 MB library comes on top. Linux has had a slow apt
+    # mirror: the job took about 24 of its 30 minutes, with no build in them that was slow.
+    timeout-minutes: ${{ matrix.os == 'macos-latest' && 30 || 45 }}
     strategy:
       fail-fast: false
       matrix:
@@ -116,13 +117,15 @@ jobs:
           echo "SHERPA_ONNX_LIB_DIR=$lib" >> "$GITHUB_ENV"
       # whisper.cpp is built from source: it needs cmake and a C++ compiler, and its bindings need libclang. The
       # macOS and Windows runners have them; this makes sure the Linux one does. libasound2-dev is the ALSA header
-      # that microphone capture builds against. The rest is what the Tauri app links against: the web view, the
-      # tray icon and the keyboard helper library.
+      # that microphone capture builds against. libpipewire-0.3-dev and libspa-0.2-dev are what the screen capture builds
+      # against (the portal gives the screen as a PipeWire stream; the `pipewire` crate makes its bindings from these headers,
+      # with libclang). The rest is what the Tauri app links against: the web view, the tray icon and the keyboard helper
+      # library.
       - name: Install the Linux build dependencies
         if: runner.os == 'Linux'
         run: >
           sudo apt-get update && sudo apt-get install -y
-          cmake libclang-dev libasound2-dev
+          cmake libclang-dev libasound2-dev libpipewire-0.3-dev libspa-0.2-dev
           libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
       # The tests of the code that runs ffmpeg (decoding what symphonia cannot read, writing audio.m4a on Linux and
       # as the stand-in for Media Foundation on Windows) run against a real one. On a developer's machine they skip
@@ -140,6 +143,15 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --all --locked
+      # The Windows runner records its own screen. Its tests of the screen are ignored (they record the machine they run on); this one
+      # records the primary monitor for three seconds with Graphics Capture and encodes it with the ffmpeg above. GitHub's runners have
+      # a desktop session, which Graphics Capture needs, and it gave a picture on every run since this step was added with
+      # continue-on-error to find out, so a red result of it fails the job now.
+      - name: Record the primary monitor (Windows)
+        if: runner.os == 'Windows'
+        env:
+          DICTATE_TEST_SCREEN: "1"
+        run: cargo test -p dictate-services --lib --locked -- --ignored --nocapture windows_records_three_seconds_of_the_primary_monitor
       # Speaker separation on the real models. It is the only run of sherpa-onnx next to whisper.cpp on each system: on
       # Linux the static build aborted here with "free(): invalid pointer", and this step keeps that from coming back
       # unseen. The two models (46 MB) are cached under the SHA-256 of each: a new model is a new key. They are
@@ -242,7 +254,7 @@ jobs:
         if: runner.os == 'Linux'
         run: >
           sudo apt-get update && sudo apt-get install -y
-          cmake libclang-dev libasound2-dev
+          cmake libclang-dev libasound2-dev libpipewire-0.3-dev libspa-0.2-dev
           libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
       # The pnpm version is the "packageManager" in app/package.json: pnpm/action-setup installs that one.
       - uses: pnpm/action-setup@v6
@@ -314,6 +326,6 @@ jobs:
       - name: Install the Linux build dependencies
         run: >
           sudo apt-get update && sudo apt-get install -y
-          cmake libclang-dev libasound2-dev
+          cmake libclang-dev libasound2-dev libpipewire-0.3-dev libspa-0.2-dev
           libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
       - run: cargo +1.85 check --workspace --all-targets --locked

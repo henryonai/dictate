@@ -75,13 +75,13 @@ test("a shortcut that was taken when the app started says so, and can be replace
   expect(screen.getByLabelText("Shortcut")).toHaveValue("F6");
 });
 
-test("a desktop with no global shortcuts for apps says how to bind dictate --toggle, and has nothing to change", async () => {
+test("a desktop with no global shortcuts for apps says how to bind dictate --toggle and dictate --record, and has nothing to change", async () => {
   vi.mocked(api.hotkeyStatus).mockResolvedValue(fakeHotkeyStatus({ backend: "none", error: "hotkey.wayland_unavailable" }));
   render(General, { store: await loadedStore() });
 
   expect(
     await screen.findByText(
-      "Your desktop doesn't offer global shortcuts to apps. Bind a shortcut in your desktop settings to run: dictate --toggle",
+      "Your desktop doesn't offer global shortcuts to apps. Bind shortcuts in your desktop settings to run: dictate --toggle (dictation) and dictate --record (recording)",
     ),
   ).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Change…" })).not.toBeInTheDocument();
@@ -228,14 +228,38 @@ test("a pause that can't be asked for doesn't break the recorder", async () => {
 });
 
 test("the Permissions section sits on the General page on a Mac and is not there on other systems", async () => {
-  vi.mocked(api.permissionsStatus).mockResolvedValue({ microphone: "not_determined", accessibility: "denied" });
+  vi.mocked(api.permissionsStatus).mockResolvedValue({ microphone: "not_determined", accessibility: "denied", screen: "granted" });
   const { unmount } = render(General, { store: await loadedStore() });
   expect(await screen.findByRole("heading", { name: "Permissions" })).toBeInTheDocument();
   unmount();
 
-  vi.mocked(api.permissionsStatus).mockResolvedValue({ microphone: "not_needed", accessibility: "not_needed" });
+  vi.mocked(api.permissionsStatus).mockResolvedValue({ microphone: "not_needed", accessibility: "not_needed", screen: "not_needed" });
   render(General, { store: await loadedStore() });
   await screen.findByRole("heading", { name: "Dictation" });
   await new Promise((resolve) => setTimeout(resolve, 20));
   expect(screen.queryByRole("heading", { name: "Permissions" })).not.toBeInTheDocument();
+});
+
+test("the shortcut of the recording is shown next to the dictation's, and can't be typed over", async () => {
+  render(General, { store: await loadedStore() });
+
+  const record = screen.getByLabelText("Recording shortcut");
+  expect(record).toHaveValue("Ctrl+Alt+R");
+  expect(record).toHaveAttribute("readonly");
+  expect(screen.getByText("Starts and stops a recording from anywhere. From a script, run: dictate --record")).toBeInTheDocument();
+  // The dictation's own shortcut is not touched by it.
+  expect(screen.getByLabelText("Shortcut")).toHaveValue("Ctrl+Alt+Space");
+});
+
+test("on a Mac the shortcut of the recording is written with the symbols of the keys", async () => {
+  vi.spyOn(navigator, "platform", "get").mockReturnValue("MacIntel");
+  render(General, { store: await loadedStore() });
+
+  expect(screen.getByLabelText("Recording shortcut")).toHaveValue("⌃⌥R");
+});
+
+test("the shortcut of the recording has words in Vietnamese", async () => {
+  render(General, { store: await loadedStore({ ui_language: "vi" }) });
+
+  expect(screen.getByLabelText("Phím tắt quay màn hình")).toHaveValue("Ctrl+Alt+R");
 });

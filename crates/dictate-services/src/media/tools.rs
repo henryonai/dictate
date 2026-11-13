@@ -155,19 +155,43 @@ pub struct Tools {
 }
 
 impl Tools {
-    /// Looks for the tools in `search_path()`.
+    /// Looks for the tools next to the program (a build of the app that has its own ffmpeg keeps it there), and then
+    /// in `search_path()`.
     pub fn find() -> Tools {
-        Tools::find_in(&search_path())
+        let path = search_path();
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(Path::to_path_buf));
+        match exe_dir {
+            Some(exe_dir) => Tools::find_with(&exe_dir, &path),
+            None => Tools::find_in(&path),
+        }
     }
 
-    fn find_in(search_path: &OsStr) -> Tools {
+    /// Each tool is the one in `exe_dir` if there is one there, and else the first one in `search_path`.
+    fn find_with(exe_dir: &Path, search_path: &OsStr) -> Tools {
         let cwd = std::env::current_dir().unwrap_or_default();
-        let locate = |tool: Tool| which::which_in(tool.program(), Some(search_path), &cwd).ok();
+        let locate = |tool: Tool| {
+            locate_in(tool, exe_dir.as_os_str(), &cwd)
+                .or_else(|| locate_in(tool, search_path, &cwd))
+        };
         Tools {
             ffmpeg: locate(Tool::Ffmpeg),
             yt_dlp: locate(Tool::YtDlp),
         }
     }
+
+    fn find_in(search_path: &OsStr) -> Tools {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        Tools {
+            ffmpeg: locate_in(Tool::Ffmpeg, search_path, &cwd),
+            yt_dlp: locate_in(Tool::YtDlp, search_path, &cwd),
+        }
+    }
+}
+
+fn locate_in(tool: Tool, search_path: &OsStr, cwd: &Path) -> Option<PathBuf> {
+    which::which_in(tool.program(), Some(search_path), cwd).ok()
 }
 
 /// The command that installs a tool with the usual package manager of this system, to show to the user.
@@ -633,6 +657,41 @@ mod tests {
         let lower = |p: &Path| p.to_string_lossy().to_lowercase();
         assert_eq!(found.ffmpeg.as_deref().map(lower), Some(lower(&ffmpeg)));
         assert_eq!(found.yt_dlp, None);
+    }
+
+    #[test]
+    fn ffmpeg_next_to_the_executable_wins() {
+        let name = if cfg!(windows) {
+            "ffmpeg.exe"
+        } else {
+            "ffmpeg"
+        };
+        let program = |dir: &Path| {
+            let program = dir.join(name);
+            std::fs::write(&program, b"").unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            program
+        };
+        let exe_dir = tempfile::tempdir().unwrap();
+        let path_dir = tempfile::tempdir().unwrap();
+        let next_to_it = program(exe_dir.path());
+        let on_the_path = program(path_dir.path());
+
+        let found = Tools::find_with(exe_dir.path(), path_dir.path().as_os_str());
+
+        let lower = |p: &Path| p.to_string_lossy().to_lowercase();
+        assert_eq!(found.ffmpeg.as_deref().map(lower), Some(lower(&next_to_it)));
+        // Without one next to the executable the path is looked in, as before.
+        let elsewhere = tempfile::tempdir().unwrap();
+        let found = Tools::find_with(elsewhere.path(), path_dir.path().as_os_str());
+        assert_eq!(
+            found.ffmpeg.as_deref().map(lower),
+            Some(lower(&on_the_path))
+        );
     }
 
     #[test]

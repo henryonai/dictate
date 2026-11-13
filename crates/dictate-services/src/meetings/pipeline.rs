@@ -310,9 +310,13 @@ impl Job<'_> {
         if start == StartAt::Download && self.spec.link.is_none() {
             start = StartAt::Audio;
         }
-        // The log of a run from scratch is the log of that run. (Not when it only fell back to this.)
+        // The log of a run from scratch is the log of that run. (Not when it only fell back to this.) A recording that the
+        // app made has its notes first: they were in the log, and this clears it.
         if from == StartAt::Audio {
             let _ = atomic_write(&self.folder().join(files::LOG), b"");
+            for note in &self.spec.notes {
+                self.log(note);
+            }
         }
 
         if start == StartAt::Download {

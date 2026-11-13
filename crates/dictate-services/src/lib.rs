@@ -8,6 +8,7 @@ pub mod http;
 pub mod media;
 pub mod meetings;
 pub mod presets;
+pub mod record;
 pub mod secrets;
 pub mod settings;
 pub mod summary;

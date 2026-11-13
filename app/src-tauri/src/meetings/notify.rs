@@ -34,6 +34,12 @@ pub enum NoticeKind {
     /// The transcript is written and there is no AI to write a summary with.
     TranscriptOnly,
     Failed(MeetingError),
+    /// Something about a recording that is being made or has just been (`recording.ended.*` and `recording.error.*`): the
+    /// text of `key` with `detail` in it, in English as the program that said it did.
+    Recording {
+        key: String,
+        detail: String,
+    },
 }
 
 /// Says a notice to the person: the title and the body of the banner.
@@ -203,6 +209,98 @@ pub const TEXTS: &[(&str, &str, &str)] = &[
         "No transcript yet.",
         "Chưa có transcript.",
     ),
+    // A recording that stopped by itself (`RecordingEnded`): the recording is kept and goes on to be processed.
+    (
+        "recording.ended.window_closed",
+        "The window you were recording was closed. What was recorded is kept and is being processed.",
+        "Cửa sổ đang quay đã đóng. Phần đã quay được giữ lại và đang được xử lý.",
+    ),
+    (
+        "recording.ended.display_gone",
+        "The screen you were recording is no longer available. What was recorded is kept and is being processed.",
+        "Màn hình đang quay không còn khả dụng. Phần đã quay được giữ lại và đang được xử lý.",
+    ),
+    (
+        "recording.ended.device_lost",
+        "A device was lost and the recording stopped: {detail}. What was recorded is kept and is being processed.",
+        "Mất một thiết bị nên bản ghi đã dừng: {detail}. Phần đã quay được giữ lại và đang được xử lý.",
+    ),
+    (
+        "recording.ended.permission_revoked",
+        "Permission to record was turned off, so the recording stopped. What was recorded is kept and is being processed.",
+        "Quyền quay đã bị tắt nên bản ghi đã dừng. Phần đã quay được giữ lại và đang được xử lý.",
+    ),
+    (
+        "recording.ended.failed",
+        "The recording stopped: {detail}. What was recorded is kept and is being processed.",
+        "Bản ghi đã dừng: {detail}. Phần đã quay được giữ lại và đang được xử lý.",
+    ),
+    // Why a recording could not begin (one for each `StartError`), and why it could not be made into a meeting.
+    (
+        "recording.error.nothing_to_record",
+        "Turn on at least system audio or the microphone.",
+        "Bật ít nhất âm thanh hệ thống hoặc micro.",
+    ),
+    (
+        "recording.error.needs_screen_permission",
+        "No Screen Recording permission. Turn on Dictate in System Settings → Privacy & Security → Screen & System Audio Recording, then reopen the app.",
+        "Chưa có quyền Screen Recording. Bật cho Dictate trong System Settings → Privacy & Security → Screen & System Audio Recording, rồi mở lại app.",
+    ),
+    (
+        "recording.error.needs_ffmpeg",
+        "Recording the screen needs ffmpeg: {command}",
+        "Quay màn hình cần ffmpeg: {command}",
+    ),
+    (
+        "recording.error.needs_parec",
+        "Recording the system's audio needs parec. Turn system audio off, or install it: {command}",
+        "Quay âm thanh hệ thống cần parec. Hãy tắt âm thanh hệ thống, hoặc cài nó: {command}",
+    ),
+    (
+        "recording.error.no_video_encoder",
+        "This ffmpeg has no video encoder that works on this computer. Install a full build: {command}",
+        "ffmpeg này không có bộ mã hóa video chạy được trên máy này. Hãy cài bản đầy đủ: {command}",
+    ),
+    (
+        "recording.error.portal_unavailable",
+        "This desktop can't share the screen with apps.",
+        "Máy tính này không cho ứng dụng chia sẻ màn hình.",
+    ),
+    (
+        "recording.error.portal_cancelled",
+        "Nothing was chosen to share, so the recording did not start.",
+        "Chưa chọn gì để chia sẻ nên bản ghi chưa bắt đầu.",
+    ),
+    (
+        "recording.error.window_gone",
+        "That window is gone. Choose another window.",
+        "Cửa sổ đó không còn nữa. Hãy chọn cửa sổ khác.",
+    ),
+    (
+        "recording.error.source",
+        "Couldn't start recording: {detail}",
+        "Không bắt đầu quay được: {detail}",
+    ),
+    (
+        "recording.error.io",
+        "Couldn't write the recording's folder: {detail}",
+        "Không ghi được thư mục của bản ghi: {detail}",
+    ),
+    (
+        "recording.error.nothing_recorded",
+        "Nothing was recorded, so there is nothing to summarize.",
+        "Chưa quay được gì nên không có gì để tóm tắt.",
+    ),
+    (
+        "recording.error.stop_failed",
+        "Couldn't finish the recording: {detail}. What was recorded is kept, and Dictate tries again the next time it starts.",
+        "Không hoàn tất được bản ghi: {detail}. Phần đã quay được giữ lại, và Dictate sẽ thử lại ở lần mở sau.",
+    ),
+    (
+        "recording.error.discard_failed",
+        "The recording was stopped, but its folder could not be removed: {detail}",
+        "Đã dừng bản ghi nhưng không xóa được thư mục của nó: {detail}",
+    ),
 ];
 
 /// The text for `key` in `lang`, with each `{name}` filled from `vars`. A key that is not here is the key itself.
@@ -240,7 +338,12 @@ pub fn error_message(lang: Lang, error: &MeetingError) -> String {
 
 /// The title and the body of the banner for `notice`.
 pub fn banner(lang: Lang, notice: &Notice) -> (String, String) {
-    let title = text(lang, "meetings.notify.title", &[("title", &notice.title)]);
+    // A recording that has not begun has no title to name it by.
+    let title = if notice.title.is_empty() && matches!(notice.kind, NoticeKind::Recording { .. }) {
+        "Dictate".to_owned()
+    } else {
+        text(lang, "meetings.notify.title", &[("title", &notice.title)])
+    };
     let body = match &notice.kind {
         NoticeKind::SummaryReady { decisions, actions } => {
             let counts: Vec<String> = [
@@ -268,6 +371,9 @@ pub fn banner(lang: Lang, notice: &Notice) -> (String, String) {
             text(lang, "meetings.notify.view", &[("what", &what)])
         }
         NoticeKind::TranscriptOnly => text(lang, "meetings.notify.transcript_only", &[]),
+        NoticeKind::Recording { key, detail } => {
+            text(lang, key, &[("detail", detail), ("command", detail)])
+        }
         NoticeKind::Failed(error) => text(
             lang,
             "meetings.notify.error",
@@ -376,6 +482,84 @@ mod tests {
             .1,
             "Error: Summary failed: API error 401: bad key"
         );
+    }
+
+    #[test]
+    fn a_banner_for_a_recording_that_stopped_by_itself_says_why_in_the_language_of_the_ui() {
+        let ended = |key: &str, detail: &str| {
+            notice(NoticeKind::Recording {
+                key: key.to_owned(),
+                detail: detail.to_owned(),
+            })
+        };
+
+        let (title, body) = banner(Lang::En, &ended("recording.ended.display_gone", ""));
+        assert_eq!(title, "Dictate — Họp kế hoạch");
+        // Not more than is known: on Linux a stream that breaks ends in this too.
+        assert_eq!(
+            body,
+            "The screen you were recording is no longer available. What was recorded is kept and is being processed."
+        );
+        assert_eq!(
+            banner(Lang::Vi, &ended("recording.ended.window_closed", "")).1,
+            "Cửa sổ đang quay đã đóng. Phần đã quay được giữ lại và đang được xử lý."
+        );
+        // What the source said is in the text that has a place for it, as it said it.
+        assert_eq!(
+            banner(Lang::En, &ended("recording.ended.failed", "ffmpeg stopped (exit 1)")).1,
+            "The recording stopped: ffmpeg stopped (exit 1). What was recorded is kept and is being processed."
+        );
+    }
+
+    #[test]
+    fn a_banner_for_a_recording_that_has_no_meeting_is_titled_dictate() {
+        // A start that fails from the shortcut: there is no recording to name.
+        let (title, body) = banner(
+            Lang::En,
+            &Notice {
+                id: String::new(),
+                title: String::new(),
+                kind: NoticeKind::Recording {
+                    key: "recording.error.needs_ffmpeg".to_owned(),
+                    detail: String::new(),
+                },
+            },
+        );
+
+        assert_eq!(title, "Dictate");
+        assert!(
+            body.starts_with("Recording the screen needs ffmpeg"),
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn every_text_of_the_recording_has_words_in_both_languages() {
+        let keys = [
+            "recording.ended.window_closed",
+            "recording.ended.display_gone",
+            "recording.ended.device_lost",
+            "recording.ended.permission_revoked",
+            "recording.ended.failed",
+            "recording.error.nothing_to_record",
+            "recording.error.needs_screen_permission",
+            "recording.error.needs_ffmpeg",
+            "recording.error.needs_parec",
+            "recording.error.no_video_encoder",
+            "recording.error.portal_unavailable",
+            "recording.error.portal_cancelled",
+            "recording.error.window_gone",
+            "recording.error.source",
+            "recording.error.io",
+            "recording.error.nothing_recorded",
+            "recording.error.stop_failed",
+            "recording.error.discard_failed",
+        ];
+        for key in keys {
+            let entry = TEXTS.iter().find(|(known, _, _)| *known == key);
+            let (_, en, vi) = entry.unwrap_or_else(|| panic!("no words for {key}"));
+            assert!(!en.is_empty() && !vi.is_empty(), "{key}");
+        }
     }
 
     #[test]

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { fakeDetail, fakeError, fakeJob, fakeRow, stubMeetingsApi } from "../test-helpers";
+import { fakeDetail, fakeError, fakeJob, fakeRecording, fakeRow, IDLE_RECORDING, stubMeetingsApi } from "../test-helpers";
 import { api } from "./api";
+import type { RecordingView } from "./api";
 import { currentLanguage, setLanguage } from "./i18n";
 import { MeetingsStore } from "./meetings-store.svelte";
 
@@ -919,5 +920,229 @@ describe("delete", () => {
     await store.remove(ID);
 
     expect(store.notice).toBe("Trash is full");
+  });
+});
+
+describe("the recording", () => {
+  const RECORDING_ID = "2026-03-02 11-00-00";
+  const live = fakeRow({ id: RECORDING_ID, title: "Screen recording 11:00 02/03", kind: "screen", duration: null, hasSummary: false, openTasks: 0 });
+
+  test("it asks how the recording is when it starts, and hears each state after", async () => {
+    events = stubMeetingsApi([row]);
+    vi.mocked(api.recordingState).mockResolvedValue(fakeRecording({ phase: "paused", elapsedMs: 61_000 }));
+    store = new MeetingsStore();
+    expect(store.recording.phase).toBe("idle");
+
+    await store.start();
+
+    expect(store.recording).toMatchObject({ phase: "paused", elapsedMs: 61_000 });
+    expect(store.isRecording).toBe(true);
+    events.sendRecordingState(fakeRecording({ phase: "recording", elapsedMs: 62_000 }));
+    expect(store.recording).toMatchObject({ phase: "recording", elapsedMs: 62_000 });
+    events.sendRecordingState(IDLE_RECORDING);
+    expect(store.isRecording).toBe(false);
+  });
+
+  test("a state that came by the event while the answer was on its way is newer than the answer", async () => {
+    events = stubMeetingsApi([row]);
+    let answer: (view: RecordingView) => void = () => {};
+    vi.mocked(api.recordingState).mockImplementation(() => new Promise((resolve) => (answer = resolve)));
+    store = new MeetingsStore();
+    const starting = store.start();
+    await vi.waitFor(() => expect(api.recordingState).toHaveBeenCalled());
+
+    events.sendRecordingState(fakeRecording({ phase: "recording", elapsedMs: 5_000 }));
+    answer(IDLE_RECORDING);
+    await starting;
+
+    expect(store.recording).toMatchObject({ phase: "recording", elapsedMs: 5_000 });
+  });
+
+  test("a state that can't be read leaves the recording as idle and says why", async () => {
+    events = stubMeetingsApi([row]);
+    vi.mocked(api.recordingState).mockRejectedValue("The recorder did not answer.");
+    store = new MeetingsStore();
+
+    await store.start();
+
+    expect(store.isRecording).toBe(false);
+    expect(store.notice).toBe("The recorder did not answer.");
+  });
+
+  test("it hears the state of the recording until it stops", async () => {
+    await started();
+    expect(events.recordingListeners()).toEqual({ state: 1, open: 0 });
+
+    store.stop();
+
+    expect(events.recordingListeners()).toEqual({ state: 0, open: 0 });
+  });
+
+  test("the folder of the recording that goes on is not a row of the library until the recording is over", async () => {
+    await started([row, live]);
+    expect(store.items.map((item) => item.id)).toEqual([ID, RECORDING_ID]);
+
+    events.sendRecordingState(fakeRecording({ phase: "recording", meetingId: RECORDING_ID }));
+    expect(store.items.map((item) => item.id)).toEqual([ID]);
+    events.sendRecordingState(fakeRecording({ phase: "paused", meetingId: RECORDING_ID }));
+    expect(store.items.map((item) => item.id)).toEqual([ID]);
+    events.sendRecordingState(fakeRecording({ phase: "finishing", meetingId: RECORDING_ID }));
+    expect(store.items.map((item) => item.id)).toEqual([ID]);
+
+    events.sendRecordingState(IDLE_RECORDING);
+    expect(store.items.map((item) => item.id)).toEqual([ID, RECORDING_ID]);
+  });
+
+  test("the list is not worked out again at each report of the time of the recording", async () => {
+    await started([row, live]);
+    events.sendRecordingState(fakeRecording({ phase: "recording", meetingId: RECORDING_ID, elapsedMs: 50 }));
+    const items = store.items;
+
+    events.sendRecordingState(fakeRecording({ phase: "recording", meetingId: RECORDING_ID, elapsedMs: 100 }));
+    events.sendRecordingState(fakeRecording({ phase: "recording", meetingId: RECORDING_ID, elapsedMs: 150 }));
+
+    expect(store.items).toBe(items);
+  });
+
+  test("deleting the selected recording while one goes on selects the next recording of the library, not the folder of the one that goes on", async () => {
+    // The recording that goes on is the newest row of the list.
+    await started([live, row, other]);
+    events.sendRecordingState(fakeRecording({ phase: "recording", meetingId: RECORDING_ID }));
+    await store.select(ID);
+    vi.mocked(api.meetingDetail).mockClear();
+    vi.mocked(api.meetingsList).mockResolvedValue([live, other]);
+
+    expect(await store.remove(ID)).toBe(true);
+
+    expect(store.selectedId).toBe(OTHER);
+    expect(store.selectedRow?.id).toBe(OTHER);
+    expect(api.meetingDetail).not.toHaveBeenCalledWith(RECORDING_ID);
+  });
+
+  test("a selected recording that is gone from the list is replaced by the first one that is shown, not by the one that goes on", async () => {
+    await started([live, row, other]);
+    events.sendRecordingState(fakeRecording({ phase: "recording", meetingId: RECORDING_ID }));
+    await store.select(ID);
+    vi.mocked(api.meetingDetail).mockClear();
+    // The recording was deleted elsewhere (the folder, or the other window): the change of the library brings the list again.
+    vi.mocked(api.meetingsList).mockResolvedValue([live, other]);
+
+    await store.load();
+
+    expect(store.selectedId).toBe(OTHER);
+    expect(api.meetingDetail).not.toHaveBeenCalledWith(RECORDING_ID);
+  });
+
+  test("a library with nothing in it but the recording that goes on selects nothing", async () => {
+    await started([live, row]);
+    events.sendRecordingState(fakeRecording({ phase: "recording", meetingId: RECORDING_ID }));
+    await store.select(ID);
+    vi.mocked(api.meetingsList).mockResolvedValue([live]);
+
+    await store.remove(ID);
+
+    expect(store.selectedId).toBeNull();
+    expect(store.selectedRow).toBeNull();
+  });
+
+  test("the recording that goes on can't be selected, and is when it is over", async () => {
+    await started([live, row]);
+    await store.select(ID);
+    events.sendRecordingState(fakeRecording({ phase: "recording", meetingId: RECORDING_ID }));
+    vi.mocked(api.meetingDetail).mockClear();
+
+    await store.select(RECORDING_ID);
+
+    expect(store.selectedId).toBe(ID);
+    expect(api.meetingDetail).not.toHaveBeenCalled();
+
+    events.sendRecordingState(IDLE_RECORDING);
+    await store.select(RECORDING_ID);
+    expect(store.selectedId).toBe(RECORDING_ID);
+  });
+
+  test("a recording that begins while its folder is the selected one lets go of it", async () => {
+    await started([live, row]);
+    await store.select(RECORDING_ID);
+    expect(store.selectedId).toBe(RECORDING_ID);
+
+    events.sendRecordingState(fakeRecording({ phase: "recording", meetingId: RECORDING_ID }));
+
+    await vi.waitFor(() => expect(store.selectedId).toBe(ID));
+    expect(store.selectedRow?.id).toBe(ID);
+  });
+
+  test("a recording that has no folder yet hides nothing", async () => {
+    await started([row, live]);
+
+    events.sendRecordingState(fakeRecording({ phase: "starting", meetingId: null }));
+
+    expect(store.items).toHaveLength(2);
+  });
+
+  test("the picker is open from an ask, with the error of the ask, and an ask again changes only the error", () => {
+    store = new MeetingsStore();
+    expect(store.recorder).toBeNull();
+
+    store.openRecorder();
+    expect(store.recorder).toEqual({ error: null });
+    const error = fakeError({ key: "recording.error.needs_ffmpeg", detail: null });
+    store.openRecorder(error);
+    expect(store.recorder).toEqual({ error });
+    // Another ask with no error leaves the one that is shown: it is not answered yet.
+    store.openRecorder();
+    expect(store.recorder).toEqual({ error });
+
+    store.closeRecorder();
+    expect(store.recorder).toBeNull();
+  });
+
+  test("what a start said is the error of the picker that is open, and a picker that is not open keeps none", () => {
+    store = new MeetingsStore();
+    store.setRecorderError(fakeError());
+    expect(store.recorder).toBeNull();
+
+    store.openRecorder();
+    const error = fakeError({ key: "recording.error.source" });
+    store.setRecorderError(error);
+    expect(store.recorder).toEqual({ error });
+    store.setRecorderError(null);
+    expect(store.recorder).toEqual({ error: null });
+  });
+
+  test("the picker is a dialog over the window: what is pasted or dropped is not for the library", () => {
+    store = new MeetingsStore();
+
+    store.openRecorder();
+
+    expect(store.modalOpen).toBe(true);
+    store.closeRecorder();
+    expect(store.modalOpen).toBe(false);
+  });
+
+  test("the recording is stopped from the toolbar, and a stop that fails says why", async () => {
+    await started();
+
+    await store.stopRecording();
+    expect(api.recordingStop).toHaveBeenCalledOnce();
+    expect(store.notice).toBe("");
+
+    vi.mocked(api.recordingStop).mockRejectedValue(
+      fakeError({ key: "recording.error.stop_failed", detail: "disk full" }),
+    );
+    await store.stopRecording();
+    expect(store.notice).toContain("Couldn't finish the recording: disk full");
+  });
+
+  test("System Settings is opened on the pane of Screen Recording, and a failure says why", async () => {
+    await started();
+    vi.spyOn(api, "openPermissionSettings").mockResolvedValue();
+
+    await store.openScreenPermission();
+    expect(api.openPermissionSettings).toHaveBeenCalledExactlyOnceWith("screen");
+
+    vi.mocked(api.openPermissionSettings).mockRejectedValue("Could not open System Settings");
+    await store.openScreenPermission();
+    expect(store.notice).toBe("Could not open System Settings");
   });
 });

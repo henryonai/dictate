@@ -50,6 +50,16 @@ const COMMANDS: &[&str] = &[
     "copy_text",
     "meetings_open_settings",
     "meetings_readiness",
+    // The recording, which the meetings window starts and stops (the bar of the recording has some of them too).
+    "recording_sources",
+    "recording_start",
+    "recording_pause",
+    "recording_resume",
+    "recording_stop",
+    "recording_discard",
+    "recording_state",
+    // The bar's own: its page tells how big its capsule is.
+    "recording_bar_resized",
     // The bubble, the chip and the card.
     "dictation_languages",
     "dictation_stop",
@@ -79,6 +89,12 @@ fn main() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
         println!("cargo::rustc-link-arg=-Wl,-rpath,$ORIGIN");
         println!("cargo::rustc-link-arg=-Wl,-rpath,$ORIGIN/..");
+    }
+    // macOS: the program and its tests load the Swift runtime of the system (the screen is recorded through a ScreenCaptureKit
+    // bridge written in Swift, which `dictate-services` links). The bridge's own build script gives this run path only to the
+    // binaries of its own package, which has none, and neither does `dictate-services`' reach this package.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        println!("cargo::rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
     }
     tauri_build::try_build(
         tauri_build::Attributes::new()

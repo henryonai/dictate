@@ -7,11 +7,13 @@
 //! The program is started so that the whole of what it starts can be killed with it: a Scoop or Chocolatey ffmpeg on
 //! Windows is a shim that starts the real one, and a program that reads from a pipe does not end by itself when the
 //! sink is dropped, so killing the shim alone would leave the real ffmpeg waiting, with the `.part` file open.
+//!
+//! `spawn` is that way of starting ffmpeg, which the encoder of the screen recording's video (`record::video`) uses too.
 
 use std::ffi::OsString;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::process::{ChildStdin, Stdio};
+use std::process::{ChildStderr, ChildStdin, Stdio};
 use std::thread::JoinHandle;
 
 #[cfg(unix)]
@@ -79,9 +81,48 @@ pub(super) fn create(out: &Path, ffmpeg: &Path) -> Result<Box<dyn M4aSink>, Enco
 
 fn start(out: &Path, ffmpeg: &Path) -> Result<FfmpegSink, EncodeError> {
     let part = part_path(out);
+    let Process {
+        child,
+        stdin,
+        stderr,
+        #[cfg(windows)]
+        job,
+    } = spawn(ffmpeg, arguments(&part))?;
+    Ok(FfmpegSink {
+        child,
+        stdin: Some(stdin),
+        // What ffmpeg prints is read all the time, whatever the audio does: a program that fills the pipe stops.
+        stderr: Some(std::thread::spawn(move || Tail::read(stderr))),
+        bytes: Vec::new(),
+        failure: None,
+        reaped: false,
+        out: out.to_owned(),
+        part,
+        published: false,
+        #[cfg(windows)]
+        job,
+    })
+}
+
+/// ffmpeg, running, and the ends of the pipes it is talked to through.
+pub(crate) struct Process {
+    pub(crate) child: Box<dyn StdChildWrapper>,
+    /// What ffmpeg reads (`pipe:0`); closing it is the end of the input.
+    pub(crate) stdin: ChildStdin,
+    /// What ffmpeg says. It has to be read all the time, or a program that fills the pipe stops.
+    pub(crate) stderr: ChildStderr,
+    /// The job that ffmpeg and what it started are in, to be asked how many of them are left (`None` when it could not be made).
+    #[cfg(windows)]
+    #[cfg_attr(not(test), allow(dead_code))]
+    job: Option<Arc<job::Job>>,
+}
+
+/// Starts ffmpeg with `args`, with its input and its messages as pipes and no window, so that the whole of what it
+/// starts can be killed with it: dropping the child, or `start_kill`, reaches all of it.
+pub(crate) fn spawn(ffmpeg: &Path, args: Vec<OsString>) -> Result<Process, EncodeError> {
     let mut command = tools::command(ffmpeg);
     command
-        .args(arguments(&part))
+        .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
@@ -110,17 +151,10 @@ fn start(out: &Path, ffmpeg: &Path) -> Result<FfmpegSink, EncodeError> {
         let _ = child.wait();
         return Err(EncodeError::Failed("could not talk to ffmpeg".into()));
     };
-    Ok(FfmpegSink {
+    Ok(Process {
         child,
-        stdin: Some(stdin),
-        // What ffmpeg prints is read all the time, whatever the audio does: a program that fills the pipe stops.
-        stderr: Some(std::thread::spawn(move || Tail::read(stderr))),
-        bytes: Vec::new(),
-        failure: None,
-        reaped: false,
-        out: out.to_owned(),
-        part,
-        published: false,
+        stdin,
+        stderr,
         #[cfg(windows)]
         job,
     })

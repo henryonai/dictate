@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-mod ffmpeg;
+pub(crate) mod ffmpeg;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(windows)]
@@ -127,7 +127,7 @@ fn retrying<T>(
 /// Puts the finished `.part` file in the place of `out`, which it replaces if there is one. Windows can refuse for a
 /// moment (a virus scanner has the new file open, or the program that wrote it is still being cleaned up): it is tried again for
 /// about two seconds.
-fn publish(part: &Path, out: &Path) -> io::Result<()> {
+pub(crate) fn publish(part: &Path, out: &Path) -> io::Result<()> {
     retrying(
         || std::fs::rename(part, out),
         is_busy_on_windows,
@@ -139,7 +139,7 @@ fn publish(part: &Path, out: &Path) -> io::Result<()> {
 /// Removes the `.part` file of a sink that was not finished (it may not be there). Windows can refuse for a moment, while
 /// the program that wrote it is still being cleaned up or a virus scanner has the file open: it is tried again for about
 /// two seconds.
-fn remove_part(part: &Path) {
+pub(crate) fn remove_part(part: &Path) {
     let _ = retrying(
         || std::fs::remove_file(part),
         is_busy_on_windows,
@@ -152,7 +152,7 @@ fn remove_part(part: &Path) {
 /// has. A job that is cancelled while its encoder is still going ends late (the blocking work looks at the cancel between
 /// blocks), possibly after the job that replaced it has started on the same `audio.m4a`: each removes only its own file.
 /// The sweep at the start of the app removes every `*.part`, whatever the nonce.
-fn part_path(out: &Path) -> PathBuf {
+pub(crate) fn part_path(out: &Path) -> PathBuf {
     static SINKS: AtomicU64 = AtomicU64::new(0);
     let nonce = format!(
         "{:x}-{:x}",

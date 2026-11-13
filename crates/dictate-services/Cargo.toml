@@ -7,9 +7,10 @@ license.workspace = true
 description = "Services for the Dictate app: settings, secrets, AI and transcription clients"
 
 [features]
-# The scripted `MeetingBackend` of the meeting pipeline's tests (`meetings::fakes`), for the tests of the app, which
-# run the pipeline too (`dictate-services = { ..., features = ["test-support"] }` under its dev-dependencies). No normal
-# build has it: Cargo does not turn on the features of dev-dependencies for those.
+# The scripted `MeetingBackend` of the meeting pipeline's tests (`meetings::fakes`) and the scripted sources of the
+# recording session's tests (`record::fakes`), for the tests of the app, which run the pipeline and record too
+# (`dictate-services = { ..., features = ["test-support"] }` under its dev-dependencies). No normal build has it: Cargo
+# does not turn on the features of dev-dependencies for those.
 test-support = []
 
 [dependencies]
@@ -70,6 +71,14 @@ whisper-rs = { version = "0.15.1", features = ["metal"] }
 objc2-audio-toolbox = { version = "0.3.2", default-features = false, features = ["std", "AudioConverter", "AudioFile", "ExtendedAudioFile", "objc2-core-audio-types", "objc2-core-foundation"] }
 objc2-core-audio-types = { version = "0.3.2", default-features = false, features = ["std", "CoreAudioBaseTypes"] }
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFURL"] }
+# Which display is the main one (CGMainDisplayID), for the picker of displays and for a recording that names none. The same bindings again.
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGDirectDisplay"] }
+# The screen and the system's audio of a recording, from one ScreenCaptureKit stream (record::capture::macos). Its build
+# script compiles a Swift bridge with `swift build`, which needs Xcode 16 or the Command Line Tools with the macOS 15 SDK: `macos_15_0`
+# turns on every call up to macOS 15, and the build script stops, saying so, when the SDK is older than a feature asks for. The program
+# that is built runs on macOS 13: a system that is older than 15 says `FeatureNotAvailable` at run time.
+# Pinned: the crate has had six breaking releases in six months, so a move up is a decision with its changelog read.
+screencapturekit = { version = "=11.1.2", features = ["macos_15_0"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3.6.3", features = ["windows-native"] }
@@ -85,6 +94,10 @@ sherpa-onnx-sys = "=1.13.8"
 # would not start there). The version is the one the app and process-wrap already build, so that no second copy of it
 # is built.
 windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_Media_MediaFoundation", "Win32_Security", "Win32_System_Com", "Win32_System_JobObjects", "Win32_System_LibraryLoader", "Win32_System_Threading"] }
+# The screen and the windows of a recording, through the Windows Graphics Capture API (record::capture::windows). Pinned to
+# 1.5.0: 2.x needs Rust 1.88 (let chains), and 1.5.0 builds with 1.85 and uses the same `windows` 0.61 as the entry above,
+# so no other copy of it is built. A move up is a decision with its changelog read: the crate has a single maintainer.
+windows-capture = "=1.5.0"
 
 [target.'cfg(not(any(target_os = "macos", target_os = "windows")))'.dependencies]
 keyring = { version = "3.6.3", features = ["async-secret-service", "async-io", "crypto-rust"] }
@@ -99,6 +112,16 @@ keyring = { version = "3.6.3", features = ["async-secret-service", "async-io", "
 # next to the binaries in target/<profile>; build.rs makes the binaries of this crate look there, and the app's does
 # the same. A package of the app has to ship the .so files.
 sherpa-onnx-sys = { version = "=1.13.8", default-features = false, features = ["shared"] }
+
+# The screen of a recording on Linux: the ScreenCast portal for what to share (record::capture::linux), and PipeWire for the pictures.
+# `ashpd` is the version, and the feature, that the app has for the GlobalShortcuts portal, so that there is one copy of it (0.13 needs
+# Rust 1.87); `futures-util` is the one that the app has too. `pipewire` links libpipewire-0.3 (libpipewire-0.3-dev and libspa-0.2-dev, and
+# libclang for its bindings, are needed to build it; the deb has to depend on libpipewire-0.3-0). Pinned: a move up is a decision with its
+# changelog read.
+[target.'cfg(target_os = "linux")'.dependencies]
+ashpd = { version = "=0.12.3", default-features = false, features = ["tokio"] }
+futures-util = { version = "0.3.34", default-features = false }
+pipewire = "=0.10.1"
 
 [dev-dependencies]
 tempfile = "3.27.0"

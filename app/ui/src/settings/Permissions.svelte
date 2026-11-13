@@ -4,8 +4,9 @@
   import type { PermissionKind, PermissionState, PermissionsView } from "../lib/api";
   import { t } from "../lib/i18n";
 
-  // The macOS permissions that dictation uses. Windows and Linux ask for none of them, and nothing is shown there.
-  const KINDS: PermissionKind[] = ["microphone", "accessibility"];
+  // The macOS permissions that the app uses: dictation's two, and Screen Recording for the recording of the screen. Windows and
+  // Linux ask for none of them, and nothing is shown there.
+  const KINDS: PermissionKind[] = ["microphone", "accessibility", "screen"];
   const POLL_MS = 1000;
 
   // The system's answer, or null before the first one. The person turns the permissions on in System Settings, in
@@ -44,7 +45,8 @@
   });
 
   // The system shows its prompt for the microphone once. After a refusal the person has to turn it on in System
-  // Settings, and the prompt would do nothing. Accessibility has no "not asked yet": either it is on or it isn't.
+  // Settings, and the prompt would do nothing. Accessibility and Screen Recording have no "not asked yet": either they are on or
+  // they aren't.
   const canGrant = (kind: PermissionKind, state: PermissionState) =>
     kind === "microphone" ? state === "not_determined" : state === "denied";
   const canOpenSettings = (state: PermissionState) => state === "denied";
@@ -69,7 +71,7 @@
     <section class="group" aria-labelledby="general-permissions">
       <h2 id="general-permissions">{t("permissions.title")}</h2>
       <ul class="permissions">
-        {#each KINDS as kind (kind)}
+        {#each KINDS.filter((kind) => current[kind] !== "not_needed") as kind (kind)}
           {@const state = current[kind]}
           <li aria-labelledby={`permission-${kind}`}>
             <div class="info">

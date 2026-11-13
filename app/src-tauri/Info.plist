@@ -1,9 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- Merged into the Info.plist of the macOS app. Without a reason for the microphone, macOS ends an app that records. -->
+<!-- Merged into the Info.plist of the macOS app. Without a reason for the microphone, or for the screen, macOS ends an app that records. -->
 <plist version="1.0">
 <dict>
   <key>NSMicrophoneUsageDescription</key>
   <string>Dictate records your voice to turn it into text.</string>
+  <key>NSScreenCaptureUsageDescription</key>
+  <string>Dictate records your screen and the sound of your computer for meetings you choose to record.</string>
 </dict>
 </plist>

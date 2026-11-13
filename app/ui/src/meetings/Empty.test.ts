@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api } from "../lib/api";
 import { setLanguage } from "../lib/i18n";
 import { MeetingsStore } from "../lib/meetings-store.svelte";
-import { fakeError, stubMeetingsApi } from "../test-helpers";
+import { fakeError, fakeRecording, stubMeetingsApi } from "../test-helpers";
 import Empty from "./Empty.svelte";
 
 let store: MeetingsStore;
@@ -43,10 +43,26 @@ test("empty_library_shows_cards_and_ready_rows: the heading, the two cards, the 
   expect(readyRows()).toEqual(["Summary API Working", "Whisper (more accurate transcripts) Working"]);
 });
 
-test("there is no recording card and no permission row: those are for recording", () => {
+test("the_record_card_opens_the_picker: a card records the screen, and the permission rows are not in this window", async () => {
+  const user = userEvent.setup();
   render(Empty, { store });
 
-  expect(screen.queryByText(/Record the screen|Screen Recording|Microphone/i)).not.toBeInTheDocument();
+  const card = screen.getByRole("button", { name: /Record the screen/ });
+  expect(card).toHaveTextContent("Zoom or Meet calls, lectures — captures both system audio and the microphone.");
+  // The permissions are Settings': the window has the rows of what the summary needs, and no more.
+  expect(screen.queryByText(/Screen Recording|Microphone permission/i)).not.toBeInTheDocument();
+  expect(store.recorder).toBeNull();
+
+  await user.click(card);
+
+  expect(store.recorder).toEqual({ error: null });
+});
+
+test("while a recording goes on the card that starts one is not offered", () => {
+  store.recording = fakeRecording({ phase: "recording" });
+  render(Empty, { store });
+
+  expect(screen.queryByRole("button", { name: /Record the screen/ })).not.toBeInTheDocument();
 });
 
 test("on a Mac the shortcut to paste is written with the command key", () => {
@@ -127,4 +143,5 @@ test("speaks Vietnamese when the language is", () => {
   expect(screen.getByRole("heading", { level: 1, name: "Ghi lại, Dictate tóm tắt giúp bạn" })).toBeInTheDocument();
   expect(screen.getByText("Hoặc kéo thả file video/audio vào đây")).toBeInTheDocument();
   expect(screen.getByRole("region", { name: "Sẵn sàng chưa?" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /Quay màn hình/ })).toHaveTextContent("Cuộc họp Zoom, Meet, bài giảng — thu cả âm thanh máy và micro.");
 });

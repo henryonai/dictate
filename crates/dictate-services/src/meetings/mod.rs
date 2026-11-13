@@ -70,6 +70,9 @@ pub struct JobSpec {
     pub folder: std::path::PathBuf,
     /// The link to download, for a recording that came from one.
     pub link: Option<String>,
+    /// What the recording's own session said of how it went (in English), for a recording that was made by the app: the first
+    /// lines of the log of a run from scratch, which starts the log again and would else lose them. Empty for any other.
+    pub notes: Vec<String>,
 }
 
 /// What a run tells the app while it works.

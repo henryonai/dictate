@@ -1,12 +1,14 @@
 <script lang="ts">
   import { tick } from "svelte";
+  import { formatClock } from "../lib/days";
   import { t } from "../lib/i18n";
   import type { MeetingsStore } from "../lib/meetings-store.svelte";
+  import { recordHotkey } from "../lib/recording";
   import LinkForm from "./LinkForm.svelte";
   import Modal from "./Modal.svelte";
 
-  // The toolbar: the list's toggle, the button that opens the choice of a file or a link, and Settings. (Recording is not part of
-  // this window yet.)
+  // The toolbar: the list's toggle, the red button that records (it is "Stop" with the time while a recording goes on), the button
+  // that opens the choice of a file or a link, and Settings.
   let { store }: { store: MeetingsStore } = $props();
 
   let addOpen = $state(false);
@@ -14,7 +16,18 @@
   let addButton: HTMLButtonElement | undefined = $state();
 
   /** The toggle is for a window that has recordings (or a search going on). */
-  const hasRecordings = $derived(store.rows.length > 0 || store.query.trim() !== "");
+  const hasRecordings = $derived(store.items.length > 0 || store.query.trim() !== "");
+
+  /** A recording is made, paused or put together: the button stops it. */
+  const stopping = $derived(store.isRecording && store.recording.phase !== "starting");
+  /** What the button asked for is under way: the recording is being started, or being put together. */
+  const waiting = $derived(store.recording.phase === "starting" || store.recording.phase === "finishing");
+  const hotkey = recordHotkey();
+
+  function record() {
+    if (stopping) void store.stopRecording();
+    else store.openRecorder();
+  }
 
   async function chooseFile() {
     addOpen = false;
@@ -54,6 +67,16 @@
     </button>
   {/if}
   <span class="spacer"></span>
+  <button
+    type="button"
+    class="record"
+    disabled={waiting}
+    title={stopping ? t("recording.hud.stop_tip", { hotkey }) : t("meetings.record.tip", { hotkey })}
+    onclick={record}
+  >
+    <span class="mark" class:square={stopping} aria-hidden="true"></span>
+    {stopping ? t("meetings.record.stop", { time: formatClock(store.recording.elapsedMs / 1000) }) : t("meetings.record")}
+  </button>
   <!-- A button that shows two choices: a disclosure, with plain buttons. -->
   <div class="add" bind:this={addRoot}>
     <button
@@ -96,6 +119,24 @@
   }
   .spacer {
     flex: 1;
+  }
+  .record {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: #fff;
+    background: #d92d20;
+    border-color: #d92d20;
+    font-variant-numeric: tabular-nums;
+  }
+  .mark {
+    width: 9px;
+    height: 9px;
+    background: #fff;
+    border-radius: 50%;
+  }
+  .mark.square {
+    border-radius: 2px;
   }
   .add {
     position: relative;

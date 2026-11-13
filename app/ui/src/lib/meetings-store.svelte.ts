@@ -7,9 +7,10 @@
 // forgets what was heard, which the new list says better.
 import { SvelteMap } from "svelte/reactivity";
 import { api, asErrorView, errorText } from "./api";
-import type { ErrorView, JobView, MeetingDetail, MeetingRow, Readiness, SettingsTab } from "./api";
+import type { ErrorView, JobView, MeetingDetail, MeetingRow, Readiness, RecordingView, SettingsTab } from "./api";
 import { setLanguage, t } from "./i18n";
 import { errorMessage } from "./meeting-errors";
+import { IDLE_RECORDING } from "./recording";
 
 /** How long the search waits for another key before it asks for the list. */
 export const SEARCH_DELAY_MS = 200;
@@ -45,6 +46,13 @@ export class MeetingsStore {
   logFor = $state<string | null>(null);
   /** The dialog of "Paste a link" is open. */
   linkDialogOpen = $state(false);
+  /** How the recording goes: idle before the recorder has said, and when nothing is recorded. */
+  recording = $state.raw<RecordingView>(IDLE_RECORDING);
+  /**
+   * The picker of the recording ("Record & summarize") is open while this is set. `error` is why a recording did not begin, when
+   * the picker was asked for because of that (a start from the shortcut), and what a start from the picker said.
+   */
+  recorder = $state.raw<{ error: ErrorView | null } | null>(null);
   sidebarOpen = $state(true);
   /**
    * The rename of speakers that was asked for: the speaker whose name was clicked, or null for the sheet as a whole. The sheet is
@@ -61,18 +69,33 @@ export class MeetingsStore {
   private timer: ReturnType<typeof setTimeout> | undefined;
   private unlisten: (() => void)[] = [];
   private stopped = false;
+  /** A state of the recording came by the event: the answer to the question asked at the start is older than it. */
+  private heardRecording = false;
   private readonly onFocus = () => void this.refreshReadiness();
 
   /** A dialog is open over the window: what is pasted or dropped on the window is not for the library then. */
-  modalOpen = $derived(this.logFor !== null || this.linkDialogOpen || this.renameFor !== null);
+  modalOpen = $derived(this.logFor !== null || this.linkDialogOpen || this.renameFor !== null || this.recorder !== null);
 
-  /** The rows with the jobs that were heard laid on them. */
-  items = $derived.by(() => this.rows.map((row) => withJob(row, this.jobs[row.id])));
+  /** A recording is going on: it is being made, it is paused, or it is being put together. */
+  isRecording = $derived(this.recording.phase !== "idle");
+
+  /**
+   * The id of the folder of the recording that goes on, which is in the library already and would show as a recording that did not
+   * finish: it is not a row, and can't be selected, until the recording is over. A string and not the whole state, so that what
+   * depends on it is not worked out again at each report of the time (up to 20 times a second).
+   */
+  liveId = $derived(this.isRecording ? (this.recording.meetingId ?? null) : null);
+
+  /** The rows with the jobs that were heard laid on them, without the folder of the recording that goes on. */
+  items = $derived.by(() => {
+    const live = this.liveId;
+    return this.rows.filter((row) => row.id !== live).map((row) => withJob(row, this.jobs[row.id]));
+  });
 
   /** The row of the selected recording: the list's, or while the list doesn't have it yet, the detail's. */
   selectedRow = $derived.by(() => {
     const id = this.selectedId;
-    if (id === null) return null;
+    if (id === null || id === this.liveId) return null;
     const listed = this.items.find((row) => row.id === id);
     if (listed) return listed;
     return this.detail?.row.id === id ? withJob(this.detail.row, this.jobs[id]) : null;
@@ -84,9 +107,14 @@ export class MeetingsStore {
    */
   async start(): Promise<void> {
     this.stopped = false;
+    this.heardRecording = false;
     const settled = await Promise.allSettled([
       api.onMeetingJob((job) => this.hearJob(job)),
       api.onMeetingsChanged(() => void this.refreshAll()),
+      api.onRecordingState((view) => {
+        this.heardRecording = true;
+        this.hearRecording(view);
+      }),
     ]);
     const stops = settled.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
     if (this.stopped) {
@@ -98,7 +126,7 @@ export class MeetingsStore {
     if (failed) this.notify(errorText(failed.reason));
     // The keys are set in the Settings window: what is ready may be different when this one gets the focus back.
     window.addEventListener("focus", this.onFocus);
-    await Promise.all([this.load(), this.refreshReadiness()]);
+    await Promise.all([this.load(), this.refreshReadiness(), this.refreshRecording()]);
   }
 
   stop(): void {
@@ -123,11 +151,11 @@ export class MeetingsStore {
     if (mine !== this.loads) return;
     this.rows = rows;
     this.loaded = true;
-    // The recording that was selected is gone (deleted): the first one takes its place. A search may leave the selected
-    // recording out of the list, which is not a reason to leave it.
+    // The recording that was selected is gone (deleted): the first one takes its place (of those that are shown: not the folder of
+    // the recording that goes on). A search may leave the selected recording out of the list, which is not a reason to leave it.
     const id = this.selectedId;
     if (id !== null && this.query.trim() === "" && !rows.some((row) => row.id === id)) {
-      await this.select(rows[0]?.id ?? null);
+      await this.select(this.items[0]?.id ?? null);
     }
   }
 
@@ -145,6 +173,16 @@ export class MeetingsStore {
     }
   }
 
+  /** Asks how the recording is, for a window that opens in the middle of one. A state that was heard meanwhile is newer than the answer. */
+  async refreshRecording(): Promise<void> {
+    try {
+      const view = await api.recordingState();
+      if (!this.heardRecording) this.hearRecording(view);
+    } catch (e) {
+      this.notify(errorText(e));
+    }
+  }
+
   /** Types in the search box: the box shows it at once, and the list is asked for 200 ms after the last key. */
   search(query: string): void {
     this.query = query;
@@ -156,6 +194,8 @@ export class MeetingsStore {
   }
 
   async select(id: string | null): Promise<void> {
+    // The folder of the recording that goes on is not a recording to look at yet.
+    if (id !== null && id === this.liveId) return;
     this.selectedId = id;
     this.renameFor = null;
     // The detail of the one before is not this one's.
@@ -340,7 +380,7 @@ export class MeetingsStore {
     this.asks.delete(id);
     await this.load();
     // `load` has taken the first row of a whole list; the list of a search may still have the recording selected.
-    if (this.selectedId === id) await this.select(this.rows.find((row) => row.id !== id)?.id ?? null);
+    if (this.selectedId === id) await this.select(this.items.find((row) => row.id !== id)?.id ?? null);
     return true;
   }
 
@@ -396,6 +436,41 @@ export class MeetingsStore {
     this.renameFor = null;
   }
 
+  /**
+   * Opens the picker of the recording, which is open already when it is asked again: only the error changes, and only when there is
+   * a new one (the one that is shown is not answered by an ask for the picker).
+   */
+  openRecorder(error: ErrorView | null = null): void {
+    this.recorder = { error: error ?? this.recorder?.error ?? null };
+  }
+
+  /** Sets the error that the open picker shows (what a start said), or clears it. A picker that is not open has none to show. */
+  setRecorderError(error: ErrorView | null): void {
+    if (this.recorder) this.recorder = { error };
+  }
+
+  closeRecorder(): void {
+    this.recorder = null;
+  }
+
+  /** Ends the recording and starts its meeting: the "Stop" of the toolbar. A stop that fails says why in the notice. */
+  async stopRecording(): Promise<void> {
+    try {
+      await api.recordingStop();
+    } catch (e) {
+      this.notify(errorMessage(asErrorView(e)));
+    }
+  }
+
+  /** Opens the pane of System Settings where Screen Recording is turned on (macOS). */
+  async openScreenPermission(): Promise<void> {
+    try {
+      await api.openPermissionSettings("screen");
+    } catch (e) {
+      this.notify(errorText(e));
+    }
+  }
+
   openLinkDialog(): void {
     this.linkDialogOpen = true;
   }
@@ -428,6 +503,15 @@ export class MeetingsStore {
     // The transcript is written between two steps and no change of the library says so: a new step (or the end) is the
     // moment to read the detail again.
     if (view.outcome !== null || before?.step !== view.step) void this.reloadDetail(true);
+  }
+
+  /**
+   * The recorder says how the recording goes. A recording that begins while its own folder is the one that is selected (the list
+   * had it before the state did) lets go of it: the first recording that is shown takes its place.
+   */
+  private hearRecording(view: RecordingView): void {
+    this.recording = view;
+    if (this.selectedId !== null && this.selectedId === this.liveId) void this.select(this.items[0]?.id ?? null);
   }
 
   private async refreshAll(): Promise<void> {

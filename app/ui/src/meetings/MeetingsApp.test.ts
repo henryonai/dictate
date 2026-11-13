@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api } from "../lib/api";
 import type { MeetingRow, Readiness } from "../lib/api";
 import { setLanguage } from "../lib/i18n";
-import { fakeDetail, fakeError, fakeJob, fakeRow, stubMeetingsApi } from "../test-helpers";
+import { fakeDetail, fakeError, fakeJob, fakeRecording, fakeRow, IDLE_RECORDING, stubMeetingsApi } from "../test-helpers";
 import { MeetingsStore } from "../lib/meetings-store.svelte";
 import MeetingsApp from "./MeetingsApp.svelte";
 
@@ -43,6 +43,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   setLanguage("en");
+  delete (window as unknown as Record<string, unknown>).__dictateOpenRecorder;
 });
 
 // ---- The list
@@ -550,4 +551,178 @@ test("a press that starts in the link dialog and ends on the backdrop (a selecti
   await fireEvent.pointerDown(backdrop);
   await fireEvent.click(backdrop);
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+});
+
+// ---- Recording
+
+const RECORDING = "2026-03-02 11-00-00";
+
+test("a red Record button stands left of the one that adds a file or a link, and opens the picker", async () => {
+  const user = userEvent.setup();
+  await open();
+  const record = screen.getByRole("button", { name: "Record" });
+  const add = screen.getByRole("button", { name: "Add file or link" });
+
+  expect(record.compareDocumentPosition(add) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(record).toHaveAttribute("title", "Record the screen and audio to summarize (Ctrl+Alt+R)");
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+  await user.click(record);
+
+  expect(await screen.findByRole("dialog", { name: "Record & summarize" })).toBeInTheDocument();
+  expect(api.recordingSources).toHaveBeenCalledOnce();
+});
+
+test("while a recording goes on the button reads Stop with the time, and stops it", async () => {
+  const user = userEvent.setup();
+  await open();
+  events.sendRecordingState(fakeRecording({ phase: "recording", elapsedMs: 65_400 }));
+
+  const stop = await screen.findByRole("button", { name: "Stop 01:05" });
+  expect(screen.queryByRole("button", { name: "Record" })).not.toBeInTheDocument();
+  events.sendRecordingState(fakeRecording({ phase: "paused", elapsedMs: 3_725_000 }));
+  expect(await screen.findByRole("button", { name: "Stop 1:02:05" })).toBeInTheDocument();
+
+  await user.click(stop);
+
+  expect(api.recordingStop).toHaveBeenCalledOnce();
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+});
+
+test("a recording that is being put together can't be stopped again, and one that is being started can't be started again", async () => {
+  await open();
+
+  events.sendRecordingState(fakeRecording({ phase: "starting", elapsedMs: 0 }));
+  expect(await screen.findByRole("button", { name: "Record" })).toBeDisabled();
+
+  events.sendRecordingState(fakeRecording({ phase: "finishing", elapsedMs: 12_000 }));
+  expect(await screen.findByRole("button", { name: "Stop 00:12" })).toBeDisabled();
+
+  events.sendRecordingState(IDLE_RECORDING);
+  expect(await screen.findByRole("button", { name: "Record" })).toBeEnabled();
+});
+
+test("the recording that goes on is not in the list as a recording that did not finish, until it is over", async () => {
+  await open([...rows, fakeRow({ id: RECORDING, title: "Screen recording 11:00 02/03", kind: "screen", duration: null, hasSummary: false, openTasks: 0, created: at(0, 11) })]);
+  const list = screen.getByRole("navigation", { name: "Recordings" });
+  expect(within(list).getAllByRole("button")).toHaveLength(3);
+
+  events.sendRecordingState(fakeRecording({ phase: "recording", meetingId: RECORDING }));
+
+  await vi.waitFor(() => expect(within(list).getAllByRole("button")).toHaveLength(2));
+  expect(within(list).queryByText("Screen recording 11:00 02/03")).not.toBeInTheDocument();
+  events.sendRecordingState(IDLE_RECORDING);
+  await vi.waitFor(() => expect(within(list).getAllByRole("button")).toHaveLength(3));
+});
+
+test("a library whose only recording is the one that goes on shows the empty state, with the button that stops it", async () => {
+  await open([fakeRow({ id: RECORDING, title: "Screen recording", kind: "screen", duration: null, hasSummary: false, openTasks: 0 })]);
+  expect(screen.getByRole("navigation", { name: "Recordings" })).toBeInTheDocument();
+
+  events.sendRecordingState(fakeRecording({ phase: "recording", meetingId: RECORDING, elapsedMs: 4_000 }));
+
+  expect(await screen.findByRole("heading", { level: 1, name: "Record it, Dictate summarizes it" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Stop 00:04" })).toBeInTheDocument();
+});
+
+test("a window made for the picker opens it at once, with the error that the ask had, and the ask is taken away", async () => {
+  const error = fakeError({ kind: "MissingTool", key: "recording.error.needs_ffmpeg", detail: null, command: "brew install ffmpeg" });
+  (window as unknown as Record<string, unknown>).__dictateOpenRecorder = { error };
+
+  await open();
+
+  const dialog = await screen.findByRole("dialog", { name: "Record & summarize" });
+  expect(await within(dialog).findByRole("alert")).toHaveTextContent("Recording the screen needs ffmpeg: brew install ffmpeg");
+  expect("__dictateOpenRecorder" in window).toBe(false);
+});
+
+test("the ask of a window made for the picker is read before the window hears anything, and an ask that comes after does not open a second picker", async () => {
+  (window as unknown as Record<string, unknown>).__dictateOpenRecorder = { error: null };
+  await open();
+  await screen.findByRole("dialog", { name: "Record & summarize" });
+
+  events.sendOpenRecorder({ error: null });
+  events.sendOpenRecorder({ error: null });
+
+  expect(screen.getAllByRole("dialog")).toHaveLength(1);
+  await vi.waitFor(() => expect(api.recordingSources).toHaveBeenCalledOnce());
+});
+
+test("a window that is not made for the picker opens it when it is asked to, with the error of the ask", async () => {
+  await open();
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  await vi.waitFor(() => expect(events.recordingListeners().open).toBe(1));
+
+  events.sendOpenRecorder({ error: fakeError({ key: "recording.error.nothing_to_record", detail: null }) });
+
+  const dialog = await screen.findByRole("dialog", { name: "Record & summarize" });
+  expect(await within(dialog).findByRole("alert")).toHaveTextContent("Turn on at least system audio or the microphone.");
+});
+
+test("the asks for the picker are heard until the window goes away", async () => {
+  const view = await open();
+  await vi.waitFor(() => expect(events.recordingListeners()).toEqual({ state: 1, open: 1 }));
+
+  view.unmount();
+
+  await vi.waitFor(() => expect(events.recordingListeners()).toEqual({ state: 0, open: 0 }));
+});
+
+test("a recording that begins somewhere else (the shortcut) takes the picker away, and one the picker began does not", async () => {
+  const user = userEvent.setup();
+  await open();
+  await user.click(screen.getByRole("button", { name: "Record" }));
+  await screen.findByRole("dialog", { name: "Record & summarize" });
+
+  events.sendRecordingState(fakeRecording({ phase: "recording" }));
+
+  await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+});
+
+test("a picker that is starting its own recording stays while the recorder says that it is starting", async () => {
+  const user = userEvent.setup();
+  let begun: () => void = () => {};
+  await open();
+  vi.mocked(api.recordingStart).mockImplementation(() => new Promise<void>((resolve) => (begun = resolve)));
+  await user.click(screen.getByRole("button", { name: "Record" }));
+  await user.click(await screen.findByRole("button", { name: "Start recording" }));
+
+  events.sendRecordingState(fakeRecording({ phase: "starting" }));
+  events.sendRecordingState(fakeRecording({ phase: "recording" }));
+  expect(screen.getByRole("dialog", { name: "Record & summarize" })).toBeInTheDocument();
+
+  begun();
+  await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+});
+
+test("while the picker is open, a link that is pasted is not imported", async () => {
+  const user = userEvent.setup();
+  await open();
+  await user.click(screen.getByRole("button", { name: "Record" }));
+  await screen.findByRole("dialog");
+
+  await paste("https://youtu.be/abc");
+
+  expect(api.meetingsImportLink).not.toHaveBeenCalled();
+});
+
+test("the empty library has a card that records the screen and opens the picker", async () => {
+  const user = userEvent.setup();
+  await open([]);
+
+  await user.click(await screen.findByRole("button", { name: /Record the screen/ }));
+
+  expect(await screen.findByRole("dialog", { name: "Record & summarize" })).toBeInTheDocument();
+});
+
+test("the toolbar and the picker speak Vietnamese when the window does", async () => {
+  const user = userEvent.setup();
+  await open(rows, { ai: true, whisper: true, language: "vi" });
+  await vi.waitFor(() => expect(screen.getByRole("button", { name: "Quay" })).toBeInTheDocument());
+
+  events.sendRecordingState(fakeRecording({ phase: "recording", elapsedMs: 9_000 }));
+  expect(await screen.findByRole("button", { name: "Dừng 00:09" })).toBeInTheDocument();
+  events.sendRecordingState(IDLE_RECORDING);
+  await user.click(await screen.findByRole("button", { name: "Quay" }));
+  expect(await screen.findByRole("dialog", { name: "Quay & tóm tắt" })).toBeInTheDocument();
 });
