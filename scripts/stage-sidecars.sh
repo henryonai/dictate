@@ -105,6 +105,9 @@ for pair in "${copies[@]}"; do
   echo "copy $from -> $to"
   if [ "$dry_run" -eq 0 ]; then
     mkdir -p "$(dirname "$to")"
-    cp -fL "$from" "$to"
+    # Not written over: macOS kills a program whose file is overwritten in place once it has been signed or run (the kernel keeps what it
+    # knows of the file by its inode), so a staged file that is there from an earlier run is removed and the copy is a new file.
+    rm -f "$to"
+    cp -L "$from" "$to"
   fi
 done

@@ -738,3 +738,78 @@ fn stage_sidecars_stops_before_it_builds_anything_when_the_ffmpeg_is_not_there()
         stdout(&output)
     );
 }
+
+#[test]
+fn stage_sidecars_replaces_a_sidecar_that_is_there_with_a_new_file_and_does_not_write_over_it() {
+    // macOS kills a program that was written over in place after it had been run or signed (the signature is kept by the kernel for the
+    // inode): the file is removed and copied anew, so that it is a new one.
+    use std::os::unix::fs::MetadataExt;
+
+    let repo = tempfile::tempdir().unwrap();
+    let triple = "aarch64-apple-darwin";
+    fs::create_dir_all(repo.path().join("scripts")).unwrap();
+    fs::copy(
+        scripts().join("stage-sidecars.sh"),
+        repo.path().join("scripts/stage-sidecars.sh"),
+    )
+    .unwrap();
+    let write = |relative: &str, text: &str| {
+        let path = repo.path().join(relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, text).unwrap();
+        path
+    };
+    write(
+        &format!("target/{triple}/release/dictate-mcp"),
+        "the new mcp",
+    );
+    write(
+        &format!("target/ffmpeg/{triple}/dictate-ffmpeg"),
+        "the new ffmpeg",
+    );
+    let old_mcp = write(
+        &format!("app/src-tauri/binaries/dictate-mcp-{triple}"),
+        "the old mcp",
+    );
+    let old_ffmpeg = write(
+        &format!("app/src-tauri/binaries/dictate-ffmpeg-{triple}"),
+        "the old ffmpeg",
+    );
+    let inodes = [
+        fs::metadata(&old_mcp).unwrap().ino(),
+        fs::metadata(&old_ffmpeg).unwrap().ino(),
+    ];
+    // The build of the MCP server is not what is under test: a `cargo` that does nothing leaves the file that is in target/ as it is.
+    let tools = tempfile::tempdir().unwrap();
+    let cargo = tools.path().join("cargo");
+    fs::write(&cargo, "#!/bin/sh\nexit 0\n").unwrap();
+    fs::set_permissions(&cargo, fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!(
+        "{}:{}",
+        tools.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let output = run({
+        let mut command = Command::new("bash");
+        command
+            .arg(repo.path().join("scripts/stage-sidecars.sh"))
+            .arg(triple)
+            .env("PATH", path);
+        command
+    });
+
+    assert_eq!(code(&output), 0, "{}{}", stdout(&output), stderr(&output));
+    assert_eq!(fs::read_to_string(&old_mcp).unwrap(), "the new mcp");
+    assert_eq!(fs::read_to_string(&old_ffmpeg).unwrap(), "the new ffmpeg");
+    assert_ne!(
+        fs::metadata(&old_mcp).unwrap().ino(),
+        inodes[0],
+        "dictate-mcp was written over in place"
+    );
+    assert_ne!(
+        fs::metadata(&old_ffmpeg).unwrap().ino(),
+        inodes[1],
+        "dictate-ffmpeg was written over in place"
+    );
+}

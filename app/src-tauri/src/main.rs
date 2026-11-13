@@ -798,15 +798,32 @@ mod tests {
     #[test]
     fn the_deb_recommends_the_gstreamer_packages_that_play_the_recordings() {
         // WebKitGTK plays the audio of a recording (AAC in MP4) only with GStreamer's good plugins and libav. They are
-        // recommended, not required: the app runs without them and says which package to install.
+        // recommended, not required: the app runs without them and says which package to install. The same goes for the
+        // portal that gives the screen on Wayland and for `parec`, which the system's audio is recorded with on Linux.
         let config: Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
         assert_eq!(
             config["bundle"]["linux"]["deb"]["recommends"],
-            json!(["gstreamer1.0-plugins-good", "gstreamer1.0-libav"])
+            json!([
+                "gstreamer1.0-plugins-good",
+                "gstreamer1.0-libav",
+                "xdg-desktop-portal",
+                "pulseaudio-utils"
+            ])
         );
-        assert!(
-            config["bundle"]["linux"]["deb"]["depends"].is_null(),
-            "a package that is only recommended is not a dependency"
+    }
+
+    #[test]
+    fn the_deb_depends_on_the_libraries_the_program_does_not_start_without() {
+        // The program links ALSA (the microphone) and PipeWire (the screen) and does not start on a machine without them. Ubuntu
+        // 24.04 renamed both with a `t64` suffix, so each is an alternative of the two names. What Tauri adds itself (the web view,
+        // GTK, the tray icon) is not listed here, and nothing that is only recommended is a dependency.
+        let config: Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        assert_eq!(
+            config["bundle"]["linux"]["deb"]["depends"],
+            json!([
+                "libasound2t64 | libasound2",
+                "libpipewire-0.3-0t64 | libpipewire-0.3-0"
+            ])
         );
     }
 

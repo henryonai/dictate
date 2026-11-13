@@ -1,0 +1,14 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "externalBin": ["binaries/dictate-mcp", "binaries/dictate-ffmpeg"],
+    "linux": {
+      "deb": {
+        "files": {
+          "/usr/lib/dictate/libsherpa-onnx-c-api.so": "libs/libsherpa-onnx-c-api.so",
+          "/usr/lib/dictate/libonnxruntime.so": "libs/libonnxruntime.so"
+        }
+      }
+    }
+  }
+}
