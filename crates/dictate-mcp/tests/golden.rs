@@ -4,6 +4,10 @@
 //! `scripts/golden.sh`. Here the Rust binary reads the same requests and its replies are compared with them
 //! line by line as parsed JSON, ignoring only the server's version number (each build has its own).
 //!
+//! The `instructions` of every `initialize` reply are deliberately not the Swift server's: the app runs on macOS,
+//! Windows and Linux now, so the first sentence says that and not "the user's macOS app" (`INSTRUCTIONS` in
+//! `dictate-core`). The golden files hold the new sentence; the rest of each reply is the Swift server's own.
+//!
 //! One reply is deliberately not the Swift server's: a transcript saved with Windows line ends (CRLF) is read
 //! paragraph by paragraph here, while the Swift server takes it for one long paragraph with "\r\n" inside. The
 //! fixture keeps one such recording (`2026-10-16 23-59-59`); no golden request prints its transcript (a

@@ -81,7 +81,7 @@ fn reads_the_library_named_by_the_environment() {
     assert_eq!(info["version"], env!("CARGO_PKG_VERSION"));
     assert!(replies[0]["result"]["instructions"]
         .as_str()
-        .is_some_and(|text| text.starts_with("Dictate is the user's macOS app")));
+        .is_some_and(|text| text.starts_with("Dictate is an app for macOS, Windows and Linux")));
     assert_eq!(replies[1]["result"]["isError"], false);
     assert_eq!(
         replies[1]["result"]["content"][0]["text"],
