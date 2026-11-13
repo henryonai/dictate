@@ -172,7 +172,9 @@ jobs:
       # On Linux the programs load the sherpa-onnx .so files from target/debug. rust-cache saves only build/, deps/
       # and .fingerprint/ of it, so after a restore they are gone, and the build script of sherpa-onnx-sys, which
       # copied them, is up to date and does not run again: the one of dictate-services has to bring them back. Delete
-      # them as a restore does; the next step then fails with "error while loading shared libraries" if it does not.
+      # them as a restore does. The next step builds sherpa-onnx-sys again (its features differ in this build), so it
+      # copies them itself and proves nothing about the other one: the `app` job does, where nothing builds before the
+      # check of target/debug/*.so (a copy in the wrong folder, as with Cargo 1.100, fails it there).
       - name: Remove the sherpa-onnx libraries as a cache restore does (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -279,11 +281,13 @@ jobs:
         shell: bash
         run: bash scripts/check-no-espeak.sh "target/debug/dictate${{ runner.os == 'Windows' && '.exe' || '' }}"
       # The shared libraries on Linux have all of their code in them whether or not the program uses it: the program is checked, and so
-      # are the libraries that come with it and that a package has to ship.
+      # are the libraries that come with it and that a package has to ship: the copies beside the program (a pattern that matches
+      # nothing fails the step and says so: the build has not put them there) and the folder that they are taken from, which is what
+      # a package takes.
       - name: Check that no espeak-ng code is in the program or its shared libraries (Linux)
         if: runner.os == 'Linux'
         shell: bash
-        run: bash scripts/check-no-espeak.sh target/debug/dictate target/debug/*.so
+        run: bash scripts/check-no-espeak.sh target/debug/dictate target/debug/*.so "$SHERPA_ONNX_LIB_DIR"/*.so*
       # The macOS bundle is where Info.plist and Entitlements.plist take effect. A debug bundle is the quick one to
       # build, and the identity "-" signs it ad hoc, which is what applies the entitlements: check that the reason for
       # the microphone and the right to use it ended up in it.

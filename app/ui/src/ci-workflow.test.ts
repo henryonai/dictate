@@ -256,6 +256,9 @@ describe("no espeak-ng (GPL-3.0) in what the app ships", () => {
     // The shared library has the code of espeak-ng in it whether or not the program refers to it: it is checked too.
     expect(linux).toContain("target/debug/*.so");
     expect(linux).toContain("target/debug/dictate");
+    // And the libraries that a package ships are the ones in the folder they are taken from, whether or not the build copied them
+    // beside the program: a restored cache has not (the libraries are not in it), and the check on the copies alone failed on it.
+    expect(linux).toContain('"$SHERPA_ONNX_LIB_DIR"/*.so*');
 
     const elsewhere = checks.find((step) => step.includes("runner.os != 'Linux'"));
     expect(elsewhere, "a step for macOS and Windows").toBeDefined();
