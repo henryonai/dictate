@@ -417,6 +417,18 @@ describe("the ffmpeg that ships with the app (LGPL v2.1 or later, built from sou
     expect(windows.indexOf(check)).toBeLessThan(windows.indexOf(tests));
   });
 
+  test("the Windows runner has no graphics card: the encoder it picks must be h264_mf (the software one), and never mpeg4", () => {
+    // The ffmpeg that ships has no libx264 or libopenh264, so a machine whose Media Foundation tries all fail records mpeg4, which the
+    // player cannot play. The tests print which encoder they ran with; this one fails when it is not Media Foundation's.
+    const tests = step("ffmpeg-windows", "cargo test -p dictate-services");
+    expect(tests).toContain("DICTATE_EXPECT_ENCODER: h264_mf");
+    const TEST = "pick_codec_with_the_real_ffmpeg_gives_the_encoder_that_a_machine_is_known_to_have";
+    expect(read("crates/dictate-services/src/record/video.rs")).toContain(`fn ${TEST}()`);
+    expect(read("crates/dictate-services/src/record/video.rs")).toContain('std::env::var("DICTATE_EXPECT_ENCODER")');
+    // It is in what the step runs: a name that matches nothing runs nothing, and passes.
+    expect(tests).toMatch(/-- .*record::/);
+  });
+
   test("the jobs that run the tests have what dictate-services is built with: the sherpa-onnx library of each system", () => {
     const linux = step("ffmpeg", "Use the sherpa-onnx build without text to speech (Linux)");
     expect(linux).toContain("if: runner.os == 'Linux' && matrix.tests");

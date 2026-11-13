@@ -143,11 +143,37 @@ impl Container {
     }
 }
 
-/// An encoder of ffmpeg and the container its video goes in.
+/// An encoder of ffmpeg, the way it is used, and the container its video goes in. An encoder that can be used in more than one
+/// way (`variants`) is more than one candidate.
 #[derive(Clone, Debug, PartialEq)]
 pub struct VideoCodec {
     pub encoder: &'static str,
     pub container: Container,
+    /// What this candidate adds to the arguments that its encoder has anyway: `-hw_encoding 1` for the first try of `h264_mf`. The
+    /// probe (`works`) and the recording both get them, so that a probe that passes is a recording that will work.
+    pub options: &'static [&'static str],
+}
+
+impl VideoCodec {
+    /// The encoder and its options, to say which candidate it is in a log: `h264_mf -hw_encoding 1`, `h264_mf`.
+    pub fn label(&self) -> String {
+        std::iter::once(self.encoder)
+            .chain(self.options.iter().copied())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
+/// The ways of using an encoder that are tried, best first, each as the options it adds. Media Foundation (`h264_mf`) is
+/// tried for the hardware encoder of the graphics card first (`-hw_encoding 1`: without it ffmpeg asks for the software one,
+/// which is slower), and then for its software encoder, which every Windows that has the Media Feature Pack has: a machine
+/// with no hardware encoder (a virtual machine, a remote session) has no `libx264` or `libopenh264` to fall back on in the
+/// ffmpeg that ships, and would get `mpeg4`, which the player cannot play.
+fn variants(encoder: &str) -> &'static [&'static [&'static str]] {
+    match encoder {
+        "h264_mf" => &[&["-hw_encoding", "1"], &[]],
+        _ => &[&[]],
+    }
 }
 
 /// The encoders to use, best first: the one of the system's own hardware where there is one, and then the ones that
@@ -178,10 +204,15 @@ const WINDOWS_ENCODERS: &[&str] = &[
 ///
 /// What ffmpeg lists (`-encoders`) is what it was built with, not what the machine can do: `h264_nvenc` is listed with
 /// no NVIDIA card, `h264_mf` on a Windows "N" edition without the Media Feature Pack. So each listed encoder is tried,
-/// in the order of the list, with two small frames written to nowhere (`works`), and the first that ends well is the
-/// pick. That is a process started per candidate (a few at most; each is over in a fraction of a second, and one that
+/// in the order of the list (and `h264_mf` in its two ways, `variants`), with two small frames written to nowhere (`works`),
+/// and the first that ends well is the pick. That is a process started per candidate (a few at most; each is over in a fraction of a second, and one that
 /// hangs is given up after 10 s), so the caller should keep the result and not ask again for every recording.
 pub fn pick_codec(ffmpeg: &Path) -> Option<VideoCodec> {
+    pick_codec_in(ENCODER_ORDER, ffmpeg)
+}
+
+/// `pick_codec` for the encoders of `order`.
+fn pick_codec_in(order: &[&'static str], ffmpeg: &Path) -> Option<VideoCodec> {
     let output = tools::command(ffmpeg)
         .args(["-hide_banner", "-encoders"])
         .stdin(Stdio::null())
@@ -191,7 +222,7 @@ pub fn pick_codec(ffmpeg: &Path) -> Option<VideoCodec> {
     if !output.status.success() {
         return None;
     }
-    let listed = candidates(&String::from_utf8_lossy(&output.stdout));
+    let listed = candidates_in(order, &String::from_utf8_lossy(&output.stdout));
     first_working(listed, |codec| works(ffmpeg, codec))
 }
 
@@ -201,9 +232,14 @@ pub fn pick_from_list(encoders_output: &str) -> Option<VideoCodec> {
     candidates(encoders_output).into_iter().next()
 }
 
-/// The encoders of `ENCODER_ORDER` that the output of `ffmpeg -hide_banner -encoders` lists, in the order of
-/// `ENCODER_ORDER`.
+/// The candidates of `ENCODER_ORDER` that the output of `ffmpeg -hide_banner -encoders` lists, in the order of
+/// `ENCODER_ORDER`: one for each way of using a listed encoder (`variants`), the ways of an encoder next to each other.
 fn candidates(encoders_output: &str) -> Vec<VideoCodec> {
+    candidates_in(ENCODER_ORDER, encoders_output)
+}
+
+/// `candidates` for the encoders of `order`.
+fn candidates_in(order: &[&'static str], encoders_output: &str) -> Vec<VideoCodec> {
     // A line is the flags of the encoder (`V....D`: a video encoder) and its name, and then what it is.
     let video_encoders: Vec<&str> = encoders_output
         .lines()
@@ -213,17 +249,20 @@ fn candidates(encoders_output: &str) -> Vec<VideoCodec> {
             (flags.len() == 6 && flags.starts_with('V')).then_some(name)
         })
         .collect();
-    ENCODER_ORDER
+    order
         .iter()
         .filter(|encoder| video_encoders.contains(encoder))
-        .map(|&encoder| VideoCodec {
-            encoder,
-            // VP9 is the one encoder whose video does not go in an MP4.
-            container: if encoder == "libvpx-vp9" {
-                Container::WebM
-            } else {
-                Container::Mp4
-            },
+        .flat_map(|&encoder| {
+            variants(encoder).iter().map(move |&options| VideoCodec {
+                encoder,
+                // VP9 is the one encoder whose video does not go in an MP4.
+                container: if encoder == "libvpx-vp9" {
+                    Container::WebM
+                } else {
+                    Container::Mp4
+                },
+                options,
+            })
         })
         .collect()
 }
@@ -593,12 +632,6 @@ fn encoding_arguments(size: (u32, u32), spec: &QualitySpec, codec: &VideoCodec) 
         // hardware (a virtual machine).
         args.extend(words(&["-realtime", "1", "-allow_sw", "1"]));
     }
-    if codec.encoder == "h264_mf" {
-        // Media Foundation gives the software encoder of Microsoft unless it is asked for the hardware one (the encoder
-        // of the graphics card). Where there is none, ffmpeg cannot start the encoder, and the probe (`works`) passes over
-        // it to the next one.
-        args.extend(words(&["-hw_encoding", "1"]));
-    }
     if codec.encoder == "libvpx-vp9" {
         // The speed of the capture too: the encoder is not given the time that its best quality takes. And no
         // lookahead: libvpx keeps about 25 frames before it writes any of them (it uses them for nothing in realtime
@@ -615,6 +648,8 @@ fn encoding_arguments(size: (u32, u32), spec: &QualitySpec, codec: &VideoCodec) 
             "0",
         ]));
     }
+    // The way this candidate uses its encoder, after what the encoder has anyway.
+    args.extend(words(codec.options));
     args
 }
 
@@ -1011,7 +1046,8 @@ mod tests {
             only_mpeg4,
             VideoCodec {
                 encoder: "mpeg4",
-                container: Container::Mp4
+                container: Container::Mp4,
+                options: &[],
             }
         );
 
@@ -1043,30 +1079,77 @@ mod tests {
         );
     }
 
-    #[test]
-    fn h264_mf_is_asked_for_the_hardware_encoder_and_the_others_for_nothing_more() {
-        let arguments = |encoder: &'static str| {
-            encoding_arguments((320, 180), &Quality::Small.spec(), &codec(encoder))
-                .iter()
-                .map(|a| a.to_string_lossy().into_owned())
-                .collect::<Vec<_>>()
-                .join(" ")
-        };
+    /// The words of the arguments of `encoding_arguments` for `codec`, with a space between them.
+    fn encoding_words(codec: &VideoCodec) -> String {
+        encoding_arguments((320, 180), &Quality::Small.spec(), codec)
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
 
-        // Without `-hw_encoding 1` Media Foundation gives the software encoder of Microsoft, which is not the one of the
-        // graphics card.
+    /// `h264_mf` as it is tried first on Windows, for the hardware encoder of the graphics card.
+    const MF_HARDWARE: VideoCodec = VideoCodec {
+        encoder: "h264_mf",
+        container: Container::Mp4,
+        options: &["-hw_encoding", "1"],
+    };
+
+    #[test]
+    fn a_candidate_gives_its_options_to_the_encoder_after_those_the_encoder_has_anyway() {
+        // Without `-hw_encoding 1` Media Foundation gives the software encoder of Microsoft, which is what the second try is.
         assert!(
-            arguments("h264_mf").ends_with("-c:v h264_mf -b:v 1000000 -g 20 -hw_encoding 1"),
+            encoding_words(&MF_HARDWARE)
+                .ends_with("-c:v h264_mf -b:v 1000000 -g 20 -hw_encoding 1"),
             "{}",
-            arguments("h264_mf")
+            encoding_words(&MF_HARDWARE)
+        );
+        assert!(
+            encoding_words(&codec("h264_mf")).ends_with("-c:v h264_mf -b:v 1000000 -g 20"),
+            "{}",
+            encoding_words(&codec("h264_mf"))
         );
         for other in ["mpeg4", "h264_nvenc", "h264_amf", "h264_videotoolbox"] {
             assert!(
-                !arguments(other).contains("-hw_encoding"),
+                !encoding_words(&codec(other)).contains("-hw_encoding"),
                 "{}",
-                arguments(other)
+                encoding_words(&codec(other))
             );
         }
+        // What an encoder has anyway comes first, and the options of the candidate last.
+        let videotoolbox = VideoCodec {
+            encoder: "h264_videotoolbox",
+            container: Container::Mp4,
+            options: &["-x", "1"],
+        };
+        assert!(
+            encoding_words(&videotoolbox).ends_with("-realtime 1 -allow_sw 1 -x 1"),
+            "{}",
+            encoding_words(&videotoolbox)
+        );
+    }
+
+    #[test]
+    fn the_video_that_is_written_gets_the_options_of_the_candidate_too() {
+        // The probe and the recording have to be the same use of the encoder, or a probe that passes says nothing about the recording.
+        let args = arguments(
+            (320, 180),
+            &Quality::Small.spec(),
+            &MF_HARDWARE,
+            Path::new("v"),
+        );
+        let words: Vec<String> = args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+
+        let at = words.iter().position(|w| w == "-hw_encoding").unwrap();
+        assert_eq!(words[at + 1], "1");
+        assert!(at < words.iter().position(|w| w == "-flush_packets").unwrap());
+        assert_eq!(
+            words.join(" "),
+            format!("{} -flush_packets 1 -movflags +frag_keyframe+empty_moov+default_base_moof -f mp4 file:v", encoding_words(&MF_HARDWARE))
+        );
     }
 
     #[cfg(not(any(target_os = "macos", windows)))]
@@ -1078,7 +1161,8 @@ mod tests {
             vp9,
             VideoCodec {
                 encoder: "libvpx-vp9",
-                container: Container::WebM
+                container: Container::WebM,
+                options: &[],
             }
         );
         // And an H.264 encoder goes in MP4 on Linux as anywhere.
@@ -1097,22 +1181,76 @@ mod tests {
     #[test]
     fn every_listed_encoder_is_a_candidate_in_the_order_of_the_list() {
         let all: Vec<&str> = ENCODER_ORDER.to_vec();
-        let every = candidates(&listing(&all));
-        assert_eq!(every.iter().map(|c| c.encoder).collect::<Vec<_>>(), all);
+        let names = |candidates: Vec<VideoCodec>| {
+            let mut names: Vec<&str> = candidates.iter().map(|c| c.encoder).collect();
+            // An encoder that is tried in more than one way is one candidate for each way, next to each other.
+            names.dedup();
+            names
+        };
+        assert_eq!(names(candidates(&listing(&all))), all);
 
         // The ones that are not listed are left out, and the order is the list's, not the listing's.
-        let some = candidates(&listing(&["mpeg4", ENCODER_ORDER[0]]));
         assert_eq!(
-            some.iter().map(|c| c.encoder).collect::<Vec<_>>(),
+            names(candidates(&listing(&["mpeg4", ENCODER_ORDER[0]]))),
             [ENCODER_ORDER[0], "mpeg4"]
         );
         assert!(candidates("").is_empty());
+    }
+
+    /// The candidates of Windows as (encoder, options).
+    fn windows_candidates(listed: &[&str]) -> Vec<(&'static str, Vec<&'static str>)> {
+        candidates_in(WINDOWS_ENCODERS, &listing(listed))
+            .into_iter()
+            .map(|c| (c.encoder, c.options.to_vec()))
+            .collect()
+    }
+
+    #[test]
+    fn windows_tries_h264_mf_for_the_hardware_encoder_and_then_for_the_software_one_before_the_rest(
+    ) {
+        // A machine with no hardware encoder (a virtual machine, a remote session) has the software one of Media Foundation: the
+        // ffmpeg that ships has no libx264 and no libopenh264, so without the second try those machines would get mpeg4, which
+        // the player cannot play.
+        assert_eq!(
+            windows_candidates(WINDOWS_ENCODERS),
+            [
+                ("h264_mf", vec!["-hw_encoding", "1"]),
+                ("h264_mf", vec![]),
+                ("h264_nvenc", vec![]),
+                ("h264_amf", vec![]),
+                ("libopenh264", vec![]),
+                ("libx264", vec![]),
+                ("mpeg4", vec![]),
+            ]
+        );
+        // What the build has: h264_mf is the one with two tries, wherever it is in the listing.
+        assert_eq!(
+            windows_candidates(&["mpeg4", "h264_amf", "h264_mf"]),
+            [
+                ("h264_mf", vec!["-hw_encoding", "1"]),
+                ("h264_mf", vec![]),
+                ("h264_amf", vec![]),
+                ("mpeg4", vec![]),
+            ]
+        );
+        assert_eq!(windows_candidates(&["mpeg4"]), [("mpeg4", vec![])]);
+    }
+
+    #[test]
+    fn a_video_encoder_of_another_system_has_one_try() {
+        for candidate in candidates_in(
+            &["h264_videotoolbox", "libvpx-vp9", "mpeg4"],
+            &listing(&["h264_videotoolbox", "libvpx-vp9", "mpeg4"]),
+        ) {
+            assert!(candidate.options.is_empty(), "{candidate:?}");
+        }
     }
 
     fn codec(encoder: &'static str) -> VideoCodec {
         VideoCodec {
             encoder,
             container: Container::Mp4,
+            options: &[],
         }
     }
 
@@ -1139,6 +1277,28 @@ mod tests {
 
         assert_eq!(first_working(candidates, |_| false), None);
         assert_eq!(first_working(Vec::new(), |_| true), None);
+    }
+
+    #[test]
+    fn first_working_goes_from_the_hardware_h264_mf_to_the_software_one_and_no_further() {
+        let candidates = candidates_in(WINDOWS_ENCODERS, &listing(WINDOWS_ENCODERS));
+        let asked = std::cell::RefCell::new(Vec::new());
+
+        // No hardware encoder: the first try fails, the second is the pick, and nvenc, amf and mpeg4 are not asked.
+        let picked = first_working(candidates.clone(), |c| {
+            asked.borrow_mut().push((c.encoder, c.options.len()));
+            c.options.is_empty()
+        })
+        .unwrap();
+
+        assert_eq!((picked.encoder, picked.options), ("h264_mf", &[][..]));
+        assert_eq!(*asked.borrow(), [("h264_mf", 2), ("h264_mf", 0)]);
+        // With a hardware encoder the first try is the pick.
+        let picked = first_working(candidates, |_| true).unwrap();
+        assert_eq!(
+            (picked.encoder, picked.options),
+            ("h264_mf", MF_HARDWARE.options)
+        );
     }
 
     /// A stand-in for ffmpeg that lists `names` for `-encoders`, and for anything else (the probe of an encoder)
@@ -1177,6 +1337,63 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn in_the_order_of_windows_a_machine_without_a_hardware_encoder_gets_the_software_h264_mf() {
+        let dir = tempfile::tempdir().unwrap();
+        let names = ["h264_mf", "h264_nvenc", "h264_amf", "mpeg4"];
+        // Media Foundation cannot start the hardware encoder here (the options say that it is asked for), and nvenc and amf have no
+        // card; the software encoder of Media Foundation, and mpeg4, work.
+        let probe = "cat > /dev/null; case \"$*\" in *-hw_encoding*|*\"-c:v h264_nvenc \"*|*\"-c:v h264_amf \"*) exit 1;; esac";
+        let fake = listing_ffmpeg(dir.path(), &names, probe);
+
+        let picked = pick_codec_in(WINDOWS_ENCODERS, &fake).unwrap();
+
+        assert_eq!(picked.encoder, "h264_mf");
+        assert!(picked.options.is_empty(), "{}", picked.label());
+        assert_eq!(picked.label(), "h264_mf");
+
+        // With a hardware encoder the first try works and is the pick, and the label says which it is.
+        let works = listing_ffmpeg(dir.path(), &names, "cat > /dev/null");
+        assert_eq!(
+            pick_codec_in(WINDOWS_ENCODERS, &works).unwrap().label(),
+            "h264_mf -hw_encoding 1"
+        );
+
+        // Neither Media Foundation try works (an "N" edition with no Media Feature Pack): the next encoders are asked.
+        let no_mf = listing_ffmpeg(
+            dir.path(),
+            &names,
+            "cat > /dev/null; case \"$*\" in *\"-c:v h264_mf \"*|*\"-c:v h264_amf \"*) exit 1;; esac",
+        );
+        assert_eq!(
+            pick_codec_in(WINDOWS_ENCODERS, &no_mf).unwrap().encoder,
+            "h264_nvenc"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_probe_gives_the_encoder_the_options_of_its_candidate() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = script(
+            dir.path(),
+            "fake-ffmpeg",
+            r#"printf '%s\n' "$@" > "$0.args"; cat > /dev/null"#,
+            "",
+        );
+        let tail = |codec: &VideoCodec| {
+            assert!(works(&fake, codec));
+            let args = fs::read_to_string(format!("{}.args", fake.display())).unwrap();
+            args.lines().collect::<Vec<_>>().join(" ")
+        };
+
+        // The same arguments as the recording has (`the_video_that_is_written_gets_the_options_of_the_candidate_too`).
+        assert!(tail(&MF_HARDWARE)
+            .ends_with("-c:v h264_mf -b:v 1000000 -g 20 -hw_encoding 1 -f null -"));
+        assert!(tail(&codec("h264_mf")).ends_with("-c:v h264_mf -b:v 1000000 -g 20 -f null -"));
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn pick_codec_gives_none_when_no_listed_encoder_works() {
         let dir = tempfile::tempdir().unwrap();
         let fake = listing_ffmpeg(
@@ -1204,6 +1421,7 @@ mod tests {
         let vp9 = VideoCodec {
             encoder: "libvpx-vp9",
             container: Container::WebM,
+            options: &[],
         };
 
         assert!(works(&fake, &videotoolbox));
@@ -1266,9 +1484,28 @@ mod tests {
         let picked =
             pick_codec(&ffmpeg).expect("this ffmpeg has none of the encoders in ENCODER_ORDER");
 
-        eprintln!("encoder: {}", picked.encoder);
+        eprintln!("encoder: {}", picked.label());
         assert!(ENCODER_ORDER.contains(&picked.encoder));
         assert!(works(&ffmpeg, &picked));
+    }
+
+    #[test]
+    fn pick_codec_with_the_real_ffmpeg_gives_the_encoder_that_a_machine_is_known_to_have() {
+        // CI says which encoder its machine has (`DICTATE_EXPECT_ENCODER`): the Windows runner has no graphics card, and must get
+        // the software H.264 of Media Foundation and not mpeg4, which a recording cannot be played from.
+        let Some(expected) = std::env::var("DICTATE_EXPECT_ENCODER")
+            .ok()
+            .filter(|name| !name.is_empty())
+        else {
+            return;
+        };
+        let Some(ffmpeg) = real_ffmpeg() else { return };
+
+        let picked =
+            pick_codec(&ffmpeg).expect("this ffmpeg has none of the encoders in ENCODER_ORDER");
+
+        eprintln!("encoder: {}", picked.label());
+        assert_eq!(picked.encoder, expected, "picked {}", picked.label());
     }
 
     /// A stand-in for ffmpeg that writes down its arguments (one to a line, in `<it>.args`) and what it is sent
@@ -1305,6 +1542,7 @@ mod tests {
                 VideoCodec {
                     encoder: "libx264",
                     container: Container::Mp4,
+                    options: &[],
                 },
                 "video.mp4",
                 "-flush_packets 1 -movflags +frag_keyframe+empty_moov+default_base_moof -f mp4",
@@ -1313,14 +1551,26 @@ mod tests {
                 VideoCodec {
                     encoder: "h264_videotoolbox",
                     container: Container::Mp4,
+                    options: &[],
                 },
                 "video.mp4",
                 "-realtime 1 -allow_sw 1 -flush_packets 1 -movflags +frag_keyframe+empty_moov+default_base_moof -f mp4",
             ),
             (
+                MF_HARDWARE,
+                "video.mp4",
+                "-hw_encoding 1 -flush_packets 1 -movflags +frag_keyframe+empty_moov+default_base_moof -f mp4",
+            ),
+            (
+                codec("h264_mf"),
+                "video.mp4",
+                "-flush_packets 1 -movflags +frag_keyframe+empty_moov+default_base_moof -f mp4",
+            ),
+            (
                 VideoCodec {
                     encoder: "libvpx-vp9",
                     container: Container::WebM,
+                    options: &[],
                 },
                 "video.webm",
                 "-deadline realtime -cpu-used 8 -row-mt 1 -lag-in-frames 0 -flush_packets 1 -f webm",
@@ -1369,6 +1619,7 @@ mod tests {
         let codec = VideoCodec {
             encoder: "mpeg4",
             container: Container::Mp4,
+            options: &[],
         };
         let mut encoder =
             VideoEncoder::start(dir.path(), (4, 2), &Quality::Small.spec(), &codec, &fake).unwrap();
@@ -1395,6 +1646,7 @@ mod tests {
         let codec = VideoCodec {
             encoder: "h264_nvenc",
             container: Container::Mp4,
+            options: &[],
         };
         let mut encoder =
             VideoEncoder::start(dir.path(), (4, 2), &Quality::Small.spec(), &codec, &fake).unwrap();
@@ -1425,6 +1677,7 @@ mod tests {
         let codec = VideoCodec {
             encoder: "mpeg4",
             container: Container::Mp4,
+            options: &[],
         };
         let mut encoder =
             VideoEncoder::start(dir.path(), (4, 2), &Quality::Small.spec(), &codec, &fake).unwrap();
@@ -1461,6 +1714,7 @@ mod tests {
         let codec = VideoCodec {
             encoder: "mpeg4",
             container: Container::Mp4,
+            options: &[],
         };
         let encoder =
             VideoEncoder::start(dir.path(), (4, 2), &Quality::Small.spec(), &codec, &fake).unwrap();
@@ -1487,6 +1741,7 @@ mod tests {
         let codec = VideoCodec {
             encoder: "mpeg4",
             container: Container::Mp4,
+            options: &[],
         };
 
         let error = VideoEncoder::start(
@@ -1613,7 +1868,7 @@ mod tests {
             .expect("this ffmpeg has none of the encoders in ENCODER_ORDER that work");
         // What a test ran with, for the output of one that fails (or `--nocapture`): CI's ffmpeg is whatever the
         // system's package manager has.
-        eprintln!("encoder: {}", codec.encoder);
+        eprintln!("encoder: {}", codec.label());
         codec
     }
 
@@ -1669,6 +1924,7 @@ mod tests {
         let codec = VideoCodec {
             encoder: "mpeg4",
             container: Container::Mp4,
+            options: &[],
         };
 
         let video = encode(dir.path(), &codec, &ffmpeg, 3);
@@ -1800,6 +2056,7 @@ mod tests {
         let codec = VideoCodec {
             encoder: "libvpx-vp9",
             container: Container::WebM,
+            options: &[],
         };
 
         mux_puts_the_audio_under(&codec, &ffmpeg);
@@ -1827,6 +2084,7 @@ mod tests {
         let codec = VideoCodec {
             encoder: "libvpx-vp9",
             container: Container::WebM,
+            options: &[],
         };
         let spec = Quality::Standard.spec();
         let mut encoder = VideoEncoder::start(dir.path(), SIZE, &spec, &codec, &ffmpeg).unwrap();
@@ -1883,6 +2141,7 @@ mod tests {
         let codec = VideoCodec {
             encoder: "mpeg4",
             container: Container::Mp4,
+            options: &[],
         };
         let mut encoder =
             VideoEncoder::start(dir.path(), SIZE, &Quality::Small.spec(), &codec, &fake).unwrap();
@@ -1920,6 +2179,7 @@ mod tests {
         let codec = VideoCodec {
             encoder: "mpeg4",
             container: Container::Mp4,
+            options: &[],
         };
         let mut encoder =
             VideoEncoder::start(dir.path(), (4, 2), &Quality::Small.spec(), &codec, &fake).unwrap();

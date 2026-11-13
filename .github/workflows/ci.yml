@@ -525,8 +525,12 @@ jobs:
             }
           }
           "SHERPA_ONNX_LIB_DIR=$(Join-Path $dir 'lib')" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      # The runner has no graphics card, so the first try of h264_mf (the hardware encoder) fails and the second (the software one of
+      # Media Foundation) has to be the pick: DICTATE_EXPECT_ENCODER makes a test fail when it is mpeg4 (a recording that the player cannot
+      # play), which is what every Windows machine without a hardware encoder would get. The tests print `encoder: <the pick>`.
       - name: Test the media and recording code with this ffmpeg
         env:
           DICTATE_FFMPEG: ${{ github.workspace }}/target/ffmpeg/x86_64-pc-windows-msvc/dictate-ffmpeg.exe
+          DICTATE_EXPECT_ENCODER: h264_mf
         run: |
           cargo test -p dictate-services --lib --locked -- media:: record:: --nocapture
