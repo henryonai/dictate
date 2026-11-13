@@ -11,7 +11,8 @@ use std::ffi::OsStr;
 #[path = "../build_support.rs"]
 mod build_support;
 
-use build_support::{missing_lib_dir_message, unreadable_lib_dir_message};
+use build_support::{missing_lib_dir_message, profile_dir, unreadable_lib_dir_message};
+use std::path::Path;
 
 #[test]
 fn a_build_that_has_the_folder_is_told_nothing() {
@@ -111,4 +112,55 @@ fn a_folder_that_cannot_be_read_says_which_one_and_what_it_has_to_be() {
     );
     // The constant that the old text asked about is gone.
     assert!(!message.contains("SHERPA_ONNX_VERSION"), "{message}");
+}
+
+// The folder that the shared libraries are copied into is the profile folder, found from OUT_DIR. Cargo 1.100 changed what is
+// between them, and the copies went to the wrong folder: `build/<package>-<hash>/out` became `build/<package>/<hash>/out`.
+
+#[test]
+fn the_profile_folder_is_found_from_the_out_dir_of_the_layout_until_cargo_1_99() {
+    let out_dir = Path::new("/work/target/debug/build/dictate-services-5333fb4262673853/out");
+
+    assert_eq!(
+        profile_dir(out_dir),
+        Some(Path::new("/work/target/debug").to_path_buf())
+    );
+}
+
+#[test]
+fn the_profile_folder_is_found_from_the_out_dir_of_the_layout_of_cargo_1_100() {
+    let out_dir = Path::new("/work/target/debug/build/dictate-services/5333fb4262673853/out");
+
+    assert_eq!(
+        profile_dir(out_dir),
+        Some(Path::new("/work/target/debug").to_path_buf())
+    );
+}
+
+#[test]
+fn a_build_for_another_target_has_its_profile_folder_below_the_triple() {
+    let old =
+        Path::new("/work/target/aarch64-unknown-linux-gnu/release/build/dictate-services-5333/out");
+    let new =
+        Path::new("/work/target/aarch64-unknown-linux-gnu/release/build/dictate-services/5333/out");
+    let folder = Path::new("/work/target/aarch64-unknown-linux-gnu/release").to_path_buf();
+
+    assert_eq!(profile_dir(old), Some(folder.clone()));
+    assert_eq!(profile_dir(new), Some(folder));
+}
+
+#[test]
+fn a_folder_named_build_above_the_target_folder_is_not_taken_for_the_one_of_cargo() {
+    // A checkout in ~/build/dictate: the nearest `build` is Cargo's own.
+    let out_dir = Path::new("/home/me/build/dictate/target/debug/build/dictate-services/5333/out");
+
+    assert_eq!(
+        profile_dir(out_dir),
+        Some(Path::new("/home/me/build/dictate/target/debug").to_path_buf())
+    );
+}
+
+#[test]
+fn an_out_dir_that_is_not_in_a_build_folder_has_no_profile_folder() {
+    assert_eq!(profile_dir(Path::new("/somewhere/out")), None);
 }
