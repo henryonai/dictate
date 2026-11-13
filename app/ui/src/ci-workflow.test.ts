@@ -11,7 +11,7 @@ const read = (file: string) => readFileSync(join(repoRoot, file), "utf8").replac
 
 const workflow = read(".github/workflows/ci.yml");
 
-/** The jobs of the workflow, as text: `test:`, `app:`, `msrv:`, `ffmpeg:` and `ffmpeg-windows:`. */
+/** The jobs of the workflow, as text: `test:`, `app:`, `msrv:`, `macos-intel:`, `ffmpeg:` and `ffmpeg-windows:`. */
 function job(name: string): string {
   const from = workflow.indexOf(`\n  ${name}:\n`);
   expect(from, `job ${name}`).toBeGreaterThan(-1);
@@ -51,8 +51,8 @@ describe("the /MD build of sherpa-onnx without text to speech that Windows links
   });
 
   test("each job that downloads it checks it before it is unpacked, and a different one stops the job", () => {
-    // The `test` job and the `app` job.
-    expect(downloads()).toHaveLength(2);
+    // The `test` job, the `app` job and the Windows row of the `msrv` job.
+    expect(downloads()).toHaveLength(3);
     for (const step of downloads()) {
       const download = step.indexOf("curl.exe");
       const check = step.indexOf("Get-FileHash -Algorithm SHA256");
@@ -83,7 +83,7 @@ describe("the /MD build of sherpa-onnx without text to speech that Windows links
   });
 
   test("the unpacked folder is cached under a key that has the start of the pinned hash in it, so that a new pin is downloaded and checked", () => {
-    for (const name of ["test", "app"]) {
+    for (const name of ["test", "app", "msrv"]) {
       const cache = stepsOf(name).filter((step) => step.includes("path: target/sherpa-onnx-md-no-tts"));
       expect(cache, name).toHaveLength(1);
       expect(cache[0]).toContain(`key: sherpa-onnx-md-no-tts-1.13.8-${SHA256.slice(0, 8)}-`);
@@ -123,7 +123,7 @@ describe("the sherpa-onnx build without text to speech that Linux links", () => 
       expect(fetch, `${name}: one step fetches it`).toHaveLength(1);
       const [step] = fetch;
       expect(step).toContain("shell: bash");
-      if (name !== "msrv") expect(step).toContain("runner.os == 'Linux'");
+      expect(step).toContain("runner.os == 'Linux'");
       // Two statements: the failure of the script (a different archive) must fail the step, which `echo "...$(script)"` would not.
       expect(step).toMatch(/lib="\$\(bash scripts\/fetch-sherpa-onnx-no-tts\.sh target\/sherpa-onnx-no-tts\)"/);
       expect(step).toContain('echo "SHERPA_ONNX_LIB_DIR=$lib" >> "$GITHUB_ENV"');
@@ -140,14 +140,15 @@ describe("the sherpa-onnx build without text to speech that Linux links", () => 
       // The start of the key is the start of the pin of the script, so that a new pin is a new key.
       expect(read(SCRIPT)).toContain(`:-${cache[0].match(/-bf2d998c-/)?.[0].slice(1, -1) ?? "none"}`);
     }
-    for (const name of ["test", "app"]) {
+    // The static library that the build script of sherpa-onnx-sys downloads, on macOS: the rows of the msrv job and the check of the Intel
+    // target build it too.
+    for (const name of ["test", "app", "msrv", "macos-intel"]) {
       const prebuilt = stepsOf(name).filter((step) => step.includes("path: target/sherpa-onnx-prebuilt"));
       expect(prebuilt, name).toHaveLength(1);
-      expect(prebuilt[0]).toContain("if: runner.os == 'macOS'");
+      if (name !== "macos-intel") expect(prebuilt[0]).toContain("if: runner.os == 'macOS'");
+      expect(prebuilt[0]).toMatch(/key: sherpa-onnx-1\.13\.8-\$\{\{ runner\.os \}\}-\$\{\{ runner\.arch \}\}/);
       expect(prebuilt[0]).not.toContain("shared");
     }
-    // msrv is Linux only: it has no use for the download of the sherpa-onnx-sys build script any more.
-    expect(stepsOf("msrv").filter((step) => step.includes("sherpa-onnx-prebuilt"))).toHaveLength(0);
   });
 });
 
@@ -240,6 +241,12 @@ describe("how long a job gets", () => {
     expect(minutes("app", "ubuntu-24.04")).toBeGreaterThanOrEqual(30);
     expect(minutes("app", "windows-latest")).toBeGreaterThanOrEqual(45);
     expect(minutes("msrv", "ubuntu-24.04")).toBeGreaterThanOrEqual(30);
+  });
+
+  test("the check of the oldest Rust gets as long on each system as the build of the same code has: a cold Windows build is the slow one", () => {
+    expect(minutes("msrv", "windows-latest")).toBeGreaterThanOrEqual(45);
+    expect(minutes("msrv", "macos-latest")).toBeGreaterThanOrEqual(30);
+    expect(minutes("macos-intel", "macos-latest")).toBeGreaterThanOrEqual(30);
   });
 });
 
@@ -487,5 +494,65 @@ describe("the ffmpeg that ships with the app (LGPL v2.1 or later, built from sou
     for (const name of ["ffmpeg", "ffmpeg-windows"]) {
       expect(Number(/^ {4}timeout-minutes: (\d+)$/m.exec(job(name))?.[1])).toBeGreaterThanOrEqual(45);
     }
+  });
+});
+
+describe("the oldest Rust that the workspace promises to build with (1.85) is checked on every system it supports", () => {
+  // `rust-version = "1.85"` in Cargo.toml is a promise to macOS and Windows users as much as to Linux ones: code that is only compiled for
+  // another system (the platform layer, the capture crates) is not checked by a job that runs on Linux.
+  test("the job has a row for each system, and each runs `cargo +1.85 check` on the whole workspace, locked", () => {
+    const text = job("msrv");
+    expect(text).toMatch(/os: \[macos-latest, windows-latest, ubuntu-24\.04\]/);
+    expect(text).toContain("fail-fast: false");
+    expect(text).toContain("runs-on: ${{ matrix.os }}");
+    expect(text).toContain("dtolnay/rust-toolchain@1.85");
+    expect(text).toContain("run: cargo +1.85 check --workspace --all-targets --locked");
+    // The check is not for Linux only any more: nothing in the job says `ubuntu-24.04` except the matrix.
+    expect(text.match(/ubuntu-24\.04/g)).toHaveLength(1);
+  });
+
+  test("each system gets what it builds with: the Linux libraries on Linux only, and the cache of the system", () => {
+    const install = stepsOf("msrv").find((step) => step.includes("apt-get install") && step.includes("libwebkit2gtk-4.1-dev"));
+    expect(install).toContain("if: runner.os == 'Linux'");
+    const rust = stepsOf("msrv").find((step) => step.includes("Swatinem/rust-cache@v2"));
+    expect(rust).toContain("shared-key: msrv-${{ runner.os }}");
+    expect(rust).toContain("save-if: ${{ github.ref == 'refs/heads/main' }}");
+  });
+
+  test("the Linux pin of the runner stays: the other systems are `latest`, as in the other jobs", () => {
+    expect(job("msrv")).not.toContain("ubuntu-latest");
+  });
+});
+
+describe("the Intel Mac is checked before a release finds out that it does not build", () => {
+  // Nobody has built the app for x86_64-apple-darwin: whisper.cpp, the Swift bridge of ScreenCaptureKit and the static sherpa-onnx archive
+  // of that architecture are all new on the cross build. `cargo check` runs their build scripts, which is where they would refuse.
+  const text = () => job("macos-intel");
+
+  test("a job on the arm64 runner checks the whole workspace for x86_64-apple-darwin, on every pull request", () => {
+    expect(text()).toContain("runs-on: macos-latest");
+    expect(text()).toContain("run: cargo check --workspace --all-targets --locked --target x86_64-apple-darwin");
+    // The standard library of the target has to be there.
+    const rust = stepsOf("macos-intel").find((step) => step.includes("dtolnay/rust-toolchain@stable"));
+    expect(rust).toContain("targets: x86_64-apple-darwin");
+    // ci.yml runs on pull requests and on main: the job has no condition of its own.
+    expect(text()).not.toMatch(/^ {4}if:/m);
+  });
+
+  test("it has the macOS sherpa-onnx library of the other jobs, with the same cache key and the cache of its own Rust build", () => {
+    const rust = stepsOf("macos-intel").find((step) => step.includes("Swatinem/rust-cache@v2"));
+    expect(rust).toContain("shared-key: macos-x86_64");
+    expect(rust).toContain("save-if: ${{ github.ref == 'refs/heads/main' }}");
+    expect(text()).toContain("key: sherpa-onnx-1.13.8-${{ runner.os }}-${{ runner.arch }}");
+  });
+});
+
+describe("how CI is started", () => {
+  test("on every pull request and on main, and by hand on any branch", () => {
+    // By hand: a branch that is not a pull request yet (the one that prepares a release, for one) can run the same jobs on the real runners.
+    const on = workflow.slice(workflow.indexOf("\non:\n"), workflow.indexOf("\npermissions:\n"));
+    expect(on).toMatch(/^ {2}push:\n {4}branches: \[main\]$/m);
+    expect(on).toMatch(/^ {2}pull_request:$/m);
+    expect(on).toMatch(/^ {2}workflow_dispatch:$/m);
   });
 });

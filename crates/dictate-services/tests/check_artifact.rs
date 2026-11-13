@@ -1,0 +1,706 @@
+//! `scripts/check-artifact.sh`: the check that every installer goes through before it is attached to a release.
+//!
+//! A release whose installer has no `dictate-ffmpeg` (the app would look for the ffmpeg of the user, which is not LGPL-checked), a GPL
+//! ffmpeg, espeak-ng (GPL-3.0) in a library, a `/usr/bin/ffmpeg` that collides with the package of the distribution, or a program that
+//! cannot find its libraries must fail the release job instead of being published. These tests run the script on trees that look like what
+//! an installer unpacks to (it takes such a folder as well as an installer, for these tests), with stand-ins for the programs and the tools
+//! of the system that it asks: `readelf`, `plutil` and `codesign` (and `dpkg-deb`, `7z`, `hdiutil` and `ditto` for the part that unpacks
+//! an installer). The real tools are tried by the dry run of the release workflow, which checks real installers.
+//!
+//! The scripts are for bash, which CI runs on every system: these tests run where `bash` is the real one.
+#![cfg(unix)]
+
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+fn script() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/check-artifact.sh")
+}
+
+fn code(output: &Output) -> i32 {
+    output.status.code().expect("the script ended by itself")
+}
+
+fn stdout(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+fn stderr(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+fn write(path: &Path, text: &str) {
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, text).unwrap();
+}
+
+fn write_program(path: &Path, text: &str) {
+    write(path, text);
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+// ---- the stand-ins for what an installer has ---------------------------------------------------------------------------------
+
+const LGPL_2_1: &str = "FFmpeg is free software; you can redistribute it and/or
+modify it under the terms of the GNU Lesser General Public
+License as published by the Free Software Foundation; either
+version 2.1 of the License, or (at your option) any later version.";
+
+const PLAIN_BUILDCONF: &str = "    --disable-gpl
+    --disable-nonfree
+    --disable-version3
+    --disable-everything";
+
+const GPL_BUILDCONF: &str = "    --enable-gpl
+    --enable-libx264
+    --disable-everything";
+
+const ENCODERS: &str = "Encoders:
+ V..... = Video
+ ------
+ V....D libvpx-vp9           libvpx VP9";
+
+/// A program that answers as an ffmpeg does (the way the tests of `check-ffmpeg-lgpl.sh` do it).
+fn ffmpeg(buildconf: &str) -> String {
+    format!(
+        "#!/bin/sh\n# LGPL version 2.1 or later\ncase \"$*\" in\n*-buildconf*) cat <<'EOF'\n{buildconf}\nEOF\n;;\n*-L*) cat <<'EOF'\n{LGPL_2_1}\nEOF\n;;\n*-encoders*) cat <<'EOF'\n{ENCODERS}\nEOF\n;;\n*) echo 'ffmpeg version 9.0.2' ;;\nesac\n"
+    )
+}
+
+const SHERPA_LIBRARIES: [&str; 2] = ["libsherpa-onnx-c-api.so", "libonnxruntime.so"];
+const VC_DLLS: [&str; 3] = ["vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"];
+
+/// What an unpacked `.deb` has: `usr/bin/dictate` and its two sidecars, the two libraries, and the `DEBIAN/control` that `dpkg-deb -R` writes.
+fn deb(root: &Path) {
+    write_program(&root.join("usr/bin/dictate"), "#!/bin/sh\necho dictate\n");
+    write_program(
+        &root.join("usr/bin/dictate-mcp"),
+        "#!/bin/sh\necho dictate-mcp\n",
+    );
+    write_program(
+        &root.join("usr/bin/dictate-ffmpeg"),
+        &ffmpeg(PLAIN_BUILDCONF),
+    );
+    for library in SHERPA_LIBRARIES {
+        write(
+            &root.join("usr/lib/dictate").join(library),
+            "ELF stand-in\n",
+        );
+    }
+    write(
+        &root.join("DEBIAN/control"),
+        "Package: dictate\nVersion: 2.0.0\nArchitecture: amd64\nDepends: libwebkit2gtk-4.1-0, libgtk-3-0, libasound2t64 | libasound2, libpipewire-0.3-0t64 | libpipewire-0.3-0\nRecommends: pulseaudio-utils\nDescription: Dictation and meeting notes\n",
+    );
+}
+
+/// What the NSIS installer unpacks to: the program, its sidecars and the runtime of Visual C++ beside it.
+fn windows(root: &Path) {
+    write_program(&root.join("dictate.exe"), "MZ stand-in\n");
+    write_program(&root.join("dictate-mcp.exe"), "MZ stand-in\n");
+    write_program(&root.join("dictate-ffmpeg.exe"), &ffmpeg(PLAIN_BUILDCONF));
+    for dll in VC_DLLS {
+        write(&root.join(dll), "MZ stand-in\n");
+    }
+    write(&root.join("uninstall.exe"), "MZ stand-in\n");
+}
+
+/// What the volume of the `.dmg` has: the app (with its sidecars in `Contents/MacOS`) and the link to /Applications.
+fn mac(root: &Path) {
+    let app = root.join("Dictate.app/Contents");
+    write_program(&app.join("MacOS/dictate"), "#!/bin/sh\necho dictate\n");
+    write_program(
+        &app.join("MacOS/dictate-mcp"),
+        "#!/bin/sh\necho dictate-mcp\n",
+    );
+    write_program(&app.join("MacOS/dictate-ffmpeg"), &ffmpeg(PLAIN_BUILDCONF));
+    write(
+        &app.join("Info.plist"),
+        "CFBundleExecutable=dictate\nNSMicrophoneUsageDescription=Dictate records your voice to turn it into text.\nNSScreenCaptureUsageDescription=Dictate records your screen.\nLSMinimumSystemVersion=13.0\n",
+    );
+    std::os::unix::fs::symlink("/Applications", root.join("Applications")).unwrap();
+}
+
+// ---- the stand-ins for the tools of the system -------------------------------------------------------------------------------
+
+/// What `readelf -d` prints for a program that has the run path of the package.
+const RUNPATH_OF_THE_PACKAGE: &str = "Dynamic section at offset 0x4a1b20 contains 41 entries:
+  Tag        Type                         Name/Value
+ 0x0000000000000001 (NEEDED)             Shared library: [libsherpa-onnx-c-api.so]
+ 0x0000000000000001 (NEEDED)             Shared library: [libpipewire-0.3.so.0]
+ 0x000000000000001d (RUNPATH)            Library runpath: [$ORIGIN:$ORIGIN/..:$ORIGIN/../../../..:$ORIGIN/../lib/dictate]";
+
+/// The folder with the stand-ins, put first in the PATH of the script, and what they are told through the environment.
+struct Tools {
+    bin: tempfile::TempDir,
+    log: PathBuf,
+    vars: Vec<(String, String)>,
+}
+
+impl Tools {
+    fn new() -> Tools {
+        let bin = tempfile::tempdir().unwrap();
+        let log = bin.path().join("calls.log");
+        // `readelf -d FILE` prints what the test says; the stand-in is told through FAKE_READELF.
+        write_program(
+            &bin.path().join("readelf"),
+            "#!/bin/sh\nprintf '%s\\n' \"$FAKE_READELF\"\n",
+        );
+        // `plutil -extract KEY raw -o - FILE`: the stand-in plist is lines of KEY=VALUE.
+        write_program(
+            &bin.path().join("plutil"),
+            "#!/bin/sh\nkey=\"$2\"\nfor file; do :; done\nvalue=\"$(grep \"^$key=\" \"$file\" | head -n 1 | cut -d= -f2-)\"\n[ -n \"$value\" ] || { echo \"No value at that key path or invalid key path: $key\" >&2; exit 1; }\nprintf '%s\\n' \"$value\"\n",
+        );
+        // `codesign --verify --strict PATH` fails for the paths whose last part FAKE_CODESIGN_FAIL names (blank separated).
+        write_program(
+            &bin.path().join("codesign"),
+            "#!/bin/sh\nfor path; do :; done\necho \"codesign $*\" >> \"$FAKE_LOG\"\nfor name in $FAKE_CODESIGN_FAIL; do\n  [ \"$(basename \"$path\")\" = \"$name\" ] && { echo \"$path: invalid signature\" >&2; exit 1; }\ndone\nexit 0\n",
+        );
+        let vars = vec![
+            ("FAKE_READELF".to_owned(), RUNPATH_OF_THE_PACKAGE.to_owned()),
+            ("FAKE_LOG".to_owned(), log.display().to_string()),
+        ];
+        Tools { bin, log, vars }
+    }
+
+    fn with(mut self, name: &str, value: &str) -> Tools {
+        self.vars.retain(|(known, _)| known != name);
+        self.vars.push((name.to_owned(), value.to_owned()));
+        self
+    }
+
+    /// The tools that unpack an installer: each copies the tree in FAKE_TREE to where the real one would put the files.
+    fn unpacking(self, tree: &Path) -> Tools {
+        let bin = self.bin.path();
+        // `dpkg-deb -R FILE DIR`
+        write_program(
+            &bin.join("dpkg-deb"),
+            "#!/bin/sh\necho \"dpkg-deb $*\" >> \"$FAKE_LOG\"\n[ \"$1\" = -R ] || exit 2\ncp -R \"$FAKE_TREE/.\" \"$3\"\n",
+        );
+        // `7z x -y -oDIR FILE`
+        write_program(
+            &bin.join("7z"),
+            "#!/bin/sh\necho \"7z $*\" >> \"$FAKE_LOG\"\n[ \"$1\" = x ] || exit 2\nfor arg; do case \"$arg\" in -o*) dir=\"${arg#-o}\" ;; esac; done\nmkdir -p \"$dir\"\ncp -R \"$FAKE_TREE/.\" \"$dir\"\n",
+        );
+        // `hdiutil attach ... -mountpoint DIR FILE` and `hdiutil detach DIR`
+        write_program(
+            &bin.join("hdiutil"),
+            "#!/bin/sh\necho \"hdiutil $*\" >> \"$FAKE_LOG\"\ncase \"$1\" in\n  attach) while [ \"$#\" -gt 0 ]; do [ \"$1\" = -mountpoint ] && dir=\"$2\"; shift; done\n    mkdir -p \"$dir\"; cp -R \"$FAKE_TREE/.\" \"$dir\" ;;\n  detach) ;;\n  *) exit 2 ;;\nesac\n",
+        );
+        // `ditto SOURCE DESTINATION`
+        write_program(&bin.join("ditto"), "#!/bin/sh\ncp -R \"$1\" \"$2\"\n");
+        self.with("FAKE_TREE", &tree.display().to_string())
+    }
+
+    fn run(&self, artifact: &Path) -> Output {
+        let path = format!(
+            "{}:{}",
+            self.bin.path().display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let mut command = Command::new("bash");
+        command.arg(script()).arg(artifact).env("PATH", path);
+        for (name, value) in &self.vars {
+            command.env(name, value);
+        }
+        command.output().expect("bash runs the script")
+    }
+
+    /// What the stand-ins were asked, one call to a line.
+    fn calls(&self) -> String {
+        fs::read_to_string(&self.log).unwrap_or_default()
+    }
+}
+
+fn tree(build: fn(&Path)) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    build(dir.path());
+    dir
+}
+
+/// Runs the script on a tree, with the ordinary stand-ins, and checks that it says `fails` (the parts of what it has to say) and exits 1.
+fn assert_fails(output: &Output, said: &[&str]) {
+    assert_eq!(code(output), 1, "{}{}", stdout(output), stderr(output));
+    for part in said {
+        assert!(
+            stderr(output).contains(part),
+            "{part:?} is not in what it said:\n{}",
+            stderr(output)
+        );
+    }
+}
+
+fn assert_passes(output: &Output) {
+    assert_eq!(code(output), 0, "{}{}", stdout(output), stderr(output));
+}
+
+// ---- a package for Linux -----------------------------------------------------------------------------------------------------
+
+#[test]
+fn a_complete_deb_passes() {
+    let root = tree(deb);
+
+    assert_passes(&Tools::new().run(root.path()));
+}
+
+#[test]
+fn a_deb_without_the_ffmpeg_sidecar_fails_and_says_which_file_is_missing() {
+    let root = tree(deb);
+    fs::remove_file(root.path().join("usr/bin/dictate-ffmpeg")).unwrap();
+
+    assert_fails(&Tools::new().run(root.path()), &["dictate-ffmpeg"]);
+}
+
+#[test]
+fn a_deb_without_the_mcp_sidecar_fails_and_says_which_file_is_missing() {
+    let root = tree(deb);
+    fs::remove_file(root.path().join("usr/bin/dictate-mcp")).unwrap();
+
+    assert_fails(&Tools::new().run(root.path()), &["dictate-mcp"]);
+}
+
+#[test]
+fn a_sidecar_that_is_not_executable_fails() {
+    // upload-artifact and download-artifact drop the permission bits: a sidecar that was carried that way is a file that cannot run.
+    let root = tree(deb);
+    let ffmpeg = root.path().join("usr/bin/dictate-ffmpeg");
+    fs::set_permissions(&ffmpeg, fs::Permissions::from_mode(0o644)).unwrap();
+
+    assert_fails(
+        &Tools::new().run(root.path()),
+        &["dictate-ffmpeg", "not executable"],
+    );
+}
+
+#[test]
+fn a_gpl_ffmpeg_fails() {
+    let root = tree(deb);
+    write_program(
+        &root.path().join("usr/bin/dictate-ffmpeg"),
+        &ffmpeg(GPL_BUILDCONF),
+    );
+
+    assert_fails(
+        &Tools::new().run(root.path()),
+        &["dictate-ffmpeg", "--enable-gpl"],
+    );
+}
+
+#[test]
+fn espeak_in_a_shared_library_fails_and_names_the_library() {
+    let root = tree(deb);
+    write(
+        &root.path().join("usr/lib/dictate/libsherpa-onnx-c-api.so"),
+        "ELF stand-in with espeak_ng_Initialize in it\n",
+    );
+
+    assert_fails(
+        &Tools::new().run(root.path()),
+        &["espeak", "libsherpa-onnx-c-api.so"],
+    );
+}
+
+#[test]
+fn espeak_in_the_program_or_a_sidecar_fails() {
+    for program in ["dictate", "dictate-mcp"] {
+        let root = tree(deb);
+        write_program(
+            &root.path().join("usr/bin").join(program),
+            "#!/bin/sh\n# ESPEAK_DATA_PATH\n",
+        );
+
+        assert_fails(&Tools::new().run(root.path()), &["espeak", program]);
+    }
+}
+
+#[test]
+fn espeak_in_a_library_of_any_kind_fails() {
+    // The check covers every .so, .dylib and .dll that the installer has, wherever it is.
+    for library in [
+        "usr/lib/dictate/libother.so.1",
+        "usr/lib/elsewhere/libother.dylib",
+        "usr/share/dictate/other.dll",
+    ] {
+        let root = tree(deb);
+        write(&root.path().join(library), "espeak_ng_Initialize\n");
+
+        assert_fails(&Tools::new().run(root.path()), &["espeak", library]);
+    }
+}
+
+#[test]
+fn a_deb_that_has_usr_bin_ffmpeg_fails() {
+    // It would collide with the ffmpeg package of Debian and Ubuntu: dpkg refuses to overwrite it.
+    let root = tree(deb);
+    write_program(&root.path().join("usr/bin/ffmpeg"), "#!/bin/sh\n");
+
+    assert_fails(&Tools::new().run(root.path()), &["/usr/bin/ffmpeg"]);
+}
+
+#[test]
+fn a_deb_without_one_of_the_sherpa_libraries_fails_and_says_which() {
+    for library in SHERPA_LIBRARIES {
+        let root = tree(deb);
+        fs::remove_file(root.path().join("usr/lib/dictate").join(library)).unwrap();
+
+        assert_fails(
+            &Tools::new().run(root.path()),
+            &["/usr/lib/dictate", library],
+        );
+    }
+}
+
+#[test]
+fn a_deb_whose_program_has_no_run_path_to_the_libraries_fails() {
+    // The run path that finds the libraries in /usr/lib/dictate from /usr/bin/dictate. The ones of a build in the source tree
+    // ($ORIGIN, $ORIGIN/..) do not: without it the installed app does not start.
+    for dynamic in [
+        " 0x000000000000001d (RUNPATH)            Library runpath: [$ORIGIN:$ORIGIN/..]",
+        " 0x000000000000000f (RPATH)              Library rpath: [$ORIGIN/../lib/dictate-old]",
+        " 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]",
+    ] {
+        let root = tree(deb);
+
+        let output = Tools::new().with("FAKE_READELF", dynamic).run(root.path());
+
+        assert_fails(&output, &["$ORIGIN/../lib/dictate"]);
+    }
+}
+
+#[test]
+fn a_deb_with_the_run_path_as_an_old_style_rpath_passes() {
+    let root = tree(deb);
+
+    let output = Tools::new()
+        .with(
+            "FAKE_READELF",
+            " 0x000000000000000f (RPATH)              Library rpath: [$ORIGIN/../lib/dictate]",
+        )
+        .run(root.path());
+
+    assert_passes(&output);
+}
+
+#[test]
+fn a_deb_that_does_not_depend_on_pipewire_fails() {
+    let root = tree(deb);
+    write(
+        &root.path().join("DEBIAN/control"),
+        "Package: dictate\nDepends: libwebkit2gtk-4.1-0, libgtk-3-0, libasound2t64 | libasound2\n",
+    );
+
+    assert_fails(&Tools::new().run(root.path()), &["libpipewire"]);
+}
+
+#[test]
+fn a_dependency_on_pipewire_on_a_second_line_of_the_field_counts() {
+    // Debian control files fold a long field: the lines after the first start with a blank.
+    let root = tree(deb);
+    write(
+        &root.path().join("DEBIAN/control"),
+        "Package: dictate\nDepends: libwebkit2gtk-4.1-0,\n libgtk-3-0,\n libpipewire-0.3-0t64 | libpipewire-0.3-0\nRecommends: pulseaudio-utils\n",
+    );
+
+    assert_passes(&Tools::new().run(root.path()));
+}
+
+#[test]
+fn pipewire_in_recommends_is_not_a_dependency() {
+    let root = tree(deb);
+    write(
+        &root.path().join("DEBIAN/control"),
+        "Package: dictate\nDepends: libgtk-3-0\nRecommends: libpipewire-0.3-0\n",
+    );
+
+    assert_fails(&Tools::new().run(root.path()), &["libpipewire"]);
+}
+
+#[test]
+fn a_deb_file_is_unpacked_with_dpkg_deb_and_its_tree_is_checked() {
+    let root = tree(deb);
+    let work = tempfile::tempdir().unwrap();
+    let package = work.path().join("Dictate_2.0.0_amd64.deb");
+    fs::write(&package, "!<arch>\n").unwrap();
+    let tools = Tools::new().unpacking(root.path());
+
+    assert_passes(&tools.run(&package));
+
+    assert!(tools.calls().contains("dpkg-deb -R "), "{}", tools.calls());
+    // And a package whose tree is not complete fails the same way when it is a file.
+    fs::remove_file(root.path().join("usr/bin/dictate-ffmpeg")).unwrap();
+    assert_fails(&tools.run(&package), &["dictate-ffmpeg"]);
+}
+
+// ---- the installer for Windows -----------------------------------------------------------------------------------------------
+
+#[test]
+fn a_complete_windows_tree_passes() {
+    let root = tree(windows);
+
+    assert_passes(&Tools::new().run(root.path()));
+}
+
+#[test]
+fn a_windows_tree_without_a_sidecar_fails_and_says_which() {
+    for sidecar in ["dictate-mcp.exe", "dictate-ffmpeg.exe"] {
+        let root = tree(windows);
+        fs::remove_file(root.path().join(sidecar)).unwrap();
+
+        assert_fails(&Tools::new().run(root.path()), &[sidecar]);
+    }
+}
+
+#[test]
+fn a_windows_tree_without_one_of_the_runtime_dlls_fails_and_says_which() {
+    // A Windows without the runtime of Visual C++ does not start the app: the three DLLs go beside dictate.exe.
+    for dll in VC_DLLS {
+        let root = tree(windows);
+        fs::remove_file(root.path().join(dll)).unwrap();
+
+        assert_fails(&Tools::new().run(root.path()), &[dll]);
+    }
+}
+
+#[test]
+fn the_files_of_windows_are_not_asked_for_the_permission_bit() {
+    // An NSIS installer carries no permissions: the .exe files of the tree have none that 7z could give them.
+    let root = tree(windows);
+    for name in ["dictate.exe", "dictate-mcp.exe", "dictate-ffmpeg.exe"] {
+        fs::set_permissions(root.path().join(name), fs::Permissions::from_mode(0o644)).unwrap();
+    }
+
+    assert_passes(&Tools::new().run(root.path()));
+}
+
+#[test]
+fn espeak_in_a_dll_of_the_installer_fails() {
+    let root = tree(windows);
+    write(&root.path().join("msvcp140.dll"), "ESPEAK_DATA_PATH\n");
+
+    assert_fails(&Tools::new().run(root.path()), &["espeak", "msvcp140.dll"]);
+}
+
+#[test]
+fn a_setup_exe_is_unpacked_with_7z_and_its_tree_is_checked() {
+    let root = tree(windows);
+    let work = tempfile::tempdir().unwrap();
+    let setup = work.path().join("Dictate_2.0.0_x64-setup.exe");
+    fs::write(&setup, "MZ\n").unwrap();
+    let tools = Tools::new().unpacking(root.path());
+
+    assert_passes(&tools.run(&setup));
+
+    assert!(tools.calls().contains("7z x "), "{}", tools.calls());
+    fs::remove_file(root.path().join("vcruntime140.dll")).unwrap();
+    assert_fails(&tools.run(&setup), &["vcruntime140.dll"]);
+}
+
+// ---- the disk image for macOS ------------------------------------------------------------------------------------------------
+
+#[test]
+fn a_complete_mac_app_passes_and_codesign_is_asked_about_the_app_and_both_sidecars() {
+    let root = tree(mac);
+    let tools = Tools::new();
+
+    assert_passes(&tools.run(root.path()));
+
+    let calls = tools.calls();
+    for path in [
+        "Dictate.app",
+        "Dictate.app/Contents/MacOS/dictate-mcp",
+        "Dictate.app/Contents/MacOS/dictate-ffmpeg",
+    ] {
+        assert!(
+            calls
+                .lines()
+                .any(|line| line.starts_with("codesign --verify --strict ")
+                    && line.ends_with(path)),
+            "{path} is not verified:\n{calls}"
+        );
+    }
+}
+
+#[test]
+fn a_mac_app_without_a_sidecar_fails_and_says_which() {
+    for sidecar in ["dictate-mcp", "dictate-ffmpeg"] {
+        let root = tree(mac);
+        fs::remove_file(root.path().join("Dictate.app/Contents/MacOS").join(sidecar)).unwrap();
+
+        assert_fails(&Tools::new().run(root.path()), &[sidecar]);
+    }
+}
+
+#[test]
+fn a_mac_app_whose_signature_does_not_verify_fails_and_names_what_is_wrong() {
+    // The app, and each sidecar: a sidecar that was written over after it was signed is killed by macOS when it starts.
+    for failing in ["Dictate.app", "dictate-mcp", "dictate-ffmpeg"] {
+        let root = tree(mac);
+
+        let output = Tools::new()
+            .with("FAKE_CODESIGN_FAIL", failing)
+            .run(root.path());
+
+        assert_fails(&output, &["codesign", failing]);
+    }
+}
+
+#[test]
+fn a_mac_app_must_say_why_it_wants_the_microphone_and_the_screen() {
+    for key in [
+        "NSMicrophoneUsageDescription",
+        "NSScreenCaptureUsageDescription",
+    ] {
+        let root = tree(mac);
+        let plist = root.path().join("Dictate.app/Contents/Info.plist");
+        let without: String = fs::read_to_string(&plist)
+            .unwrap()
+            .lines()
+            .filter(|line| !line.starts_with(key))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        fs::write(&plist, without).unwrap();
+
+        assert_fails(&Tools::new().run(root.path()), &[key]);
+    }
+}
+
+#[test]
+fn a_mac_app_must_run_on_macos_13() {
+    for version in ["12.0", "14.0", ""] {
+        let root = tree(mac);
+        let plist = root.path().join("Dictate.app/Contents/Info.plist");
+        let text = fs::read_to_string(&plist).unwrap().replace(
+            "LSMinimumSystemVersion=13.0\n",
+            &if version.is_empty() {
+                String::new()
+            } else {
+                format!("LSMinimumSystemVersion={version}\n")
+            },
+        );
+        fs::write(&plist, text).unwrap();
+
+        assert_fails(&Tools::new().run(root.path()), &["LSMinimumSystemVersion"]);
+    }
+}
+
+#[test]
+fn the_main_program_of_a_mac_app_is_the_one_that_the_plist_names() {
+    // The sidecars are beside it, whatever it is called (the app is `Dictate`, the program `dictate`).
+    let root = tree(mac);
+    let macos = root.path().join("Dictate.app/Contents/MacOS");
+    fs::rename(macos.join("dictate"), macos.join("Dictate")).unwrap();
+    let plist = root.path().join("Dictate.app/Contents/Info.plist");
+    let text = fs::read_to_string(&plist)
+        .unwrap()
+        .replace("CFBundleExecutable=dictate", "CFBundleExecutable=Dictate");
+    fs::write(&plist, text).unwrap();
+
+    assert_passes(&Tools::new().run(root.path()));
+
+    fs::remove_file(macos.join("Dictate")).unwrap();
+    assert_fails(&Tools::new().run(root.path()), &["Dictate"]);
+}
+
+#[test]
+fn a_dmg_is_mounted_read_only_checked_and_ejected_whatever_the_result_is() {
+    let root = tree(mac);
+    let work = tempfile::tempdir().unwrap();
+    let image = work.path().join("Dictate_2.0.0_aarch64.dmg");
+    fs::write(&image, "dmg\n").unwrap();
+    let tools = Tools::new().unpacking(root.path());
+
+    assert_passes(&tools.run(&image));
+
+    let calls = tools.calls();
+    let attach = calls
+        .lines()
+        .find(|line| line.starts_with("hdiutil attach"))
+        .unwrap_or_else(|| panic!("no attach in:\n{calls}"));
+    assert!(attach.contains("-readonly"), "{attach}");
+    assert!(
+        calls.lines().any(|line| line.starts_with("hdiutil detach")),
+        "the image is not ejected:\n{calls}"
+    );
+
+    // A check that fails ejects it too.
+    fs::remove_file(
+        root.path()
+            .join("Dictate.app/Contents/MacOS/dictate-ffmpeg"),
+    )
+    .unwrap();
+    let failing = Tools::new().unpacking(root.path());
+    assert_fails(&failing.run(&image), &["dictate-ffmpeg"]);
+    assert!(
+        failing
+            .calls()
+            .lines()
+            .any(|line| line.starts_with("hdiutil detach")),
+        "the image is not ejected after a failure:\n{}",
+        failing.calls()
+    );
+}
+
+// ---- what the script does with what it is given ------------------------------------------------------------------------------
+
+#[test]
+fn every_problem_is_told_and_not_only_the_first() {
+    let root = tree(deb);
+    fs::remove_file(root.path().join("usr/bin/dictate-ffmpeg")).unwrap();
+    fs::remove_file(root.path().join("usr/lib/dictate/libonnxruntime.so")).unwrap();
+    write_program(&root.path().join("usr/bin/ffmpeg"), "#!/bin/sh\n");
+
+    let output = Tools::new().run(root.path());
+
+    assert_fails(
+        &output,
+        &["dictate-ffmpeg", "libonnxruntime.so", "/usr/bin/ffmpeg"],
+    );
+}
+
+#[test]
+fn an_artifact_that_is_not_there_is_not_a_pass() {
+    let work = tempfile::tempdir().unwrap();
+
+    let output = Tools::new().run(&work.path().join("Dictate_2.0.0_amd64.deb"));
+
+    assert_eq!(code(&output), 2, "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("Dictate_2.0.0_amd64.deb"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn a_folder_that_is_none_of_the_three_layouts_is_not_a_pass() {
+    let work = tempfile::tempdir().unwrap();
+    fs::write(work.path().join("readme.txt"), "nothing\n").unwrap();
+
+    let output = Tools::new().run(work.path());
+
+    assert_eq!(code(&output), 2, "{}", stderr(&output));
+}
+
+#[test]
+fn a_file_of_a_kind_it_cannot_unpack_is_not_a_pass() {
+    let work = tempfile::tempdir().unwrap();
+    let archive = work.path().join("Dictate_2.0.0.tar.gz");
+    fs::write(&archive, "x").unwrap();
+
+    let output = Tools::new().run(&archive);
+
+    assert_eq!(code(&output), 2, "{}", stderr(&output));
+    assert!(stderr(&output).contains(".tar.gz"), "{}", stderr(&output));
+}
+
+#[test]
+fn it_says_how_to_use_it_when_it_is_given_no_artifact() {
+    let output = Command::new("bash")
+        .arg(script())
+        .output()
+        .expect("bash runs the script");
+
+    assert_eq!(code(&output), 2);
+    assert!(stderr(&output).contains("usage"), "{}", stderr(&output));
+}

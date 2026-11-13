@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # By hand, on any branch: the branch that prepares a release is not a pull request, and runs the same jobs on the real runners this way.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -306,36 +308,104 @@ jobs:
           codesign --verify --strict "$bundle"
           codesign -d --entitlements - "$bundle" 2>&1 | grep com.apple.security.device.audio-input
 
-  # The oldest Rust the workspace promises to build with (`rust-version` in Cargo.toml). `+1.85` is spelled out
-  # because `rust-toolchain.toml` would otherwise pick the stable one.
+  # The oldest Rust the workspace promises to build with (`rust-version` in Cargo.toml), on every system: much of the code is for one
+  # system only (the platform layer, the capture crates), and a check on Linux does not compile the part for the others. `+1.85` is spelled
+  # out because `rust-toolchain.toml` would otherwise pick the stable one.
   msrv:
-    name: msrv (1.85)
-    # Pinned as in the test job (whisper-rs-sys does not build on Ubuntu 26.04).
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    name: msrv (1.85, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 45 || 30 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Linux is pinned as in the test job (whisper-rs-sys does not build on Ubuntu 26.04).
+        os: [macos-latest, windows-latest, ubuntu-24.04]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.85
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: msrv
+          shared-key: msrv-${{ runner.os }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      # The sherpa-onnx library, as in the test job (this job is Linux only).
+      # The sherpa-onnx library of each system, as in the test job: the same steps, with the same keys.
       - uses: actions/cache@v4
+        if: runner.os == 'macOS'
+        with:
+          path: target/sherpa-onnx-prebuilt
+          key: sherpa-onnx-1.13.8-${{ runner.os }}-${{ runner.arch }}
+      - uses: actions/cache@v4
+        if: runner.os == 'Windows'
+        with:
+          path: target/sherpa-onnx-md-no-tts
+          key: sherpa-onnx-md-no-tts-1.13.8-542348e5-${{ runner.arch }}
+      - name: Use the /MD build of sherpa-onnx without text to speech (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:GITHUB_WORKSPACE 'target/sherpa-onnx-md-no-tts'
+          if (-not (Test-Path (Join-Path $dir 'lib'))) {
+            New-Item -ItemType Directory -Force $dir | Out-Null
+            $archive = Join-Path $env:RUNNER_TEMP 'sherpa-onnx-md-no-tts.tar.bz2'
+            curl.exe -fsSL --retry 3 -o $archive 'https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-v1.13.8-win-x64-static-MD-Release-no-tts-lib.tar.bz2'
+            if ($LASTEXITCODE -ne 0) { throw 'the download failed' }
+            # It has to be the archive that was pinned (see the test job).
+            $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash
+            if ($actual -ne $env:SHERPA_ONNX_MD_SHA256) {
+              Remove-Item -Force $archive
+              throw "the SHA-256 of the sherpa-onnx archive is $actual, not the pinned $env:SHERPA_ONNX_MD_SHA256"
+            }
+            # The Windows tar (bsdtar), not the GNU one of Git for Windows, which reads `D:` as a host name.
+            & "$env:SystemRoot\System32\tar.exe" -xjf $archive -C $dir --strip-components=1
+            if ($LASTEXITCODE -ne 0) { throw 'the unpacking failed' }
+            # The three libraries that the build script of sherpa-onnx-sys names and this build does not have.
+            foreach ($name in 'espeak-ng', 'piper_phonemize', 'ucd') {
+              Copy-Item (Join-Path $dir 'lib/kissfft-float.lib') (Join-Path $dir "lib/$name.lib")
+            }
+          }
+          "SHERPA_ONNX_LIB_DIR=$(Join-Path $dir 'lib')" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - uses: actions/cache@v4
+        if: runner.os == 'Linux'
         with:
           path: target/sherpa-onnx-no-tts
           key: sherpa-onnx-no-tts-1.13.8-bf2d998c-${{ runner.arch }}
-      - name: Use the sherpa-onnx build without text to speech
+      - name: Use the sherpa-onnx build without text to speech (Linux)
+        if: runner.os == 'Linux'
         shell: bash
         run: |
           lib="$(bash scripts/fetch-sherpa-onnx-no-tts.sh target/sherpa-onnx-no-tts)"
           echo "SHERPA_ONNX_LIB_DIR=$lib" >> "$GITHUB_ENV"
       - name: Install the Linux build dependencies
+        if: runner.os == 'Linux'
         run: >
           sudo apt-get update && sudo apt-get install -y
           cmake libclang-dev libasound2-dev libpipewire-0.3-dev libspa-0.2-dev
           libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
       - run: cargo +1.85 check --workspace --all-targets --locked
+
+  # The Intel Mac, which the release builds (cross-compiled on the arm64 runner, or on an Intel one when that does not work): nobody had built
+  # the app for x86_64-apple-darwin, and whisper.cpp, the Swift bridge of ScreenCaptureKit and the static sherpa-onnx archive of that
+  # architecture are all new on the cross build. `cargo check` runs their build scripts, which is where they refuse, so a pull request finds
+  # out and not the release.
+  macos-intel:
+    name: check (x86_64-apple-darwin)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: macos-x86_64
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # The static library of sherpa-onnx that the build script of sherpa-onnx-sys downloads (the archive of this architecture: the folder
+      # holds the one of each), as in the test job.
+      - uses: actions/cache@v4
+        with:
+          path: target/sherpa-onnx-prebuilt
+          key: sherpa-onnx-1.13.8-${{ runner.os }}-${{ runner.arch }}
+      - run: cargo check --workspace --all-targets --locked --target x86_64-apple-darwin
 
   # The ffmpeg that ships with the app: a minimal build of ffmpeg under the LGPL v2.1 or later, made from source by scripts/build-ffmpeg.sh,
   # as `dictate-ffmpeg` next to the app (the installers are made in the release workflow; this job is where the build and its flags are

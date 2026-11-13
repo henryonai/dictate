@@ -1,0 +1,370 @@
+name: Release build
+
+# Builds the installers of Dictate, checks each one, and attaches it to the release that release-please has just made. Called by
+# release-please.yml with the tag of the release (a tag pushed with the workflow token starts no other workflow, so the build is called from
+# there), or started by hand with a tag, or with none:
+#
+#   gh workflow run release.yml --ref <branch>
+#
+# With no tag it is a dry run: it builds and checks every installer and keeps them as artifacts of the run, and uploads nothing to any
+# release. That is how a change to the installers is tried before there is a release to put them in.
+#
+# What it makes, one installer for each system: a .dmg for each Mac (Apple silicon and Intel), the NSIS installer for Windows (for the user
+# who runs it, no administrator) and a .deb. All unsigned. Each carries the MCP server and ffmpeg (`dictate-mcp` and `dictate-ffmpeg`, next
+# to the program; ffmpeg is built from source as LGPL v2.1 or later by scripts/build-ffmpeg.sh), and the .deb and the Windows installer carry
+# the libraries that the program needs (scripts/stage-sidecars.sh puts everything where the bundler looks for it, and
+# app/src-tauri/tauri.release.conf.json names it: an ordinary build does not need these files, so the ordinary configuration does not).
+# scripts/check-artifact.sh then looks inside each installer, and only an installer that passes gets a checksum file and is uploaded.
+#
+# The release itself is made by release-please, with its notes: this workflow only adds files to it, and never creates or edits it (a step
+# that gave the release a name or a body would replace the notes). The ffmpeg source and the lines that its builds were configured with go
+# up too, with the file of third-party notices: the LGPL asks that the source of what is shipped is offered.
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: The tag of the release to attach the installers to (v2.0.0). An empty one is a dry run
+        type: string
+        required: false
+        default: ""
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The tag of the release to attach the installers to. Leave it empty for a dry run, which keeps the installers as artifacts of this run and uploads nothing to any release
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # The SHA-256 of the /MD build of sherpa-onnx without text to speech that the Windows row downloads (the same pin as in ci.yml, which says
+  # why that build): a job that gets anything else stops before it unpacks it. The one for Linux is pinned in
+  # scripts/fetch-sherpa-onnx-no-tts.sh. A test (release-workflow.test.ts) keeps the pins here the same as in ci.yml.
+  SHERPA_ONNX_MD_SHA256: 542348e56e827b59c6d249fd0dfd38dc34b7bd0c521a1ebe9eb6e2db154fa15d
+  # The version of ffmpeg that scripts/build-ffmpeg.sh builds, as in ci.yml: part of the key of the cache of the build, which is the key that
+  # ci.yml uses, so that a release finds the builds that the pull requests made.
+  FFMPEG_VERSION: 9.0.2
+
+jobs:
+  # The Windows ffmpeg is built on Linux with mingw-w64 (the Windows runner has no toolchain that builds ffmpeg quickly), and the Windows row
+  # takes the program from the artifact of this job. The source tarball that it was built from goes up too, for the release.
+  ffmpeg-windows:
+    name: ffmpeg for Windows (built on Linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      # What the build made, under the hash of the script: the same key as in ci.yml.
+      - uses: actions/cache@v4
+        id: ffmpeg-build
+        with:
+          path: target/ffmpeg/x86_64-pc-windows-msvc
+          key: ffmpeg-${{ env.FFMPEG_VERSION }}-x86_64-pc-windows-msvc-${{ hashFiles('scripts/build-ffmpeg.sh') }}
+      - name: Install what the build needs (Windows program, built with mingw-w64)
+        if: steps.ffmpeg-build.outputs.cache-hit != 'true'
+        run: sudo apt-get update && sudo apt-get install -y nasm gcc-mingw-w64-x86-64-posix binutils-mingw-w64-x86-64
+      # What the program links is read with the objdump of mingw (the check cannot run it): whether or not the build came from the cache.
+      - name: Install the objdump of mingw
+        run: sudo apt-get update && sudo apt-get install -y binutils-mingw-w64-x86-64
+      - name: Build the LGPL ffmpeg
+        if: steps.ffmpeg-build.outputs.cache-hit != 'true'
+        run: bash scripts/build-ffmpeg.sh x86_64-pc-windows-msvc target/ffmpeg/x86_64-pc-windows-msvc
+      - name: Check that it is a plain LGPL ffmpeg
+        run: bash scripts/check-ffmpeg-lgpl.sh target/ffmpeg/x86_64-pc-windows-msvc/dictate-ffmpeg.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dictate-ffmpeg-x86_64-pc-windows-msvc
+          path: |
+            target/ffmpeg/x86_64-pc-windows-msvc/dictate-ffmpeg.exe
+            target/ffmpeg/x86_64-pc-windows-msvc/BUILDCONF-x86_64-pc-windows-msvc.txt
+          if-no-files-found: error
+          retention-days: 7
+      # The source is the same for every target: one copy is offered with the release.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-source
+          path: target/ffmpeg/x86_64-pc-windows-msvc/ffmpeg-${{ env.FFMPEG_VERSION }}.tar.xz
+          if-no-files-found: error
+          retention-days: 7
+
+  build:
+    name: ${{ matrix.name }}
+    # Every row waits for the Windows ffmpeg, which only one of them uses: a job cannot wait for another in some rows of its matrix.
+    needs: ffmpeg-windows
+    runs-on: ${{ matrix.os }}
+    # A cold build of the app in the release profile (whisper.cpp, then the app) is the slow part, and Windows is the slowest.
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    # Bash on every system, Git Bash on Windows: the steps read the same on all of them (the one that needs PowerShell says so).
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        # Linux is pinned: the latest Ubuntu is 26.04 now, whose libclang 21 makes the bindgen of whisper-rs-sys 0.14.1 emit zero-size
+        # structs (see ci.yml), and the Ubuntu that builds sets the oldest system that the .deb runs on (the glibc of it).
+        # The Intel Mac is cross-compiled on the arm64 runner, which is the one that ci.yml checks (the job `macos-intel`); if a native
+        # library refuses, this row moves to the Intel runner `macos-15-intel`.
+        include:
+          - name: macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            bundles: dmg
+          - name: macos-x64
+            os: macos-latest
+            target: x86_64-apple-darwin
+            bundles: dmg
+          - name: windows-x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: nsis
+            exe: .exe
+            extra_config: --config src-tauri/tauri.release.windows.conf.json
+          - name: linux-x64
+            os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            bundles: deb
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      # One cache for each target. A dry run on a branch saves it too, so that the next try of the same branch does not start cold; a
+      # release is called from main.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.target }}
+          save-if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' }}
+      # The binary runs on macOS 13 and later, as Info.plist says: the C, C++ and Swift code of the libraries is built for that too (the
+      # default of Rust for Intel is older than std::filesystem, which whisper.cpp uses), and so is ffmpeg (scripts/build-ffmpeg.sh).
+      - name: Build for macOS 13 and later
+        if: runner.os == 'macOS'
+        run: echo "MACOSX_DEPLOYMENT_TARGET=13.0" >> "$GITHUB_ENV"
+      # The sherpa-onnx library of each system, as in ci.yml (which says why each one is what it is): the same steps with the same keys.
+      # No espeak-ng (GPL-3.0) in any of them, and scripts/check-artifact.sh checks every installer for it.
+      - uses: actions/cache@v4
+        if: runner.os == 'macOS'
+        with:
+          path: target/sherpa-onnx-prebuilt
+          key: sherpa-onnx-1.13.8-${{ runner.os }}-${{ runner.arch }}
+      - uses: actions/cache@v4
+        if: runner.os == 'Windows'
+        with:
+          path: target/sherpa-onnx-md-no-tts
+          key: sherpa-onnx-md-no-tts-1.13.8-542348e5-${{ runner.arch }}
+      - name: Use the /MD build of sherpa-onnx without text to speech (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:GITHUB_WORKSPACE 'target/sherpa-onnx-md-no-tts'
+          if (-not (Test-Path (Join-Path $dir 'lib'))) {
+            New-Item -ItemType Directory -Force $dir | Out-Null
+            $archive = Join-Path $env:RUNNER_TEMP 'sherpa-onnx-md-no-tts.tar.bz2'
+            curl.exe -fsSL --retry 3 -o $archive 'https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-v1.13.8-win-x64-static-MD-Release-no-tts-lib.tar.bz2'
+            if ($LASTEXITCODE -ne 0) { throw 'the download failed' }
+            # It has to be the archive that was pinned: a file that is another one is not linked into the app.
+            $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash
+            if ($actual -ne $env:SHERPA_ONNX_MD_SHA256) {
+              Remove-Item -Force $archive
+              throw "the SHA-256 of the sherpa-onnx archive is $actual, not the pinned $env:SHERPA_ONNX_MD_SHA256"
+            }
+            # The Windows tar (bsdtar), not the GNU one of Git for Windows, which reads `D:` as a host name.
+            & "$env:SystemRoot\System32\tar.exe" -xjf $archive -C $dir --strip-components=1
+            if ($LASTEXITCODE -ne 0) { throw 'the unpacking failed' }
+            # The three libraries that the build script of sherpa-onnx-sys names and this build does not have.
+            foreach ($name in 'espeak-ng', 'piper_phonemize', 'ucd') {
+              Copy-Item (Join-Path $dir 'lib/kissfft-float.lib') (Join-Path $dir "lib/$name.lib")
+            }
+          }
+          "SHERPA_ONNX_LIB_DIR=$(Join-Path $dir 'lib')" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - uses: actions/cache@v4
+        if: runner.os == 'Linux'
+        with:
+          path: target/sherpa-onnx-no-tts
+          key: sherpa-onnx-no-tts-1.13.8-bf2d998c-${{ runner.arch }}
+      - name: Use the sherpa-onnx build without text to speech (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          lib="$(bash scripts/fetch-sherpa-onnx-no-tts.sh target/sherpa-onnx-no-tts)"
+          echo "SHERPA_ONNX_LIB_DIR=$lib" >> "$GITHUB_ENV"
+      - name: Install the Linux build dependencies
+        if: runner.os == 'Linux'
+        run: >
+          sudo apt-get update && sudo apt-get install -y
+          cmake libclang-dev libasound2-dev libpipewire-0.3-dev libspa-0.2-dev
+          libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
+      # The ffmpeg of the installer. The Windows one was built by the job above; each of the others is built here, on its own system, and
+      # cached under the key of ci.yml.
+      - uses: actions/download-artifact@v4
+        if: runner.os == 'Windows'
+        with:
+          name: dictate-ffmpeg-x86_64-pc-windows-msvc
+          path: target/ffmpeg/x86_64-pc-windows-msvc
+      - uses: actions/cache@v4
+        id: ffmpeg-build
+        if: runner.os != 'Windows'
+        with:
+          path: target/ffmpeg/${{ matrix.target }}
+          key: ffmpeg-${{ env.FFMPEG_VERSION }}-${{ matrix.target }}-${{ hashFiles('scripts/build-ffmpeg.sh') }}
+      - name: Install nasm (macOS, Intel target)
+        if: steps.ffmpeg-build.outputs.cache-hit != 'true' && matrix.target == 'x86_64-apple-darwin'
+        run: brew install nasm
+      - name: Install what the ffmpeg build needs (Linux)
+        if: steps.ffmpeg-build.outputs.cache-hit != 'true' && matrix.target == 'x86_64-unknown-linux-gnu'
+        run: sudo apt-get update && sudo apt-get install -y nasm pkg-config libvpx-dev libopus-dev zlib1g-dev
+      - name: Build the LGPL ffmpeg
+        if: runner.os != 'Windows' && steps.ffmpeg-build.outputs.cache-hit != 'true'
+        run: bash scripts/build-ffmpeg.sh ${{ matrix.target }} target/ffmpeg/${{ matrix.target }}
+      - name: Check that it is a plain LGPL ffmpeg
+        run: bash scripts/check-ffmpeg-lgpl.sh target/ffmpeg/${{ matrix.target }}/dictate-ffmpeg${{ matrix.exe }}
+      # The MCP server (built for the target, so in target/<target>/release, which is not the folder of the binary that the tests of the
+      # MCP server run), ffmpeg and the libraries, where the bundler looks for them.
+      - name: Put the MCP server, ffmpeg and the libraries where the bundler looks for them
+        run: bash scripts/stage-sidecars.sh ${{ matrix.target }}
+      # The pnpm version is the "packageManager" in app/package.json: pnpm/action-setup installs that one.
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: app/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+      - run: pnpm --dir app install --frozen-lockfile
+      # The installer: the web interface is built first (beforeBuildCommand), then the app, then the bundle that `bundles` names. The
+      # overlay names the sidecars and the libraries; the identity "-" signs the Mac app (and its sidecars) ad hoc, which is what applies
+      # the entitlements. The bundler is not given a tag or a release.
+      - name: Build the installer
+        env:
+          APPLE_SIGNING_IDENTITY: "-"
+        run: pnpm --dir app tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} --config src-tauri/tauri.release.conf.json ${{ matrix.extra_config }}
+      - name: Find the installer
+        id: installer
+        env:
+          BUNDLES: ${{ matrix.bundles }}
+        run: |
+          shopt -s nullglob
+          case "$BUNDLES" in
+            dmg) files=(target/${{ matrix.target }}/release/bundle/dmg/*.dmg) ;;
+            nsis) files=(target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe) ;;
+            deb) files=(target/${{ matrix.target }}/release/bundle/deb/*.deb) ;;
+          esac
+          if [ "${#files[@]}" -ne 1 ]; then
+            echo "expected one $BUNDLES installer in target/${{ matrix.target }}/release/bundle, found ${#files[@]}: ${files[*]:-none}"
+            exit 1
+          fi
+          echo "path=${files[0]}" >> "$GITHUB_OUTPUT"
+          ls -l "${files[0]}"
+      # Looks inside the installer: the sidecars, no espeak-ng, a plain LGPL ffmpeg, and what only this kind of installer needs. A failure
+      # fails the row, and nothing after this step runs, so that an installer that fails it is neither checksummed nor uploaded.
+      - name: Check what is inside the installer
+        env:
+          INSTALLER: ${{ steps.installer.outputs.path }}
+        run: bash scripts/check-artifact.sh "$INSTALLER"
+      # <installer>.sha256 holds `<hash>  <name>`, the format that sha256sum -c and shasum -c read. The hash is made in the folder of the
+      # installer so that the file has the name and not the path, and it is checked at once.
+      - name: Write the checksum
+        env:
+          INSTALLER: ${{ steps.installer.outputs.path }}
+        run: |
+          cd "$(dirname "$INSTALLER")"
+          name="$(basename "$INSTALLER")"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$name" > "$name.sha256"
+            sha256sum -c "$name.sha256"
+          else
+            shasum -a 256 "$name" > "$name.sha256"
+            shasum -a 256 -c "$name.sha256"
+          fi
+          cat "$name.sha256"
+      # What a dry run leaves to look at, and a release has too (for a week).
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ matrix.name }}
+          path: |
+            ${{ steps.installer.outputs.path }}
+            ${{ steps.installer.outputs.path }}.sha256
+          if-no-files-found: error
+          retention-days: 7
+      # The line that the ffmpeg of this row was configured with: the written offer of the source points at it.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: buildconf-${{ matrix.target }}
+          path: target/ffmpeg/${{ matrix.target }}/BUILDCONF-${{ matrix.target }}.txt
+          if-no-files-found: error
+          retention-days: 7
+      # With a tag: the installer and its checksum go to the release that release-please made. --clobber replaces them when this runs again.
+      - name: Attach the installer to the release
+        if: inputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          INSTALLER: ${{ steps.installer.outputs.path }}
+          TAG: ${{ inputs.tag }}
+        run: gh release upload "$TAG" "$INSTALLER" "$INSTALLER.sha256" --clobber
+
+  # The files that go with all of the installers: the source of the ffmpeg that is inside them, the lines that each build of it was configured
+  # with, and the notices of third-party licenses. After every installer: when one failed, nothing else is attached.
+  sources:
+    name: ffmpeg source, build lines and notices
+    needs: [ffmpeg-windows, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ffmpeg-source
+          path: release-files
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: buildconf-*
+          path: release-files
+          merge-multiple: true
+      # The notices are in the repository (the file is written by the task that adds the licenses). A release without them does not go out;
+      # a dry run is tried before they are there, and says so.
+      - name: Add the notices of third-party licenses
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          if [ -f THIRD_PARTY_NOTICES.md ]; then
+            cp THIRD_PARTY_NOTICES.md release-files/
+          elif [ -n "$TAG" ]; then
+            echo "::error::THIRD_PARTY_NOTICES.md is not in the repository, and a release has to come with it (the licenses of what is inside ask for it)"
+            exit 1
+          else
+            echo "::warning::THIRD_PARTY_NOTICES.md is not in the repository yet: this dry run goes on without it"
+          fi
+      - name: Check that every file is there
+        run: |
+          missing=0
+          for name in ffmpeg-${{ env.FFMPEG_VERSION }}.tar.xz \
+            BUILDCONF-aarch64-apple-darwin.txt BUILDCONF-x86_64-apple-darwin.txt \
+            BUILDCONF-x86_64-pc-windows-msvc.txt BUILDCONF-x86_64-unknown-linux-gnu.txt; do
+            if [ ! -s "release-files/$name" ]; then
+              echo "::error::release-files/$name is not there"
+              missing=1
+            fi
+          done
+          ls -l release-files
+          exit "$missing"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-files
+          path: release-files/*
+          if-no-files-found: error
+          retention-days: 7
+      - name: Attach the files to the release
+        if: inputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+        run: gh release upload "$TAG" release-files/* --clobber
