@@ -420,6 +420,16 @@ jobs:
           for name in $wanted; do
             echo "$encoders" | grep -q " $name " || { echo "the encoder $name is not in the build"; exit 1; }
           done
+          # Every demuxer and every decoder is in the build (an import that symphonia cannot read goes through it): some of the long tail
+          # that a short list leaves out.
+          demuxers="$("$ffmpeg" -hide_banner -demuxers)"
+          for name in mxf wtv dv nut; do
+            echo "$demuxers" | grep -q " $name " || { echo "the demuxer $name is not in the build"; exit 1; }
+          done
+          decoders="$("$ffmpeg" -hide_banner -decoders)"
+          for name in g722 g726 shorten als; do
+            echo "$decoders" | grep -q " $name " || { echo "the decoder $name is not in the build"; exit 1; }
+          done
       # What dictate-services is built with, as in the test job: the Rust toolchain and its cache (read, not written: what this job builds is
       # part of what that one does), and the sherpa-onnx library of the system.
       - uses: dtolnay/rust-toolchain@stable
@@ -453,11 +463,15 @@ jobs:
           libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
       # The tests that run ffmpeg: decoding what symphonia cannot read, writing audio.m4a, the encoders of a recording (picked and probed),
       # the mux. CI is set by Actions, so a missing ffmpeg fails them instead of skipping them; DICTATE_FFMPEG is what `Tools::find` takes first.
+      # The program is run first: a DICTATE_FFMPEG that does not run fails the step here, and not as a test that was skipped or that ran with
+      # another ffmpeg (a test of tools.rs also checks that `Tools::find` gives this one).
       - name: Test the media and recording code with this ffmpeg
         if: matrix.tests
+        shell: bash
         env:
           DICTATE_FFMPEG: ${{ github.workspace }}/target/ffmpeg/${{ matrix.target }}/dictate-ffmpeg${{ matrix.exe }}
         run: |
+          "$DICTATE_FFMPEG" -version
           cargo test -p dictate-services --lib --locked -- media:: record:: --nocapture
 
   # The Windows ffmpeg of the job above, run for the first time here: it was built on Linux, which cannot run it. It is the program that
@@ -491,6 +505,15 @@ jobs:
           done
           # h264_qsv would need libvpl, which h264_mf makes unnecessary: it is not built, and ENCODER_ORDER does not name it.
           if echo "$encoders" | grep -q " h264_qsv "; then echo 'h264_qsv is in the build'; exit 1; fi
+          # Every demuxer and every decoder is in the build, as in the other rows.
+          demuxers="$("$ffmpeg" -hide_banner -demuxers)"
+          for name in mxf wtv dv nut; do
+            echo "$demuxers" | grep -q " $name " || { echo "the demuxer $name is not in the build"; exit 1; }
+          done
+          decoders="$("$ffmpeg" -hide_banner -decoders)"
+          for name in g722 g726 shorten als; do
+            echo "$decoders" | grep -q " $name " || { echo "the decoder $name is not in the build"; exit 1; }
+          done
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -529,8 +552,10 @@ jobs:
       # Media Foundation) has to be the pick: DICTATE_EXPECT_ENCODER makes a test fail when it is mpeg4 (a recording that the player cannot
       # play), which is what every Windows machine without a hardware encoder would get. The tests print `encoder: <the pick>`.
       - name: Test the media and recording code with this ffmpeg
+        shell: bash
         env:
           DICTATE_FFMPEG: ${{ github.workspace }}/target/ffmpeg/x86_64-pc-windows-msvc/dictate-ffmpeg.exe
           DICTATE_EXPECT_ENCODER: h264_mf
         run: |
+          "$DICTATE_FFMPEG" -version
           cargo test -p dictate-services --lib --locked -- media:: record:: --nocapture

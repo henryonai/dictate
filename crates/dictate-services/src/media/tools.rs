@@ -782,6 +782,27 @@ mod tests {
     }
 
     #[test]
+    fn with_dictate_ffmpeg_set_in_the_environment_find_gives_that_program() {
+        // CI sets DICTATE_FFMPEG to the ffmpeg that it built, to run the tests with it: a `find` that does not give that program
+        // (it is not a file, it is not run, the lookup went on to the path) would run them with the ffmpeg of the runner instead,
+        // and nothing else would say so.
+        let Some(set) = std::env::var_os(FFMPEG_VARIABLE).filter(|value| !value.is_empty()) else {
+            return;
+        };
+        let canonical =
+            |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+
+        let found = Tools::find().ffmpeg;
+
+        let found = found.expect("DICTATE_FFMPEG is set, and find gives no ffmpeg");
+        assert_eq!(
+            canonical(&found),
+            canonical(Path::new(&set)),
+            "DICTATE_FFMPEG is {set:?}"
+        );
+    }
+
+    #[test]
     fn yt_dlp_is_still_looked_for_next_to_the_executable_first() {
         let exe_dir = tempfile::tempdir().unwrap();
         let path_dir = tempfile::tempdir().unwrap();

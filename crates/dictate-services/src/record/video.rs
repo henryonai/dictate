@@ -177,8 +177,9 @@ fn variants(encoder: &str) -> &'static [&'static [&'static str]] {
 }
 
 /// The encoders to use, best first: the one of the system's own hardware where there is one, and then the ones that
-/// any ffmpeg may have. `pick_codec` goes by what ffmpeg lists, which is what it was built with, and does not try the
-/// encoder: `h264_nvenc` and `h264_amf` are listed whether there is such a card or not.
+/// any ffmpeg may have. What ffmpeg lists is what it was built with, not what the machine can do (`h264_nvenc` and
+/// `h264_amf` are listed whether there is such a card or not), so `pick_codec` goes by the list and then tries each
+/// listed candidate (`works`).
 #[cfg(target_os = "macos")]
 pub const ENCODER_ORDER: &[&str] = &["h264_videotoolbox", "libopenh264", "libx264", "mpeg4"];
 #[cfg(windows)]

@@ -527,6 +527,69 @@ fn build_ffmpeg_refuses_a_target_it_does_not_know_before_it_downloads_anything()
     assert!(!stderr(&output).contains("download"), "{}", stderr(&output));
 }
 
+/// The lines of a script that are not comments: the comments say what the script does not do.
+fn code_of(script: &str) -> String {
+    fs::read_to_string(scripts().join(script))
+        .unwrap()
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn build_ffmpeg_enables_every_demuxer_and_every_decoder() {
+    // An import goes through the ffmpeg of the app whenever symphonia cannot read the file, and `Tools::find` takes the one that ships
+    // before the one of the user: a format that the build lacks is a format that cannot be imported. So every demuxer and every
+    // decoder is on (the ones that are GPL, version 3 or non-free stay out by themselves: the build is configured without them),
+    // and not a list of the ones that somebody thought of.
+    let code = code_of("build-ffmpeg.sh");
+
+    let everything_off = code.find("--disable-everything").unwrap();
+    for all in [
+        "--enable-demuxers",
+        "--enable-decoders",
+        "--enable-parsers",
+        "--enable-bsfs",
+    ] {
+        let at = code
+            .find(all)
+            .unwrap_or_else(|| panic!("{all} is not in the configure line"));
+        // `--enable-demuxers` is not the start of a longer option such as `--enable-demuxers-x`, and comes after `--disable-everything`
+        // (before it, it would be switched off again).
+        assert!(
+            code[at + all.len()..].starts_with([' ', '\n', '\\']),
+            "{all}: {}",
+            &code[at..at + 30]
+        );
+        assert!(
+            at > everything_off,
+            "{all} comes before --disable-everything"
+        );
+    }
+    for list in [
+        "--enable-demuxer=",
+        "--enable-decoder=",
+        "DEMUXERS=",
+        "DECODERS=",
+    ] {
+        assert!(!code.contains(list), "{list} is a curated list again");
+    }
+    // The ones that stay as the app asks for them: the protocols, the muxers, the encoders and the filters.
+    for curated in [
+        "--enable-protocol=",
+        "--enable-muxer=",
+        "--enable-encoder=",
+        "--enable-filter=",
+    ] {
+        assert!(code.contains(curated), "{curated}");
+    }
+    // And the licence options are still the ones of an LGPL v2.1 build.
+    for off in ["--disable-gpl", "--disable-nonfree", "--disable-version3"] {
+        assert!(code.contains(off), "{off}");
+    }
+}
+
 #[test]
 fn build_ffmpeg_needs_a_target_and_a_folder() {
     let output = run(bash("build-ffmpeg.sh", &["x86_64-unknown-linux-gnu"]));

@@ -15,8 +15,9 @@
 # libvpx, libopus and zlib (apt-get install -y build-essential nasm pkg-config curl xz-utils libvpx-dev libopus-dev zlib1g-dev), on a
 # Linux that builds the Windows program gcc-mingw-w64-x86-64-posix and binutils-mingw-w64-x86-64.
 #
-# What it makes: ffmpeg 9.0.2 with `--disable-everything` and then only what the app asks of it (the demuxers that an import can need,
-# the encoders and muxers of the recordings, the few filters: the lists below), under the LGPL v2.1 or later:
+# What it makes: ffmpeg 9.0.2 with `--disable-everything` and then every demuxer, decoder, parser and bitstream filter (an import can
+# need any of them) and only what the app asks of it for the rest (the encoders and muxers of the recordings, the few filters, the
+# protocols: the lists below), under the LGPL v2.1 or later:
 # `--disable-gpl --disable-nonfree --disable-version3`, and `configure` has to say so ("License: LGPL version 2.1 or later").
 # scripts/check-ffmpeg-lgpl.sh is the check of the result. The source is the pinned tarball: its SHA-256 is checked before anything is
 # unpacked, and a run that fails leaves nothing in OUTDIR.
@@ -75,28 +76,27 @@ fi
 tar -xf "ffmpeg-$VERSION.tar.xz" || fail "the unpacking failed"
 
 # --- what the app asks of ffmpeg (see crates/dictate-services/src/media/{decode,encode/ffmpeg}.rs and record/video.rs) ---------------
-# Everything else stays off: --disable-everything, and then only what is named here.
+# --disable-everything, and then:
+#  - every demuxer and every decoder (--enable-demuxers --enable-decoders). An import that symphonia cannot read (AC-3, WMA, AMR, odd
+#    AAC, damaged files, whatever else) goes through ffmpeg, and Tools::find takes the ffmpeg that ships before the one of the user, so
+#    a format that this build lacks is a format that cannot be imported. The ones that are GPL, version 3 or non-free (and the ones that
+#    need a library that is not linked) stay out by themselves, because of the options above: configure says "Disabled ..." for them.
+#    rawvideo and pcm_f32le (the frames of the screen and the f32le audio that the app pipes in) and mov and matroska (video.mp4 or
+#    video.webm, the probe of a length, the mux) are among them.
+#  - all the parsers and the bitstream filters: they are tiny (the mp4 muxer puts aac_adtstoasc in by itself for a raw .aac).
+#  - only what the app asks for of the rest: the protocols, the encoders, the muxers and the filters.
 PROTOCOLS="file,pipe"
-# Imports (what symphonia cannot read: AC-3, WMA, AMR, odd AAC, damaged files, ...) go through any demuxer that has audio, so the list
-# is broad. rawvideo and pcm_f32le: the frames of the screen and the f32le audio that the app pipes in. mov and matroska: video.mp4 or
-# video.webm, the probe of a length, the mux.
-DEMUXERS="mov,matroska,ogg,wav,w64,aiff,flac,mp3,aac,ac3,eac3,asf,amr,amrnb,amrwb,avi,flv,mpegts,mpegps,caf,dts,dtshd,truehd,mlp,au,voc,wv,tta,tak,mpc,mpc8,ape,gsm,xwma,dsf,rm,rawvideo,pcm_f32le,pcm_s16le"
-# Audio decoders (all native, LGPL), `pcm_*` and the `adpcm_*` that are LGPL (a few game ones need --enable-gpl and are skipped with a
-# warning). The video ones are only for the tests of the repository (they decode the video that was written) and for the cover art of an
-# mp3 or m4a; rawvideo is REQUIRED.
-DECODERS="aac,aac_latm,ac3,eac3,alac,amrnb,amrwb,ape,atrac1,atrac3,atrac3p,cook,dca,dsd_lsbf,dsd_msbf,flac,gsm,gsm_ms,mp1float,mp2float,mp3float,mpc7,mpc8,nellymoser,opus,qcelp,ra_144,ra_288,sipr,speex,tak,truehd,mlp,tta,vorbis,wavpack,wmalossless,wmapro,wmav1,wmav2,wmavoice,pcm_*,adpcm_*,rawvideo,h264,hevc,vp8,vp9,mpeg4,mpeg2video,mjpeg,png"
 # `anull` and `null` are what ffmpeg puts in a graph that has no filter; aformat, aresample and scale are put in by itself (the rate, the
 # channels, bgra to yuv420p).
 FILTERS="buffer,buffersink,abuffer,abuffersink,null,anull,format,aformat,aresample,scale,fps,atrim,trim,asetpts,setpts,volume"
-# Parsers and bitstream filters are tiny: all of them (the mp4 muxer puts aac_adtstoasc in by itself for a raw .aac).
 # wrapped_avframe: the pseudo-encoder that the null muxer takes when a video is DECODED to nowhere (`-i video.mp4 -f null -`), which the
 # tests of the repository do to read how long a recording is. The app never decodes a video (it copies it to find out how long it is).
 COMMON=(
   --disable-gpl --disable-nonfree --disable-version3
   --disable-autodetect --disable-everything
   --disable-doc --disable-debug --disable-network --disable-ffplay --disable-ffprobe --disable-avdevice
-  "--enable-protocol=$PROTOCOLS" "--enable-demuxer=$DEMUXERS" "--enable-decoder=$DECODERS" --enable-encoder=wrapped_avframe
-  --enable-parsers --enable-bsfs "--enable-filter=$FILTERS"
+  --enable-demuxers --enable-decoders --enable-parsers --enable-bsfs
+  "--enable-protocol=$PROTOCOLS" "--enable-filter=$FILTERS" --enable-encoder=wrapped_avframe
 )
 
 STRIP=strip
@@ -189,6 +189,9 @@ fi
 # The folder that the header-only SDKs were put in is made for the run: its name is not part of what was built.
 sed "s#$WORK#<build folder>#g" "$WORK/buildconf.txt" >"$WORK/buildconf.clean.txt"
 
+# A new file, not a copy over the old one: macOS keeps the code signature of a file that it has run, by the file, and a program that is
+# written over in place can be killed (exit status 137) when it is started, with a signature that is valid on disk.
+rm -f "$OUT/$SIDECAR"
 cp "$EXE" "$OUT/$SIDECAR"
 cp "$WORK/buildconf.clean.txt" "$OUT/BUILDCONF-$TARGET.txt"
 cp "$WORK/ffmpeg-$VERSION.tar.xz" "$OUT/"

@@ -325,6 +325,43 @@ describe("the ffmpeg that ships with the app (LGPL v2.1 or later, built from sou
     expect(read(SCRIPT)).toContain("--enable-encoder=wrapped_avframe");
   });
 
+  test("every demuxer and every decoder is on, so that no import that the user's own ffmpeg could read fails with the one that ships", () => {
+    // Tools::find prefers dictate-ffmpeg to the ffmpeg of the user, and an import that symphonia cannot read goes through ffmpeg.
+    const lines = code(SCRIPT);
+    expect(lines).toContain("--disable-everything");
+    for (const all of ["--enable-demuxers", "--enable-decoders", "--enable-parsers", "--enable-bsfs"]) {
+      expect(lines.indexOf(all), all).toBeGreaterThan(lines.indexOf("--disable-everything"));
+    }
+    expect(lines).not.toContain("--enable-demuxer=");
+    expect(lines).not.toContain("--enable-decoder=");
+    // Encoders, muxers, filters and protocols are the ones that the app asks for.
+    for (const curated of ["--enable-protocol=", "--enable-muxer=", "--enable-encoder=", "--enable-filter="]) {
+      expect(lines, curated).toContain(curated);
+    }
+  });
+
+  test("the rows that run the build check that formats of the long tail are in it", () => {
+    for (const name of ["ffmpeg", "ffmpeg-windows"]) {
+      const listing = step(name, "-hide_banner -encoders");
+      expect(listing, name).toContain("-hide_banner -demuxers");
+      expect(listing, name).toContain("-hide_banner -decoders");
+      // A demuxer and a decoder that only a build with every one of them has.
+      expect(listing, name).toMatch(/mxf/);
+      expect(listing, name).toMatch(/g722/);
+    }
+  });
+
+  test("the tests are run after the program that they run with is shown to run", () => {
+    for (const name of ["ffmpeg", "ffmpeg-windows"]) {
+      const tests = step(name, "cargo test -p dictate-services");
+      const version = tests.indexOf('"$DICTATE_FFMPEG" -version');
+      expect(version, `${name}: the program is run first`).toBeGreaterThan(-1);
+      expect(version).toBeLessThan(tests.indexOf("cargo test -p dictate-services"));
+      // Bash on every system: Windows would read `"$DICTATE_FFMPEG"` as text in PowerShell.
+      expect(tests).toContain("shell: bash");
+    }
+  });
+
   test("Windows gets the encoders of the system and no libvpl: h264_qsv is not built, and h264_mf is built so that it compiles", () => {
     const script = read(SCRIPT);
     expect(script).toContain("--enable-mediafoundation --enable-d3d11va");
