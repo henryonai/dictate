@@ -22,6 +22,9 @@ env:
   # characters in it, so that a new pin is downloaded and checked and not restored from the cache). The one for Linux is pinned in
   # scripts/fetch-sherpa-onnx-no-tts.sh.
   SHERPA_ONNX_MD_SHA256: 542348e56e827b59c6d249fd0dfd38dc34b7bd0c521a1ebe9eb6e2db154fa15d
+  # The version of ffmpeg that scripts/build-ffmpeg.sh builds (and pins by the SHA-256 of its source): part of the key of the cache of the
+  # build, with the hash of the script, so that a new version or a new set of flags is built and not restored.
+  FFMPEG_VERSION: 9.0.2
 
 jobs:
   test:
@@ -333,3 +336,197 @@ jobs:
           cmake libclang-dev libasound2-dev libpipewire-0.3-dev libspa-0.2-dev
           libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
       - run: cargo +1.85 check --workspace --all-targets --locked
+
+  # The ffmpeg that ships with the app: a minimal build of ffmpeg under the LGPL v2.1 or later, made from source by scripts/build-ffmpeg.sh,
+  # as `dictate-ffmpeg` next to the app (the installers are made in the release workflow; this job is where the build and its flags are
+  # tried on every change). Each row builds one target, checks that it is a plain LGPL build (scripts/check-ffmpeg-lgpl.sh: no GPL or
+  # non-free option or library, only the libraries of the system) and keeps it as an artifact. The rows that can run their own build
+  # then run the tests of the code that runs ffmpeg with it (DICTATE_FFMPEG), so that CI tests the ffmpeg that ships and not the one of
+  # brew, apt or choco, as the test job above does for the rest of the tests.
+  #  - macOS: both targets are built on the arm64 runner, the Intel one cross-compiled (nasm for its assembly); only the arm64 one is run.
+  #  - Linux: fully static, with libvpx, libopus and zlib from the static archives of the Ubuntu packages.
+  #  - Windows: built on Linux with mingw-w64, which cannot run it: the next job runs it on Windows.
+  ffmpeg:
+    name: ffmpeg (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    # A cold build of ffmpeg takes about 3 minutes; a cold build of what dictate-services is made of (whisper.cpp) takes the rest, as in the test job.
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        # Linux is pinned as in the jobs above.
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            tests: true
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            tests: true
+          - os: ubuntu-24.04
+            target: x86_64-pc-windows-msvc
+            exe: .exe
+    steps:
+      - uses: actions/checkout@v4
+      # What the build made, under the hash of the script (it has the version, the flags and the pins of the source in it).
+      - uses: actions/cache@v4
+        id: ffmpeg-build
+        with:
+          path: target/ffmpeg/${{ matrix.target }}
+          key: ffmpeg-${{ env.FFMPEG_VERSION }}-${{ matrix.target }}-${{ hashFiles('scripts/build-ffmpeg.sh') }}
+      - name: Install nasm (macOS, Intel target)
+        if: steps.ffmpeg-build.outputs.cache-hit != 'true' && matrix.target == 'x86_64-apple-darwin'
+        run: brew install nasm
+      - name: Install what the build needs (Linux)
+        if: steps.ffmpeg-build.outputs.cache-hit != 'true' && matrix.target == 'x86_64-unknown-linux-gnu'
+        run: sudo apt-get update && sudo apt-get install -y nasm pkg-config libvpx-dev libopus-dev zlib1g-dev
+      - name: Install what the build needs (Windows program, built with mingw-w64)
+        if: steps.ffmpeg-build.outputs.cache-hit != 'true' && matrix.target == 'x86_64-pc-windows-msvc'
+        run: sudo apt-get update && sudo apt-get install -y nasm gcc-mingw-w64-x86-64-posix binutils-mingw-w64-x86-64
+      # What the program links is read with the objdump of mingw (the check cannot run it): whether or not the build came from the cache.
+      - name: Install mingw's objdump (Windows program)
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        run: sudo apt-get update && sudo apt-get install -y binutils-mingw-w64-x86-64
+      - name: Build the LGPL ffmpeg
+        if: steps.ffmpeg-build.outputs.cache-hit != 'true'
+        shell: bash
+        run: bash scripts/build-ffmpeg.sh ${{ matrix.target }} target/ffmpeg/${{ matrix.target }}
+      - name: Check that it is a plain LGPL ffmpeg
+        shell: bash
+        run: bash scripts/check-ffmpeg-lgpl.sh target/ffmpeg/${{ matrix.target }}/dictate-ffmpeg${{ matrix.exe }}
+      # The program and the line that it was configured with (the written offer of the source points at it), for the job that runs the
+      # Windows one and for the release. Before the tests: a test that fails must not keep them from the job after this one.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dictate-ffmpeg-${{ matrix.target }}
+          path: |
+            target/ffmpeg/${{ matrix.target }}/dictate-ffmpeg${{ matrix.exe }}
+            target/ffmpeg/${{ matrix.target }}/BUILDCONF-${{ matrix.target }}.txt
+          if-no-files-found: error
+          retention-days: 7
+      - name: List the encoders of the ffmpeg that was built
+        if: matrix.tests
+        shell: bash
+        run: |
+          ffmpeg="target/ffmpeg/${{ matrix.target }}/dictate-ffmpeg"
+          "$ffmpeg" -version | head -n 1
+          encoders="$("$ffmpeg" -hide_banner -encoders)"
+          echo "$encoders" | grep -E '^ V'
+          case "${{ matrix.target }}" in
+            aarch64-apple-darwin) wanted='h264_videotoolbox' ;;
+            *) wanted='libvpx-vp9 libopus' ;;
+          esac
+          for name in $wanted; do
+            echo "$encoders" | grep -q " $name " || { echo "the encoder $name is not in the build"; exit 1; }
+          done
+      # What dictate-services is built with, as in the test job: the Rust toolchain and its cache (read, not written: what this job builds is
+      # part of what that one does), and the sherpa-onnx library of the system.
+      - uses: dtolnay/rust-toolchain@stable
+        if: matrix.tests
+      - uses: Swatinem/rust-cache@v2
+        if: matrix.tests
+        with:
+          shared-key: ${{ runner.os }}
+          save-if: false
+      - uses: actions/cache@v4
+        if: runner.os == 'macOS' && matrix.tests
+        with:
+          path: target/sherpa-onnx-prebuilt
+          key: sherpa-onnx-1.13.8-${{ runner.os }}-${{ runner.arch }}
+      - uses: actions/cache@v4
+        if: runner.os == 'Linux' && matrix.tests
+        with:
+          path: target/sherpa-onnx-no-tts
+          key: sherpa-onnx-no-tts-1.13.8-bf2d998c-${{ runner.arch }}
+      - name: Use the sherpa-onnx build without text to speech (Linux)
+        if: runner.os == 'Linux' && matrix.tests
+        shell: bash
+        run: |
+          lib="$(bash scripts/fetch-sherpa-onnx-no-tts.sh target/sherpa-onnx-no-tts)"
+          echo "SHERPA_ONNX_LIB_DIR=$lib" >> "$GITHUB_ENV"
+      - name: Install the Linux build dependencies
+        if: runner.os == 'Linux' && matrix.tests
+        run: >
+          sudo apt-get update && sudo apt-get install -y
+          cmake libclang-dev libasound2-dev libpipewire-0.3-dev libspa-0.2-dev
+          libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
+      # The tests that run ffmpeg: decoding what symphonia cannot read, writing audio.m4a, the encoders of a recording (picked and probed),
+      # the mux. CI is set by Actions, so a missing ffmpeg fails them instead of skipping them; DICTATE_FFMPEG is what `Tools::find` takes first.
+      - name: Test the media and recording code with this ffmpeg
+        if: matrix.tests
+        env:
+          DICTATE_FFMPEG: ${{ github.workspace }}/target/ffmpeg/${{ matrix.target }}/dictate-ffmpeg${{ matrix.exe }}
+        run: |
+          cargo test -p dictate-services --lib --locked -- media:: record:: --nocapture
+
+  # The Windows ffmpeg of the job above, run for the first time here: it was built on Linux, which cannot run it. It is the program that
+  # the Windows installer ships, so this is where its encoders (Media Foundation, NVENC, AMF), the C runtime that it was linked with
+  # (mingw's msvcrt, not the UCRT of the usual builds) and the tests of the repository meet it. It runs after the whole job above, but
+  # whether or not another row of it failed: it needs the artifact of one row only.
+  ffmpeg-windows:
+    name: ffmpeg (x86_64-pc-windows-msvc, run on Windows)
+    needs: ffmpeg
+    if: ${{ !cancelled() }}
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: dictate-ffmpeg-x86_64-pc-windows-msvc
+          path: target/ffmpeg/x86_64-pc-windows-msvc
+      - name: Check that it is a plain LGPL ffmpeg
+        shell: bash
+        run: bash scripts/check-ffmpeg-lgpl.sh target/ffmpeg/x86_64-pc-windows-msvc/dictate-ffmpeg.exe
+      - name: List the encoders of the Windows ffmpeg
+        shell: bash
+        run: |
+          ffmpeg=target/ffmpeg/x86_64-pc-windows-msvc/dictate-ffmpeg.exe
+          "$ffmpeg" -version | head -n 1
+          encoders="$("$ffmpeg" -hide_banner -encoders)"
+          echo "$encoders" | grep -E '^ V'
+          for name in h264_mf h264_nvenc h264_amf; do
+            echo "$encoders" | grep -q " $name " || { echo "the encoder $name is not in the build"; exit 1; }
+          done
+          # h264_qsv would need libvpl, which h264_mf makes unnecessary: it is not built, and ENCODER_ORDER does not name it.
+          if echo "$encoders" | grep -q " h264_qsv "; then echo 'h264_qsv is in the build'; exit 1; fi
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ runner.os }}
+          save-if: false
+      # The /MD build of sherpa-onnx without text to speech: the same step as in the test job, with the same key and the same pin.
+      - uses: actions/cache@v4
+        with:
+          path: target/sherpa-onnx-md-no-tts
+          key: sherpa-onnx-md-no-tts-1.13.8-542348e5-${{ runner.arch }}
+      - name: Use the /MD build of sherpa-onnx without text to speech (Windows)
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:GITHUB_WORKSPACE 'target/sherpa-onnx-md-no-tts'
+          if (-not (Test-Path (Join-Path $dir 'lib'))) {
+            New-Item -ItemType Directory -Force $dir | Out-Null
+            $archive = Join-Path $env:RUNNER_TEMP 'sherpa-onnx-md-no-tts.tar.bz2'
+            curl.exe -fsSL --retry 3 -o $archive 'https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-v1.13.8-win-x64-static-MD-Release-no-tts-lib.tar.bz2'
+            if ($LASTEXITCODE -ne 0) { throw 'the download failed' }
+            # It has to be the archive that was pinned (see the test job).
+            $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash
+            if ($actual -ne $env:SHERPA_ONNX_MD_SHA256) {
+              Remove-Item -Force $archive
+              throw "the SHA-256 of the sherpa-onnx archive is $actual, not the pinned $env:SHERPA_ONNX_MD_SHA256"
+            }
+            # The Windows tar (bsdtar), not the GNU one of Git for Windows, which reads `D:` as a host name.
+            & "$env:SystemRoot\System32\tar.exe" -xjf $archive -C $dir --strip-components=1
+            if ($LASTEXITCODE -ne 0) { throw 'the unpacking failed' }
+            # The three libraries that the build script of sherpa-onnx-sys names and this build does not have.
+            foreach ($name in 'espeak-ng', 'piper_phonemize', 'ucd') {
+              Copy-Item (Join-Path $dir 'lib/kissfft-float.lib') (Join-Path $dir "lib/$name.lib")
+            }
+          }
+          "SHERPA_ONNX_LIB_DIR=$(Join-Path $dir 'lib')" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Test the media and recording code with this ffmpeg
+        env:
+          DICTATE_FFMPEG: ${{ github.workspace }}/target/ffmpeg/x86_64-pc-windows-msvc/dictate-ffmpeg.exe
+        run: |
+          cargo test -p dictate-services --lib --locked -- media:: record:: --nocapture
