@@ -348,8 +348,9 @@ describe("the license texts that every installer carries", () => {
     expect(lgpl).toMatch(/GNU LESSER GENERAL PUBLIC LICENSE\s+Version 2\.1, February 1999/);
     expect(lgpl.length).toBeGreaterThan(24000);
     expect(lgpl).toContain("END OF TERMS AND CONDITIONS");
-    // The same file as the one in the source of the FFmpeg that is shipped (the hash is of this text, as ffmpeg-9.0.2.tar.xz has it).
-    expect(createHash("sha256").update(lgpl).digest("hex")).toMatch(/^[0-9a-f]{64}$/);
+    // The same file as the one in the source of the FFmpeg that is shipped (ffmpeg-9.0.2.tar.xz has this text as COPYING.LGPLv2.1): one
+    // changed character is another file (the text is read with LF line ends, as the tarball has it).
+    expect(createHash("sha256").update(lgpl).digest("hex")).toBe("246041b6ecf9bc32d718a62c57877c78b5eb397b6467e74ed7ae2626ab189c30");
   });
 
   test("the_notices_carry_the_attribution_and_the_copyright_lines_of_the_models_and_the_libraries", () => {
