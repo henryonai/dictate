@@ -521,4 +521,177 @@ mod tests {
             "a program that ffmpeg started is still running{report}"
         );
     }
+
+    // ---- A hunt for the flake of the test above (temporary): the same drop, in three ways of making the fake's own program, many at once.
+
+    /// Every cmd.exe, ping.exe and conhost.exe on the machine, as `pid<-ppid name`.
+    #[cfg(windows)]
+    fn some_processes() -> Vec<String> {
+        use windows::Win32::Foundation::CloseHandle;
+        use windows::Win32::System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+            TH32CS_SNAPPROCESS,
+        };
+        let mut found = Vec::new();
+        // SAFETY: the snapshot handle is closed before this returns, and the entry is the size that is told.
+        unsafe {
+            let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
+                return found;
+            };
+            let mut entry = PROCESSENTRY32W {
+                dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+                ..Default::default()
+            };
+            let mut more = Process32FirstW(snapshot, &mut entry).is_ok();
+            while more {
+                let length = entry
+                    .szExeFile
+                    .iter()
+                    .position(|c| *c == 0)
+                    .unwrap_or(entry.szExeFile.len());
+                let name = String::from_utf16_lossy(&entry.szExeFile[..length]).to_lowercase();
+                if name == "cmd.exe" || name == "ping.exe" || name == "conhost.exe" {
+                    found.push(format!(
+                        "{}<-{} {name}",
+                        entry.th32ProcessID, entry.th32ParentProcessID
+                    ));
+                }
+                more = Process32NextW(snapshot, &mut entry).is_ok();
+            }
+            let _ = CloseHandle(snapshot);
+        }
+        found
+    }
+
+    /// 1: the test as it is (`start /b` makes the program, and the test goes when the fake says it has started). 2: the same, and the
+    /// test also waits for the program to say that it is running. 3: no `start`: the fake runs the program and waits for it, as a shim does.
+    #[cfg(windows)]
+    fn hunt_one(variant: u8, tag: &str) -> Result<(), String> {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("audio.m4a");
+        let late = dir.path().join("late.txt");
+        let started = dir.path().join("started.txt");
+        let up = dir.path().join("up.txt");
+        let ping = "ping -n 4 127.0.0.1 >nul";
+        let (fake, waits) = match variant {
+            3 => {
+                let own = script(
+                    dir.path(),
+                    "own",
+                    "",
+                    &format!(
+                        "echo started> \"{}\" & echo up> \"{}\" & {ping} & echo late> \"{}\"",
+                        started.display(),
+                        up.display(),
+                        late.display()
+                    ),
+                );
+                let fake = script(
+                    dir.path(),
+                    "fake-ffmpeg",
+                    "",
+                    &format!("cmd /c \"{}\"", own.display()),
+                );
+                (fake, vec![started.clone(), up.clone()])
+            }
+            _ => {
+                let marker = if variant == 2 {
+                    format!("echo up> \"{}\" & ", up.display())
+                } else {
+                    String::new()
+                };
+                let own = script(
+                    dir.path(),
+                    "own",
+                    "",
+                    &format!("{marker}{ping} & echo late> \"{}\"", late.display()),
+                );
+                let fake = script(
+                    dir.path(),
+                    "fake-ffmpeg",
+                    "",
+                    &format!(
+                        "start \"\" /b cmd /c \"{}\" & echo started> \"{}\" & ping -n 60 127.0.0.1 >nul",
+                        own.display(),
+                        started.display()
+                    ),
+                );
+                let waits = if variant == 2 {
+                    vec![started.clone(), up.clone()]
+                } else {
+                    vec![started.clone()]
+                };
+                (fake, waits)
+            }
+        };
+        let t0 = std::time::Instant::now();
+        let sink = start(&out, &fake).map_err(|e| format!("{tag}: {e:?}"))?;
+        let job = sink.job.clone();
+        let describe = |job: &Option<Arc<job::Job>>| {
+            job.as_ref()
+                .map_or_else(|| "no job".to_owned(), |job| job.describe())
+        };
+        let mut timeline: Vec<String> = Vec::new();
+        let mut last = String::new();
+        let give_up = std::time::Instant::now() + Duration::from_secs(20);
+        while !waits.iter().all(|file| file.exists()) {
+            if std::time::Instant::now() > give_up {
+                return Err(format!("{tag}: the fake never started"));
+            }
+            let now = describe(&job);
+            if now != last {
+                timeline.push(format!("+{}ms {now}", t0.elapsed().as_millis()));
+                last = now;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let before = describe(&job);
+        let seen_at = t0.elapsed().as_millis();
+
+        drop(sink);
+        let dropped_at = t0.elapsed().as_millis();
+
+        std::thread::sleep(Duration::from_secs(1));
+        let survivors = some_processes();
+        std::thread::sleep(Duration::from_secs(5));
+        if late.exists() {
+            return Err(format!(
+                "{tag}: LATE. seen at +{seen_at}ms, dropped by +{dropped_at}ms\n  timeline: {timeline:?}\n  before: {before}\n  after: {}\n  1 s after the drop: {survivors:?}",
+                describe(&job)
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn hunt_the_windows_flake() {
+        let mut counts = [[0usize; 2]; 3];
+        let mut failures: Vec<String> = Vec::new();
+        for round in 0..2 {
+            let handles: Vec<_> = (0..30)
+                .map(|i| {
+                    let variant = (i % 3) as u8 + 1;
+                    std::thread::spawn(move || {
+                        (
+                            variant,
+                            hunt_one(variant, &format!("variant {variant} round {round} #{i}")),
+                        )
+                    })
+                })
+                .collect();
+            for handle in handles {
+                let (variant, result) = handle.join().unwrap();
+                counts[variant as usize - 1][0] += 1;
+                if let Err(message) = result {
+                    counts[variant as usize - 1][1] += 1;
+                    failures.push(message);
+                }
+            }
+        }
+        panic!(
+            "HUNT RESULT, [runs, failures] of each variant: {counts:?}\n{}",
+            failures.join("\n")
+        );
+    }
 }
