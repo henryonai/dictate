@@ -174,4 +174,11 @@
     font-size: 11px;
     line-height: 1.35;
   }
+
+  /* A web view before Safari 16.2 (macOS 13.0 has 16.0) does not know color-mix(): the bubble is then solid. */
+  @supports not (color: color-mix(in srgb, red, blue)) {
+    .bubble {
+      background: var(--panel);
+    }
+  }
 </style>

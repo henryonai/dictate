@@ -259,6 +259,7 @@ fn setup(
         state::models_base_dir().ok_or("the system has no folder for the app's data")?;
     let models = state::open_model_dir(&models_base, fallbacks.whisper_models.clone())?;
     let initial = store.get();
+    let theme = initial.theme;
     let auto_write = initial.auto_write;
     let lang = tray::language_for(&initial);
     let hotkey = tray::hotkey_label(&initial);
@@ -273,6 +274,8 @@ fn setup(
     );
     let startup = state.clone();
     app.manage(state);
+    // The title bars of the windows follow the saved theme from the start (the pages ask for it themselves, `current_theme`).
+    commands::set_native_theme(app.handle(), theme);
     // One platform layer for the whole app. What the system says about the permissions is read now, to know whether
     // the person needs the guide in Settings (macOS only: the other systems have no permission to grant).
     let platform = platform::SystemPlatform(platform::current(app.handle()));

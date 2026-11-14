@@ -362,22 +362,51 @@ fn save_settings_inner(
     Ok(get_settings_view(store, keys))
 }
 
-/// `save_settings_inner`, and when the saved theme is not the one the settings had, every window is told (`THEME_EVENT`): the choice shows
-/// in all of them at once, the dictation panels and the recording bar included, which hold no copy of the settings. Nothing is told
-/// when the save failed: what the windows show is what the file says.
+/// What the native chrome of the windows (their title bars) is told for a theme: `None` gives it back to the OS, which is dark when the
+/// OS is; the two others force it, whatever the OS is, as the pages are forced by `data-theme`.
+pub(crate) fn native_theme(theme: Theme) -> Option<tauri::Theme> {
+    match theme {
+        Theme::System => None,
+        Theme::Light => Some(tauri::Theme::Light),
+        Theme::Dark => Some(tauri::Theme::Dark),
+    }
+}
+
+/// Gives the title bars the theme of the settings. It is app-wide, and the runtime posts it to the main thread: no window is given a theme
+/// of its own, which on Windows would overrule this one. Called at the start with the saved theme; `save_settings` gives `theme_chosen` the
+/// same call when the theme changes.
+pub(crate) fn set_native_theme(app: &AppHandle, theme: Theme) {
+    app.set_theme(native_theme(theme));
+}
+
+/// A theme was chosen and saved: the title bars take it (`set_native`) and every window is told (`THEME_EVENT`), so that the pages and
+/// their frames change together and cannot drift apart. The windows of the dictation panels and of the recording bar hold no copy of the
+/// settings: the event is how they know.
+fn theme_chosen<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    theme: Theme,
+    set_native: impl Fn(Option<tauri::Theme>),
+) {
+    set_native(native_theme(theme));
+    if let Err(e) = app.emit(THEME_EVENT, theme) {
+        log::warn!("Could not tell the windows of the new theme: {e}");
+    }
+}
+
+/// `save_settings_inner`, and when the saved theme is not the one the settings had, `theme_chosen`. Nothing is told when the save failed:
+/// what the windows show is what the file says.
 fn save_settings_telling<R: tauri::Runtime>(
     app: &AppHandle<R>,
     store: &SettingsStore,
     keys: &KeyFlags,
     settings: Settings,
     apply_launch_at_login: impl FnMut(bool) -> Result<(), String>,
+    set_native: impl Fn(Option<tauri::Theme>),
 ) -> Result<SettingsView, String> {
     let before = store.get().theme;
     let view = save_settings_inner(store, keys, settings, apply_launch_at_login)?;
     if view.settings.theme != before {
-        if let Err(e) = app.emit(THEME_EVENT, view.settings.theme) {
-            log::warn!("Could not tell the windows of the new theme: {e}");
-        }
+        theme_chosen(app, view.settings.theme, set_native);
     }
     Ok(view)
 }
@@ -636,6 +665,7 @@ pub async fn save_settings(
             state.loaded_keys(),
             settings,
             |enabled| set_launch_at_login(&handle, enabled),
+            |theme| handle.set_theme(theme),
         )
     })
     .await??;
@@ -1168,16 +1198,41 @@ mod tests {
         (app, heard)
     }
 
+    /// What the native title bars were told, in order: a stand-in for `AppHandle::set_theme`, which the mock runtime does not have.
+    type NativeCalls = Arc<Mutex<Vec<Option<tauri::Theme>>>>;
+
+    fn native_theme_recorder() -> (NativeCalls, impl Fn(Option<tauri::Theme>)) {
+        let calls: NativeCalls = Arc::default();
+        let sink = calls.clone();
+        (calls, move |theme| sink.lock().unwrap().push(theme))
+    }
+
+    #[test]
+    fn the_native_title_bars_follow_the_theme_and_the_system_one_is_left_to_the_os() {
+        // `None` gives the windows back to the OS: dark when it is dark. The two others force the chrome, whatever the OS is.
+        assert_eq!(native_theme(Theme::System), None);
+        assert_eq!(native_theme(Theme::Light), Some(tauri::Theme::Light));
+        assert_eq!(native_theme(Theme::Dark), Some(tauri::Theme::Dark));
+    }
+
     #[test]
     fn saving_a_new_theme_tells_every_window() {
         let f = fixture();
         let (app, heard) =
             windows_hearing_the_theme(&["settings", "meetings", "bubble", "card", "recorder"]);
+        let (native, set_native) = native_theme_recorder();
         let mut s = f.store.get();
         s.theme = Theme::Dark;
 
-        let view =
-            save_settings_telling(app.handle(), &f.store, &f.keys, s.clone(), |_| Ok(())).unwrap();
+        let view = save_settings_telling(
+            app.handle(),
+            &f.store,
+            &f.keys,
+            s.clone(),
+            |_| Ok(()),
+            &set_native,
+        )
+        .unwrap();
 
         // Saved, and told as the word that the page's `applyTheme` takes.
         assert_eq!(view.settings.theme, Theme::Dark);
@@ -1186,9 +1241,12 @@ mod tests {
             assert_eq!(*events.lock().unwrap(), [r#""dark""#], "{label}");
         }
 
-        // And back to following the system: that is told too.
+        // The title bars are told in the same breath as the pages: dark.
+        assert_eq!(*native.lock().unwrap(), [Some(tauri::Theme::Dark)]);
+
+        // And back to following the system: that is told too, and the title bars go back to the OS.
         s.theme = Theme::System;
-        save_settings_telling(app.handle(), &f.store, &f.keys, s, |_| Ok(())).unwrap();
+        save_settings_telling(app.handle(), &f.store, &f.keys, s, |_| Ok(()), &set_native).unwrap();
         for (label, events) in &heard {
             assert_eq!(
                 *events.lock().unwrap(),
@@ -1196,20 +1254,23 @@ mod tests {
                 "{label}"
             );
         }
+        assert_eq!(*native.lock().unwrap(), [Some(tauri::Theme::Dark), None]);
     }
 
     #[test]
     fn saving_something_else_leaves_the_windows_as_they_are() {
         let f = fixture();
         let (app, heard) = windows_hearing_the_theme(&["settings", "bubble"]);
+        let (native, set_native) = native_theme_recorder();
         let mut s = f.store.get();
         s.vocabulary = "Loah".into();
 
-        save_settings_telling(app.handle(), &f.store, &f.keys, s, |_| Ok(())).unwrap();
+        save_settings_telling(app.handle(), &f.store, &f.keys, s, |_| Ok(()), &set_native).unwrap();
 
         for (label, events) in &heard {
             assert!(events.lock().unwrap().is_empty(), "{label}");
         }
+        assert!(native.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -1220,13 +1281,22 @@ mod tests {
         std::fs::write(&in_the_way, b"x").unwrap();
         let (store, _) = SettingsStore::open(in_the_way.join("settings.json"));
         let (app, heard) = windows_hearing_the_theme(&["settings"]);
+        let (native, set_native) = native_theme_recorder();
         let mut s = store.get();
         s.theme = Theme::Light;
 
-        save_settings_telling(app.handle(), &store, &KeyFlags::default(), s, |_| Ok(()))
-            .unwrap_err();
+        save_settings_telling(
+            app.handle(),
+            &store,
+            &KeyFlags::default(),
+            s,
+            |_| Ok(()),
+            &set_native,
+        )
+        .unwrap_err();
 
         assert!(heard[0].1.lock().unwrap().is_empty());
+        assert!(native.lock().unwrap().is_empty());
         assert_eq!(store.get().theme, Theme::System);
     }
 

@@ -154,4 +154,10 @@
     border-radius: 14px;
     pointer-events: none;
   }
+  /* A web view before Safari 16.2 (macOS 13.0 has 16.0) does not know color-mix(): the overlay is then solid. */
+  @supports not (color: color-mix(in srgb, red, blue)) {
+    .drop-overlay {
+      background: var(--bg);
+    }
+  }
 </style>

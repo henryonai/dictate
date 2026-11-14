@@ -61,6 +61,15 @@
   --accent-fg: var(--on-accent);
 }
 
+/* A web view before Safari 16.2 (macOS 13.0 has 16.0) does not know color-mix(), and a token that holds it would give no color at all: the
+   tints are then a translucent grey, which is a tint of the ink in light and in dark alike. */
+@supports not (color: color-mix(in srgb, red, blue)) {
+  :root {
+    --wash: rgb(128 128 128 / 0.1);
+    --hover: rgb(128 128 128 / 0.16);
+  }
+}
+
 /* Light: the default, and a page that is forced to light. */
 :root,
 :root[data-theme="light"] {

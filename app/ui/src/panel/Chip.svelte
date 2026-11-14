@@ -146,4 +146,11 @@
     z-index: 10;
     padding-top: 6px;
   }
+
+  /* A web view before Safari 16.2 (macOS 13.0 has 16.0) does not know color-mix(): the chip is then solid. */
+  @supports not (color: color-mix(in srgb, red, blue)) {
+    .chip {
+      background: var(--panel);
+    }
+  }
 </style>

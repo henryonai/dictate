@@ -309,6 +309,85 @@ describe("the theme in every window", () => {
   });
 });
 
+// ---- A web view without color-mix()
+
+describe("a web view without color-mix()", () => {
+  /** What the fallbacks are written under: the web views before Safari 16.2 (macOS 13.0 has 16.0) do not know `color-mix()`. */
+  const WITHOUT = "not (color: color-mix(in srgb, red, blue))";
+
+  /**
+   * The `color-mix()` of a style sheet that has no fallback. A declaration with `var()` in it is not dropped at parse time by a browser that
+   * does not know the function (it fails when the value is used, and then the property has no value), so the earlier declaration of the
+   * rule is no fallback: the fallback is a rule of the same selector under `@supports not (...)`, which sets the same property
+   * to a value without `color-mix()`.
+   */
+  function withoutFallback(css: string): string[] {
+    const rules = parseCss(css);
+    const missing: string[] = [];
+    for (const rule of rules) {
+      if (rule.supports !== null) continue;
+      for (const [property, value] of Object.entries(rule.declarations)) {
+        if (!value.includes("color-mix(")) continue;
+        for (const selector of rule.selectors) {
+          const fallback = rules.some(
+            (other) =>
+              other.supports === WITHOUT &&
+              other.media === rule.media &&
+              other.selectors.includes(selector) &&
+              other.declarations[property] !== undefined &&
+              !other.declarations[property].includes("color-mix("),
+          );
+          if (!fallback) missing.push(`${selector} { ${property} }`);
+        }
+      }
+    }
+    return missing;
+  }
+
+  /** Every style sheet and every component of the app, as the CSS that it writes. */
+  function sheets(): [string, string][] {
+    const walk = (folder: string): string[] =>
+      readdirSync(join(here, folder), { withFileTypes: true }).flatMap((entry) => {
+        const path = folder === "." ? entry.name : `${folder}/${entry.name}`;
+        return entry.isDirectory() ? walk(path) : /\.(svelte|css)$/.test(entry.name) ? [path] : [];
+      });
+    return walk(".").map((file) => [file, file.endsWith(".css") ? read(`app/ui/src/${file}`) : styleOf(read(`app/ui/src/${file}`))]);
+  }
+
+  test("the_check_finds_a_color_mix_that_has_no_fallback_and_passes_the_ones_that_have_it", () => {
+    const mix = "color-mix(in srgb, var(--panel) 96%, transparent)";
+    expect(withoutFallback(`.a { background: ${mix}; }`)).toEqual([".a { background }"]);
+    // An earlier declaration is no fallback, for the reason above.
+    expect(withoutFallback(`.a { background: var(--panel); background: ${mix}; }`)).toEqual([".a { background }"]);
+    expect(withoutFallback(`.a { background: ${mix}; } @supports ${WITHOUT} { .a { background: var(--panel); } }`)).toEqual([]);
+    // Another property, another selector, or a fallback that is a mix itself, is none.
+    expect(withoutFallback(`.a { background: ${mix}; } @supports ${WITHOUT} { .a { color: red; } }`)).toEqual([".a { background }"]);
+    expect(withoutFallback(`.a { background: ${mix}; } @supports ${WITHOUT} { .b { background: red; } }`)).toEqual([".a { background }"]);
+    expect(withoutFallback(`.a { background: ${mix}; } @supports ${WITHOUT} { .a { background: ${mix}; } }`)).toEqual([".a { background }"]);
+    // A token of a theme is a property too.
+    expect(withoutFallback(`:root { --hover: ${mix}; }`)).toEqual([":root { --hover }"]);
+  });
+
+  test("every_color_mix_in_the_app_has_an_at_supports_fallback_in_the_same_file", () => {
+    const all = sheets();
+    // The ones that use it: the tokens of the tints, the floating panels and the drop overlay of the meetings window.
+    const using = all.filter(([, css]) => css.includes("color-mix(")).map(([file]) => file);
+    expect(using).toEqual(expect.arrayContaining(["tokens.css", "panel/Bubble.svelte", "panel/Chip.svelte", "panel/Pill.svelte", "meetings/MeetingsApp.svelte"]));
+    for (const [file, css] of all) expect(withoutFallback(css), file).toEqual([]);
+  });
+
+  test("the_fallback_of_a_floating_panel_is_the_solid_panel_color", () => {
+    const solid = (file: string, selector: string) => {
+      const fallback = parseCss(styleOf(read(`app/ui/src/${file}`))).filter((rule) => rule.supports === WITHOUT && rule.selectors.includes(selector));
+      return Object.assign({}, ...fallback.map((rule) => rule.declarations)).background;
+    };
+    expect(solid("panel/Bubble.svelte", ".bubble")).toBe("var(--panel)");
+    expect(solid("panel/Chip.svelte", ".chip")).toBe("var(--panel)");
+    for (const selector of [".live", ".problem", ".caption"]) expect(solid("panel/Pill.svelte", selector), selector).toBe("var(--panel)");
+    expect(solid("meetings/MeetingsApp.svelte", ".drop-overlay")).toBe("var(--bg)");
+  });
+});
+
 // ---- The three weights of a button
 
 describe("the three weights of a button", () => {
@@ -515,6 +594,14 @@ describe("the dictation panels and the recording bar", () => {
     expect(declarationsOf(component("panel/Bubble.svelte"), ".bubble").background).toBe(FLOATING_PANEL);
     expect(declarationsOf(component("panel/Chip.svelte"), ".chip").background).toBe(FLOATING_PANEL);
     expect(declarationsOf(component("panel/Bubble.svelte"), ".bubble").border).toBe("1px solid var(--line)");
+  });
+
+  test("every_box_of_the_pill_has_the_ring_and_the_shadow_so_it_has_a_shape_on_a_light_desktop", () => {
+    // A light box on a light desktop is seen by its edge: 1px of the line color, and the shadow of the floating things.
+    const pill = component("panel/Pill.svelte");
+    for (const selector of [".live", ".pill", ".problem", ".caption"]) {
+      expect(declarationsOf(pill, selector)["box-shadow"], selector).toBe("0 0 0 1px var(--line), var(--shadow-pop)");
+    }
   });
 
   test("the_card_and_its_menus_are_surfaces_of_the_theme", () => {

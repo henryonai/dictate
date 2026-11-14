@@ -2,12 +2,14 @@
 // a component (vitest leaves CSS out), and it has no `var()`: what a test can say about a style is what the source says, so the source is
 // read. Not part of the app: no page imports it.
 //
-// It understands what the project writes: rules, `@media`, `@font-face`, and comments. A block that has blocks inside it, other than
+// It understands what the project writes: rules, `@media`, `@supports`, `@font-face`, and comments. A block that has blocks inside it, other than
 // `@media`, (`@keyframes`) is skipped.
 
 export interface CssRule {
   /** The condition of the `@media` that the rule is in, if it is in one. */
   media: string | null;
+  /** The condition of the `@supports` that the rule is in (`not (color: color-mix(in srgb, red, blue))`), if it is in one. */
+  supports: string | null;
   /** The selectors of the rule (the comma list, split where the commas are not inside brackets), or `@font-face`. */
   selectors: string[];
   /** The declarations, in order; the value is as written, trimmed. A property that is declared twice keeps the last value. */
@@ -53,7 +55,7 @@ export function parseCss(source: string): CssRule[] {
   const text = source.replace(/\/\*[\s\S]*?\*\//g, "");
   const rules: CssRule[] = [];
 
-  function walk(from: number, to: number, media: string | null) {
+  function walk(from: number, to: number, media: string | null, supports: string | null) {
     let at = from;
     while (at < to) {
       const open = text.indexOf("{", at);
@@ -61,20 +63,22 @@ export function parseCss(source: string): CssRule[] {
       const prelude = text.slice(at, open).trim();
       const end = skipBlock(text, open);
       if (/^@media\b/.test(prelude)) {
-        walk(open + 1, end - 1, prelude.replace(/^@media\s*/, ""));
+        walk(open + 1, end - 1, prelude.replace(/^@media\s*/, ""), supports);
+      } else if (/^@supports\b/.test(prelude)) {
+        walk(open + 1, end - 1, media, prelude.replace(/^@supports\s*/, ""));
       } else if (!prelude.startsWith("@") || prelude === "@font-face") {
         const declarations: Record<string, string> = {};
         for (const declaration of splitTop(text.slice(open + 1, end - 1), ";")) {
           const colon = declaration.indexOf(":");
           if (colon > 0) declarations[declaration.slice(0, colon).trim()] = declaration.slice(colon + 1).trim();
         }
-        rules.push({ media, selectors: splitTop(prelude, ","), declarations });
+        rules.push({ media, supports, selectors: splitTop(prelude, ","), declarations });
       }
       at = end;
     }
   }
 
-  walk(0, text.length, null);
+  walk(0, text.length, null, null);
   return rules;
 }
 
@@ -84,13 +88,14 @@ export function styleOf(component: string): string {
 }
 
 /**
- * The declarations of every rule that has the selector in its list (and is in that `@media`, or in none), merged in the order of the
+ * The declarations of every rule that has the selector in its list (and is in that `@media`, or in none, and in no `@supports`), merged in the order of the
  * rules: what the selector gets, by itself, when it is written as it is here. An empty object when no rule has it.
  */
 export function declarationsOf(rules: CssRule[], selector: string, media: string | null = null): Record<string, string> {
   const merged: Record<string, string> = {};
   for (const rule of rules) {
-    if (rule.media === media && rule.selectors.includes(selector)) Object.assign(merged, rule.declarations);
+    // A rule under `@supports` is a fallback for a web view that lacks something: not what the selector gets by itself.
+    if (rule.media === media && rule.supports === null && rule.selectors.includes(selector)) Object.assign(merged, rule.declarations);
   }
   return merged;
 }

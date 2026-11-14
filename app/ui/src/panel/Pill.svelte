@@ -160,6 +160,7 @@
     padding: 6px 12px;
     border-radius: 12px;
     background: color-mix(in srgb, var(--panel) 94%, transparent);
+    box-shadow: 0 0 0 1px var(--line), var(--shadow-pop);
     color: var(--warn);
     font-size: 12px;
     line-height: 1.35;
@@ -171,7 +172,17 @@
     padding: 3px 10px;
     border-radius: 999px;
     background: color-mix(in srgb, var(--panel) 85%, transparent);
+    box-shadow: 0 0 0 1px var(--line), var(--shadow-pop);
     font-size: 12px;
     white-space: nowrap;
+  }
+
+  /* A web view before Safari 16.2 (macOS 13.0 has 16.0) does not know color-mix(): the boxes are then solid. */
+  @supports not (color: color-mix(in srgb, red, blue)) {
+    .live,
+    .problem,
+    .caption {
+      background: var(--panel);
+    }
   }
 </style>
