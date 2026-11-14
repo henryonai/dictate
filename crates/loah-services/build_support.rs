@@ -23,7 +23,7 @@ pub fn missing_lib_dir_message(arch: &str, lib_dir: Option<&OsStr>) -> Option<St
         return None;
     }
     let why = "SHERPA_ONNX_LIB_DIR is not set. On Linux the sherpa-onnx library is a shared one, and the one that its build script \
-               would download has the speech synthesis of sherpa-onnx in it, with espeak-ng (GPL-3.0), which Dictate has no use \
+               would download has the speech synthesis of sherpa-onnx in it, with espeak-ng (GPL-3.0), which Loah has no use \
                for and must not ship. So the library is taken from a folder that you name.";
     Some(match arch {
         "x86_64" => format!(

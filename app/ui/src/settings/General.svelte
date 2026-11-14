@@ -20,8 +20,8 @@
   // Where the desktop owns the shortcut, or offers none, changing it here would do nothing.
   const hotkeyChangeable = $derived(hotkey?.backend !== "portal" && hotkey?.error !== "hotkey.wayland_unavailable");
 
-  // THIRD_PARTY_NOTICES.md of the repository: Dictate's licenses, and those of what it includes (FFmpeg and the others).
-  const NOTICES_URL = "https://github.com/henryonai/dictate/blob/main/THIRD_PARTY_NOTICES.md";
+  // THIRD_PARTY_NOTICES.md of the repository: Loah's licenses, and those of what it includes (FFmpeg and the others).
+  const NOTICES_URL = "https://github.com/henryonai/loah/blob/main/THIRD_PARTY_NOTICES.md";
 
   const UI_LANGUAGES: UiLanguage[] = ["system", "en", "vi"];
   const DICTATION_LANGUAGES = ["en-US", "vi-VN", "ja-JP", "zh-CN", "ko-KR", "fr-FR", "de-DE", "es-ES"];

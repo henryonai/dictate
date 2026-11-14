@@ -37,6 +37,10 @@ fn context<R: tauri::Runtime>() -> tauri::Context<R> {
     tauri::generate_context!()
 }
 
+/// The name of the app as a window, the tray and the notifications show it. It is the `productName` of tauri.conf.json (a test holds the two
+/// together): that one is what the installers, `Loah.app` and the bundle are called, and a window made in the code is titled like it.
+const APP_NAME: &str = "Loah";
+
 /// How long quitting waits for downloads to write down what they have, so that they can be resumed.
 const QUIT_WAIT: Duration = Duration::from_secs(3);
 
@@ -171,7 +175,7 @@ fn main() {
             panel::panel_resized,
         ])
         .build(context())
-        .expect("the Dictate app could not start");
+        .expect("the Loah app could not start");
 
     app.run(|app, event| match event {
         // Opening the app again from Finder, Launchpad or Spotlight reaches the running one as this event, not as a
@@ -782,6 +786,37 @@ mod tests {
     }
 
     #[test]
+    fn the_app_is_called_loah_in_its_configuration_and_in_the_code() {
+        // The product name is the name of the app in the installers, of `Loah.app` and of the folder of the Windows install; the identifier is
+        // what the system keeps the permissions and the data of the Windows uninstaller under; the settings window is the first one the
+        // user sees. The windows that the code makes, the tray and its version line say the same name: `APP_NAME`.
+        let config: Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        assert_eq!(crate::APP_NAME, "Loah");
+        assert_eq!(config["productName"], json!(crate::APP_NAME));
+        assert_eq!(config["identifier"], json!("io.github.henryonai.loah"));
+        assert_eq!(config["app"]["windows"][0]["title"], json!("Loah"));
+        for field in ["shortDescription", "longDescription"] {
+            let text = config["bundle"][field].as_str().unwrap();
+            assert!(!text.contains("Dictate"), "{field}: {text}");
+        }
+        assert!(config["bundle"]["longDescription"]
+            .as_str()
+            .unwrap()
+            .starts_with("Loah writes what you say"));
+    }
+
+    #[test]
+    fn the_deb_takes_the_place_of_dictate_and_answers_to_its_name() {
+        // Installing the package `loah` removes the package `dictate` of 2.0.0 (Replaces and Conflicts), and what asks for `dictate` is
+        // satisfied (Provides). The two commands of the old name are in the release overlay.
+        let config: Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let deb = &config["bundle"]["linux"]["deb"];
+        for field in ["conflicts", "replaces", "provides"] {
+            assert_eq!(deb[field], json!(["dictate"]), "{field}");
+        }
+    }
+
+    #[test]
     fn the_meetings_window_is_not_made_at_start_but_by_the_tray() {
         // The window is made when it is asked for (`meetings::window::show`), so it is not in the configuration: its label is
         // only named by the capability.
@@ -886,7 +921,7 @@ mod tests {
         for info in as_checked_out(include_str!("../Info.plist")) {
             assert!(
                 plist_in_one_line(&info).contains(
-                    "<key>NSMicrophoneUsageDescription</key><string>Dictate records your voice to turn it into text.</string>"
+                    "<key>NSMicrophoneUsageDescription</key><string>Loah records your voice to turn it into text.</string>"
                 ),
                 "{info:?}"
             );
@@ -913,7 +948,7 @@ mod tests {
         for info in as_checked_out(include_str!("../Info.plist")) {
             assert!(
                 plist_in_one_line(&info).contains(
-                    "<key>NSScreenCaptureUsageDescription</key><string>Dictate records your screen and the sound of your computer for meetings you choose to record.</string>"
+                    "<key>NSScreenCaptureUsageDescription</key><string>Loah records your screen and the sound of your computer for meetings you choose to record.</string>"
                 ),
                 "{info:?}"
             );

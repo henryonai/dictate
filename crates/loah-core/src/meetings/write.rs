@@ -28,7 +28,7 @@ const PARAGRAPH_SECONDS: f64 = 60.0;
 const EXPORT_NAME_LENGTH: usize = 120;
 
 /// What `export_file_name` calls a title with nothing usable in it.
-const EXPORT_NAME_FALLBACK: &str = "Dictate";
+const EXPORT_NAME_FALLBACK: &str = "Loah";
 
 /// Writes `bytes` to a temporary file next to `path`, then renames it over `path`: a reader sees the old
 /// file or the new one, whole, whatever happens in between. The folder of `path` must exist.
@@ -237,7 +237,7 @@ pub fn export_markdown(title: &str, summary: Option<&str>, transcript: Option<&s
 
 /// A file name for exporting a recording: the title with each character a file system rejects (`/ \ : * ? " < > |`
 /// and control characters) turned into `-`, without dots or spaces at either end, at most `EXPORT_NAME_LENGTH`
-/// characters, plus ".md". "Dictate" stands in for a title with nothing left.
+/// characters, plus ".md". "Loah" stands in for a title with nothing left.
 pub fn export_file_name(title: &str) -> String {
     let safe: String = title
         .chars()
@@ -750,9 +750,9 @@ mod tests {
     fn export_file_name_is_safe() {
         assert_eq!(export_file_name("a/b: c?"), "a-b- c-.md");
         assert_eq!(export_file_name("\"...\""), "-...-.md");
-        assert_eq!(export_file_name("..."), "Dictate.md");
-        assert_eq!(export_file_name("  . .  "), "Dictate.md");
-        assert_eq!(export_file_name(""), "Dictate.md");
+        assert_eq!(export_file_name("..."), "Loah.md");
+        assert_eq!(export_file_name("  . .  "), "Loah.md");
+        assert_eq!(export_file_name(""), "Loah.md");
         assert_eq!(export_file_name(" ..Họp kế hoạch.. "), "Họp kế hoạch.md");
         assert_eq!(
             export_file_name(r#"a/b\c:d*e?f"g<h>i|j"#),

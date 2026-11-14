@@ -85,14 +85,14 @@ impl From<reqwest::Error> for ApiError {
     }
 }
 
-/// A client for one burst of calls: rustls, 10 s to connect, and a `Dictate/<version>` user agent. There is no
+/// A client for one burst of calls: rustls, 10 s to connect, and a `Loah/<version>` user agent. There is no
 /// overall timeout here; each call sets its own.
 ///
 /// Redirects are not followed: reqwest would pass headers such as `x-api-key` on to the host a redirect names.
 /// A 3xx reply comes back as a `Status` error instead.
 pub fn client() -> Result<reqwest::Client, ApiError> {
     reqwest::Client::builder()
-        .user_agent(concat!("Dictate/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("Loah/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(Duration::from_secs(10))
         .redirect(reqwest::redirect::Policy::none())
         .build()
@@ -302,7 +302,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn client_sends_a_dictate_user_agent() {
+    async fn client_sends_a_loah_user_agent() {
         let server = MockServer::start().await;
         Mock::given(any())
             .respond_with(ResponseTemplate::new(200))
@@ -318,7 +318,7 @@ mod tests {
             .unwrap()
             .to_str()
             .unwrap();
-        assert_eq!(agent, format!("Dictate/{}", env!("CARGO_PKG_VERSION")));
+        assert_eq!(agent, format!("Loah/{}", env!("CARGO_PKG_VERSION")));
     }
 
     #[tokio::test]

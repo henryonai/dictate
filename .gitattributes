@@ -3,3 +3,6 @@ tests/golden/** -text
 crates/loah-services/tests/fixtures/media/** binary
 # Shell scripts run in bash on every system, Git Bash on Windows included, where a CR at the end of a line is part of the command.
 *.sh text eol=lf
+# The two scripts of the Debian package that keep the commands of Dictate 2.0.0 working: no `.sh`, and a CR after `sh` would break the shebang.
+app/src-tauri/linux/dictate text eol=lf
+app/src-tauri/linux/dictate-mcp text eol=lf

@@ -4,8 +4,8 @@
 <plist version="1.0">
 <dict>
   <key>NSMicrophoneUsageDescription</key>
-  <string>Dictate records your voice to turn it into text.</string>
+  <string>Loah records your voice to turn it into text.</string>
   <key>NSScreenCaptureUsageDescription</key>
-  <string>Dictate records your screen and the sound of your computer for meetings you choose to record.</string>
+  <string>Loah records your screen and the sound of your computer for meetings you choose to record.</string>
 </dict>
 </plist>

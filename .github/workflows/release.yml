@@ -1,6 +1,6 @@
 name: Release build
 
-# Builds the installers of Dictate, checks each one, and attaches it to the release that release-please has just made. Called by
+# Builds the installers of Loah, checks each one, and attaches it to the release that release-please has just made. Called by
 # release-please.yml with the tag of the release (a tag pushed with the workflow token starts no other workflow, so the build is called from
 # there), or started by hand with a tag, or with none:
 #
@@ -303,7 +303,7 @@ jobs:
             echo "expected one $BUNDLES installer in target/${{ matrix.target }}/release/bundle, found ${#files[@]}: ${files[*]:-none}"
             exit 1
           fi
-          # Dictate_<version>_<architecture>...: the version is Cargo.toml's, which release-please sets in the release PR. With a tag it has to be
+          # Loah_<version>_<architecture>...: the version is Cargo.toml's, which release-please sets in the release PR. With a tag it has to be
           # the version of the tag, or the release would get an installer with another number in its name.
           version="$(basename "${files[0]}" | cut -d_ -f2)"
           if [ -n "$TAG" ] && [ "$version" != "${TAG#v}" ]; then

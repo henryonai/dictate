@@ -1,4 +1,4 @@
-//! The recordings in the Dictate library: a folder per recording, written by the app and read by the MCP server.
+//! The recordings in the Loah library: a folder per recording, written by the app and read by the MCP server.
 
 use std::collections::BTreeSet;
 use std::ffi::OsStr;

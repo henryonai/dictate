@@ -70,7 +70,7 @@ fn ffmpeg(buildconf: &str) -> String {
 }
 
 const SHERPA_LIBRARIES: [&str; 2] = ["libsherpa-onnx-c-api.so", "libonnxruntime.so"];
-/// The license files that every installer carries (the release overlay puts them there): the MIT license of Dictate, the notices and the
+/// The license files that every installer carries (the release overlay puts them there): the MIT license of Loah, the notices and the
 /// license texts of what is inside, and the LGPL text that FFmpeg and glibc ask for.
 const LICENSE_FILES: [&str; 4] = [
     "LICENSE",
@@ -92,26 +92,36 @@ const VC_DLLS: [&str; 4] = [
     "msvcp140_1.dll",
 ];
 
-/// What an unpacked `.deb` has: `usr/bin/loah` and its two sidecars, the two libraries, and the `DEBIAN/control` that `dpkg-deb -R` writes.
+/// The three fields of `DEBIAN/control` that make the package take the place of the old `dictate` package.
+const REPLACES_DICTATE: &str = "Provides: dictate\nConflicts: dictate\nReplaces: dictate\n";
+
+/// What an unpacked `.deb` has: `usr/bin/loah` and its two sidecars, the two wrappers that keep the old names of the programs working, the
+/// two libraries, and the `DEBIAN/control` that `dpkg-deb -R` writes.
 fn deb(root: &Path) {
     write_program(&root.join("usr/bin/loah"), "#!/bin/sh\necho loah\n");
     write_program(&root.join("usr/bin/loah-mcp"), "#!/bin/sh\necho loah-mcp\n");
     write_program(&root.join("usr/bin/loah-ffmpeg"), &ffmpeg(PLAIN_BUILDCONF));
+    // What the MCP clients and the shortcuts that were set up for Dictate 2.0.0 run: two lines that hand over to the new programs.
+    write_program(
+        &root.join("usr/bin/dictate"),
+        "#!/bin/sh\nexec /usr/bin/loah \"$@\"\n",
+    );
+    write_program(
+        &root.join("usr/bin/dictate-mcp"),
+        "#!/bin/sh\nexec /usr/bin/loah-mcp \"$@\"\n",
+    );
     for library in SHERPA_LIBRARIES {
-        write(
-            &root.join("usr/lib/dictate").join(library),
-            "ELF stand-in\n",
-        );
+        write(&root.join("usr/lib/loah").join(library), "ELF stand-in\n");
     }
     // The documentation folder of the package: the license files, and the `copyright` file that the tools of Debian read.
-    licenses(&root.join("usr/share/doc/dictate"));
+    licenses(&root.join("usr/share/doc/loah"));
     write(
-        &root.join("usr/share/doc/dictate/copyright"),
-        "Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/\nUpstream-Name: Dictate\n",
+        &root.join("usr/share/doc/loah/copyright"),
+        "Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/\nUpstream-Name: Loah\n",
     );
     write(
         &root.join("DEBIAN/control"),
-        "Package: dictate\nVersion: 2.0.0\nArchitecture: amd64\nDepends: libwebkit2gtk-4.1-0, libgtk-3-0, libasound2t64 | libasound2, libpipewire-0.3-0t64 | libpipewire-0.3-0\nRecommends: pulseaudio-utils\nDescription: Dictation and meeting notes\n",
+        &format!("Package: loah\nVersion: 2.1.0\nArchitecture: amd64\nDepends: libwebkit2gtk-4.1-0, libgtk-3-0, libasound2t64 | libasound2, libpipewire-0.3-0t64 | libpipewire-0.3-0\nRecommends: pulseaudio-utils\n{REPLACES_DICTATE}Description: Dictation and meeting notes\n"),
     );
 }
 
@@ -133,13 +143,13 @@ fn windows(root: &Path) {
 
 /// What the volume of the `.dmg` has: the app (with its sidecars in `Contents/MacOS`) and the link to /Applications.
 fn mac(root: &Path) {
-    let app = root.join("Dictate.app/Contents");
+    let app = root.join("Loah.app/Contents");
     write_program(&app.join("MacOS/loah"), "#!/bin/sh\necho loah\n");
     write_program(&app.join("MacOS/loah-mcp"), "#!/bin/sh\necho loah-mcp\n");
     write_program(&app.join("MacOS/loah-ffmpeg"), &ffmpeg(PLAIN_BUILDCONF));
     write(
         &app.join("Info.plist"),
-        "CFBundleExecutable=loah\nNSMicrophoneUsageDescription=Dictate records your voice to turn it into text.\nNSScreenCaptureUsageDescription=Dictate records your screen.\nLSMinimumSystemVersion=13.0\n",
+        "CFBundleExecutable=loah\nNSMicrophoneUsageDescription=Loah records your voice to turn it into text.\nNSScreenCaptureUsageDescription=Loah records your screen.\nLSMinimumSystemVersion=13.0\n",
     );
     licenses(&app.join("Resources/Licenses"));
     std::os::unix::fs::symlink("/Applications", root.join("Applications")).unwrap();
@@ -153,7 +163,7 @@ const RUNPATH_OF_THE_PACKAGE: &str = "Dynamic section at offset 0x4a1b20 contain
   Tag        Type                         Name/Value
  0x0000000000000001 (NEEDED)             Shared library: [libsherpa-onnx-c-api.so]
  0x0000000000000001 (NEEDED)             Shared library: [libpipewire-0.3.so.0]
- 0x000000000000001d (RUNPATH)            Library runpath: [$ORIGIN/../lib/dictate]";
+ 0x000000000000001d (RUNPATH)            Library runpath: [$ORIGIN/../lib/loah]";
 
 /// The folder with the stand-ins, put first in the PATH of the script, and what they are told through the environment.
 struct Tools {
@@ -342,7 +352,7 @@ fn it_lists_what_the_installer_has_with_the_size_of_each_file_so_that_the_log_of
     for file in [
         "./usr/bin/loah",
         "./usr/bin/loah-ffmpeg",
-        "./usr/lib/dictate/libonnxruntime.so",
+        "./usr/lib/loah/libonnxruntime.so",
     ] {
         assert!(
             listing.lines().any(|line| line.trim_end().ends_with(file)),
@@ -405,7 +415,7 @@ fn a_gpl_ffmpeg_fails() {
 fn espeak_in_a_shared_library_fails_and_names_the_library() {
     let root = tree(deb);
     write(
-        &root.path().join("usr/lib/dictate/libsherpa-onnx-c-api.so"),
+        &root.path().join("usr/lib/loah/libsherpa-onnx-c-api.so"),
         "ELF stand-in with espeak_ng_Initialize in it\n",
     );
 
@@ -432,9 +442,9 @@ fn espeak_in_the_program_or_a_sidecar_fails() {
 fn espeak_in_a_library_of_any_kind_fails() {
     // The check covers every .so, .dylib and .dll that the installer has, wherever it is.
     for library in [
-        "usr/lib/dictate/libother.so.1",
+        "usr/lib/loah/libother.so.1",
         "usr/lib/elsewhere/libother.dylib",
-        "usr/share/dictate/other.dll",
+        "usr/share/loah/other.dll",
     ] {
         let root = tree(deb);
         write(&root.path().join(library), "espeak_ng_Initialize\n");
@@ -456,29 +466,26 @@ fn a_deb_that_has_usr_bin_ffmpeg_fails() {
 fn a_deb_without_one_of_the_sherpa_libraries_fails_and_says_which() {
     for library in SHERPA_LIBRARIES {
         let root = tree(deb);
-        fs::remove_file(root.path().join("usr/lib/dictate").join(library)).unwrap();
+        fs::remove_file(root.path().join("usr/lib/loah").join(library)).unwrap();
 
-        assert_fails(
-            &Tools::new().run(root.path()),
-            &["/usr/lib/dictate", library],
-        );
+        assert_fails(&Tools::new().run(root.path()), &["/usr/lib/loah", library]);
     }
 }
 
 #[test]
 fn a_deb_whose_program_has_no_run_path_to_the_libraries_fails() {
-    // The run path that finds the libraries in /usr/lib/dictate from /usr/bin/loah. The ones of a build in the source tree
+    // The run path that finds the libraries in /usr/lib/loah from /usr/bin/loah. The ones of a build in the source tree
     // ($ORIGIN, $ORIGIN/..) do not: without it the installed app does not start.
     for dynamic in [
         " 0x000000000000001d (RUNPATH)            Library runpath: [$ORIGIN:$ORIGIN/..]",
-        " 0x000000000000000f (RPATH)              Library rpath: [$ORIGIN/../lib/dictate-old]",
+        " 0x000000000000000f (RPATH)              Library rpath: [$ORIGIN/../lib/loah-old]",
         " 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]",
     ] {
         let root = tree(deb);
 
         let output = Tools::new().with("FAKE_READELF", dynamic).run(root.path());
 
-        assert_fails(&output, &["$ORIGIN/../lib/dictate"]);
+        assert_fails(&output, &["$ORIGIN/../lib/loah"]);
     }
 }
 
@@ -488,12 +495,12 @@ fn a_deb_whose_program_still_has_the_run_paths_of_a_build_in_the_source_tree_fai
     for extra in ["$ORIGIN", "$ORIGIN/..", "$ORIGIN/../../../..", "/opt/other"] {
         let root = tree(deb);
         let dynamic = format!(
-            " 0x000000000000001d (RUNPATH)            Library runpath: [$ORIGIN/../lib/dictate:{extra}]"
+            " 0x000000000000001d (RUNPATH)            Library runpath: [$ORIGIN/../lib/loah:{extra}]"
         );
 
         let output = Tools::new().with("FAKE_READELF", &dynamic).run(root.path());
 
-        assert_fails(&output, &[extra, "only $ORIGIN/../lib/dictate"]);
+        assert_fails(&output, &[extra, "only $ORIGIN/../lib/loah"]);
     }
 }
 
@@ -504,7 +511,7 @@ fn a_deb_with_the_run_path_as_an_old_style_rpath_passes() {
     let output = Tools::new()
         .with(
             "FAKE_READELF",
-            " 0x000000000000000f (RPATH)              Library rpath: [$ORIGIN/../lib/dictate]",
+            " 0x000000000000000f (RPATH)              Library rpath: [$ORIGIN/../lib/loah]",
         )
         .run(root.path());
 
@@ -516,7 +523,7 @@ fn a_deb_that_does_not_depend_on_pipewire_fails() {
     let root = tree(deb);
     write(
         &root.path().join("DEBIAN/control"),
-        "Package: dictate\nDepends: libwebkit2gtk-4.1-0, libgtk-3-0, libasound2t64 | libasound2\n",
+        &format!("Package: loah\nDepends: libwebkit2gtk-4.1-0, libgtk-3-0, libasound2t64 | libasound2\n{REPLACES_DICTATE}"),
     );
 
     assert_fails(&Tools::new().run(root.path()), &["libpipewire"]);
@@ -528,7 +535,7 @@ fn a_dependency_on_pipewire_on_a_second_line_of_the_field_counts() {
     let root = tree(deb);
     write(
         &root.path().join("DEBIAN/control"),
-        "Package: dictate\nDepends: libwebkit2gtk-4.1-0,\n libgtk-3-0,\n libpipewire-0.3-0t64 | libpipewire-0.3-0\nRecommends: pulseaudio-utils\n",
+        &format!("Package: loah\nDepends: libwebkit2gtk-4.1-0,\n libgtk-3-0,\n libpipewire-0.3-0t64 | libpipewire-0.3-0\nRecommends: pulseaudio-utils\n{REPLACES_DICTATE}"),
     );
 
     assert_passes(&Tools::new().run(root.path()));
@@ -539,7 +546,9 @@ fn pipewire_in_recommends_is_not_a_dependency() {
     let root = tree(deb);
     write(
         &root.path().join("DEBIAN/control"),
-        "Package: dictate\nDepends: libgtk-3-0\nRecommends: libpipewire-0.3-0\n",
+        &format!(
+            "Package: loah\nDepends: libgtk-3-0\nRecommends: libpipewire-0.3-0\n{REPLACES_DICTATE}"
+        ),
     );
 
     assert_fails(&Tools::new().run(root.path()), &["libpipewire"]);
@@ -549,7 +558,7 @@ fn pipewire_in_recommends_is_not_a_dependency() {
 fn a_deb_file_is_unpacked_with_dpkg_deb_and_its_tree_is_checked() {
     let root = tree(deb);
     let work = tempfile::tempdir().unwrap();
-    let package = work.path().join("Dictate_2.0.0_amd64.deb");
+    let package = work.path().join("Loah_2.1.0_amd64.deb");
     fs::write(&package, "!<arch>\n").unwrap();
     let tools = Tools::new().unpacking(root.path());
 
@@ -559,6 +568,88 @@ fn a_deb_file_is_unpacked_with_dpkg_deb_and_its_tree_is_checked() {
     // And a package whose tree is not complete fails the same way when it is a file.
     fs::remove_file(root.path().join("usr/bin/loah-ffmpeg")).unwrap();
     assert_fails(&tools.run(&package), &["loah-ffmpeg"]);
+}
+
+// ---- the names of Dictate 2.0.0 that the package keeps working -----------------------------------------------------------------
+
+#[test]
+fn a_deb_without_the_dictate_mcp_wrapper_fails() {
+    // An MCP client that was set up for Dictate runs /usr/bin/dictate-mcp: without the wrapper it finds nothing after the upgrade.
+    let root = tree(deb);
+    fs::remove_file(root.path().join("usr/bin/dictate-mcp")).unwrap();
+
+    assert_fails(&Tools::new().run(root.path()), &["/usr/bin/dictate-mcp"]);
+}
+
+#[test]
+fn a_deb_without_the_dictate_wrapper_fails() {
+    let root = tree(deb);
+    fs::remove_file(root.path().join("usr/bin/dictate")).unwrap();
+
+    assert_fails(&Tools::new().run(root.path()), &["/usr/bin/dictate"]);
+}
+
+#[test]
+fn a_wrapper_that_is_not_executable_fails() {
+    // The mode of a file is what the Tauri bundler keeps of the file in the repository: a wrapper that lost it is a command that cannot run.
+    for wrapper in ["dictate", "dictate-mcp"] {
+        let root = tree(deb);
+        let path = root.path().join("usr/bin").join(wrapper);
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        assert_fails(
+            &Tools::new().run(root.path()),
+            &[&format!("/usr/bin/{wrapper}"), "not executable"],
+        );
+    }
+}
+
+#[test]
+fn a_wrapper_that_hands_over_to_the_wrong_program_fails() {
+    // dictate-mcp has to run loah-mcp: a copy-and-paste that ran `loah` would start the app, and the MCP client would read its silence.
+    let root = tree(deb);
+    write_program(
+        &root.path().join("usr/bin/dictate-mcp"),
+        "#!/bin/sh\nexec /usr/bin/loah \"$@\"\n",
+    );
+
+    assert_fails(
+        &Tools::new().run(root.path()),
+        &["/usr/bin/dictate-mcp", "exec /usr/bin/loah-mcp"],
+    );
+}
+
+#[test]
+fn the_deb_replaces_dictate() {
+    // The package takes the place of the old one: installing it removes `dictate`, and what depends on `dictate` is still satisfied.
+    let root = tree(deb);
+    assert_passes(&Tools::new().run(root.path()));
+
+    for field in ["Provides", "Conflicts", "Replaces"] {
+        let root = tree(deb);
+        let control = root.path().join("DEBIAN/control");
+        let without: String = fs::read_to_string(&control)
+            .unwrap()
+            .lines()
+            .filter(|line| !line.starts_with(field))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        fs::write(&control, without).unwrap();
+
+        assert_fails(&Tools::new().run(root.path()), &[field, "dictate"]);
+    }
+}
+
+#[test]
+fn a_deb_that_is_not_the_package_loah_fails() {
+    let root = tree(deb);
+    let control = root.path().join("DEBIAN/control");
+    let text = fs::read_to_string(&control)
+        .unwrap()
+        .replace("Package: loah\n", "Package: dictate\n");
+    fs::write(&control, text).unwrap();
+
+    assert_fails(&Tools::new().run(root.path()), &["Package", "loah"]);
 }
 
 // ---- the installer for Windows -----------------------------------------------------------------------------------------------
@@ -698,7 +789,7 @@ fn espeak_in_a_dll_of_the_installer_fails() {
 fn a_setup_exe_is_unpacked_with_7z_and_its_tree_is_checked() {
     let root = tree(windows);
     let work = tempfile::tempdir().unwrap();
-    let setup = work.path().join("Dictate_2.0.0_x64-setup.exe");
+    let setup = work.path().join("Loah_2.1.0_x64-setup.exe");
     fs::write(&setup, "MZ\n").unwrap();
     let tools = Tools::new().unpacking(root.path());
 
@@ -720,9 +811,9 @@ fn a_complete_mac_app_passes_and_codesign_is_asked_about_the_app_and_both_sideca
 
     let calls = tools.calls();
     for path in [
-        "Dictate.app",
-        "Dictate.app/Contents/MacOS/loah-mcp",
-        "Dictate.app/Contents/MacOS/loah-ffmpeg",
+        "Loah.app",
+        "Loah.app/Contents/MacOS/loah-mcp",
+        "Loah.app/Contents/MacOS/loah-ffmpeg",
     ] {
         assert!(
             calls
@@ -738,7 +829,7 @@ fn a_complete_mac_app_passes_and_codesign_is_asked_about_the_app_and_both_sideca
 fn a_mac_app_without_a_sidecar_fails_and_says_which() {
     for sidecar in ["loah-mcp", "loah-ffmpeg"] {
         let root = tree(mac);
-        fs::remove_file(root.path().join("Dictate.app/Contents/MacOS").join(sidecar)).unwrap();
+        fs::remove_file(root.path().join("Loah.app/Contents/MacOS").join(sidecar)).unwrap();
 
         assert_fails(&Tools::new().run(root.path()), &[sidecar]);
     }
@@ -747,7 +838,7 @@ fn a_mac_app_without_a_sidecar_fails_and_says_which() {
 #[test]
 fn a_mac_app_whose_signature_does_not_verify_fails_and_names_what_is_wrong() {
     // The app, and each sidecar: a sidecar that was written over after it was signed is killed by macOS when it starts.
-    for failing in ["Dictate.app", "loah-mcp", "loah-ffmpeg"] {
+    for failing in ["Loah.app", "loah-mcp", "loah-ffmpeg"] {
         let root = tree(mac);
 
         let output = Tools::new()
@@ -765,7 +856,7 @@ fn a_mac_app_must_say_why_it_wants_the_microphone_and_the_screen() {
         "NSScreenCaptureUsageDescription",
     ] {
         let root = tree(mac);
-        let plist = root.path().join("Dictate.app/Contents/Info.plist");
+        let plist = root.path().join("Loah.app/Contents/Info.plist");
         let without: String = fs::read_to_string(&plist)
             .unwrap()
             .lines()
@@ -782,7 +873,7 @@ fn a_mac_app_must_say_why_it_wants_the_microphone_and_the_screen() {
 fn a_mac_app_must_run_on_macos_13() {
     for version in ["12.0", "14.0", ""] {
         let root = tree(mac);
-        let plist = root.path().join("Dictate.app/Contents/Info.plist");
+        let plist = root.path().join("Loah.app/Contents/Info.plist");
         let text = fs::read_to_string(&plist).unwrap().replace(
             "LSMinimumSystemVersion=13.0\n",
             &if version.is_empty() {
@@ -799,27 +890,27 @@ fn a_mac_app_must_run_on_macos_13() {
 
 #[test]
 fn the_main_program_of_a_mac_app_is_the_one_that_the_plist_names() {
-    // The sidecars are beside it, whatever it is called (the app is `Dictate`, the program `loah`).
+    // The sidecars are beside it, whatever it is called (the app is `Loah`, the program `loah`, and here it is called `loah-app`).
     let root = tree(mac);
-    let macos = root.path().join("Dictate.app/Contents/MacOS");
-    fs::rename(macos.join("loah"), macos.join("Dictate")).unwrap();
-    let plist = root.path().join("Dictate.app/Contents/Info.plist");
+    let macos = root.path().join("Loah.app/Contents/MacOS");
+    fs::rename(macos.join("loah"), macos.join("loah-app")).unwrap();
+    let plist = root.path().join("Loah.app/Contents/Info.plist");
     let text = fs::read_to_string(&plist)
         .unwrap()
-        .replace("CFBundleExecutable=loah", "CFBundleExecutable=Dictate");
+        .replace("CFBundleExecutable=loah", "CFBundleExecutable=loah-app");
     fs::write(&plist, text).unwrap();
 
     assert_passes(&Tools::new().run(root.path()));
 
-    fs::remove_file(macos.join("Dictate")).unwrap();
-    assert_fails(&Tools::new().run(root.path()), &["Dictate"]);
+    fs::remove_file(macos.join("loah-app")).unwrap();
+    assert_fails(&Tools::new().run(root.path()), &["loah-app"]);
 }
 
 #[test]
 fn a_dmg_is_mounted_read_only_checked_and_ejected_whatever_the_result_is() {
     let root = tree(mac);
     let work = tempfile::tempdir().unwrap();
-    let image = work.path().join("Dictate_2.0.0_aarch64.dmg");
+    let image = work.path().join("Loah_2.1.0_aarch64.dmg");
     fs::write(&image, "dmg\n").unwrap();
     let tools = Tools::new().unpacking(root.path());
 
@@ -837,7 +928,7 @@ fn a_dmg_is_mounted_read_only_checked_and_ejected_whatever_the_result_is() {
     );
 
     // A check that fails ejects it too.
-    fs::remove_file(root.path().join("Dictate.app/Contents/MacOS/loah-ffmpeg")).unwrap();
+    fs::remove_file(root.path().join("Loah.app/Contents/MacOS/loah-ffmpeg")).unwrap();
     let failing = Tools::new().unpacking(root.path());
     assert_fails(&failing.run(&image), &["loah-ffmpeg"]);
     assert!(
@@ -852,11 +943,11 @@ fn a_dmg_is_mounted_read_only_checked_and_ejected_whatever_the_result_is() {
 
 #[test]
 fn the_programs_of_an_arm_mac_app_are_arm64_and_the_name_of_the_dmg_says_so() {
-    // `Dictate_<version>_aarch64.dmg` is for Apple silicon, `Dictate_<version>_x64.dmg` for Intel: the architecture is read from the name,
+    // `Loah_<version>_aarch64.dmg` is for Apple silicon, `Loah_<version>_x64.dmg` for Intel: the architecture is read from the name,
     // and lipo says what each program is. An Intel row that bundled an arm64 sidecar would be an app that opens and cannot start its MCP server.
     for (name, arch) in [
-        ("Dictate_2.0.0_aarch64.dmg", "arm64"),
-        ("Dictate_2.0.0_x64.dmg", "x86_64"),
+        ("Loah_2.1.0_aarch64.dmg", "arm64"),
+        ("Loah_2.1.0_x64.dmg", "x86_64"),
     ] {
         let root = tree(mac);
         let work = tempfile::tempdir().unwrap();
@@ -875,8 +966,8 @@ fn the_programs_of_an_arm_mac_app_are_arm64_and_the_name_of_the_dmg_says_so() {
 #[test]
 fn a_mac_program_of_another_architecture_than_the_dmg_says_fails_and_names_it() {
     for (name, wrong) in [
-        ("Dictate_2.0.0_aarch64.dmg", "x86_64"),
-        ("Dictate_2.0.0_x64.dmg", "arm64"),
+        ("Loah_2.1.0_aarch64.dmg", "x86_64"),
+        ("Loah_2.1.0_x64.dmg", "arm64"),
     ] {
         for program in ["loah", "loah-mcp", "loah-ffmpeg"] {
             let root = tree(mac);
@@ -933,7 +1024,7 @@ fn a_mac_app_of_which_the_architecture_is_not_known_is_not_a_pass() {
     );
 
     let work = tempfile::tempdir().unwrap();
-    let image = work.path().join("Dictate_2.0.0_universal.dmg");
+    let image = work.path().join("Loah_2.1.0_universal.dmg");
     fs::write(&image, "dmg\n").unwrap();
     let tools = Tools::new()
         .unpacking(root.path())
@@ -1006,7 +1097,7 @@ fn a_mac_check_without_lipo_or_vtool_has_not_been_made_and_says_so() {
 fn every_problem_is_told_and_not_only_the_first() {
     let root = tree(deb);
     fs::remove_file(root.path().join("usr/bin/loah-ffmpeg")).unwrap();
-    fs::remove_file(root.path().join("usr/lib/dictate/libonnxruntime.so")).unwrap();
+    fs::remove_file(root.path().join("usr/lib/loah/libonnxruntime.so")).unwrap();
     write_program(&root.path().join("usr/bin/ffmpeg"), "#!/bin/sh\n");
 
     let output = Tools::new().run(root.path());
@@ -1021,11 +1112,11 @@ fn every_problem_is_told_and_not_only_the_first() {
 fn an_artifact_that_is_not_there_is_not_a_pass() {
     let work = tempfile::tempdir().unwrap();
 
-    let output = Tools::new().run(&work.path().join("Dictate_2.0.0_amd64.deb"));
+    let output = Tools::new().run(&work.path().join("Loah_2.1.0_amd64.deb"));
 
     assert_eq!(code(&output), 2, "{}", stderr(&output));
     assert!(
-        stderr(&output).contains("Dictate_2.0.0_amd64.deb"),
+        stderr(&output).contains("Loah_2.1.0_amd64.deb"),
         "{}",
         stderr(&output)
     );
@@ -1044,7 +1135,7 @@ fn a_folder_that_is_none_of_the_three_layouts_is_not_a_pass() {
 #[test]
 fn a_file_of_a_kind_it_cannot_unpack_is_not_a_pass() {
     let work = tempfile::tempdir().unwrap();
-    let archive = work.path().join("Dictate_2.0.0.tar.gz");
+    let archive = work.path().join("Loah_2.1.0.tar.gz");
     fs::write(&archive, "x").unwrap();
 
     let output = Tools::new().run(&archive);
@@ -1073,9 +1164,9 @@ const KINDS: [(&str, Build); 3] = [("deb", deb), ("windows", windows), ("mac", m
 /// Where each kind of installer has its license files, from the root of what it unpacks to (macOS: inside the app).
 fn license_folder(kind: &str, root: &Path) -> PathBuf {
     match kind {
-        "deb" => root.join("usr/share/doc/dictate"),
+        "deb" => root.join("usr/share/doc/loah"),
         "windows" => root.join("Licenses"),
-        _ => root.join("Dictate.app/Contents/Resources/Licenses"),
+        _ => root.join("Loah.app/Contents/Resources/Licenses"),
     }
 }
 
@@ -1127,7 +1218,7 @@ fn a_license_file_that_is_empty_does_not_count() {
 fn a_deb_without_the_copyright_file_fails() {
     // Debian tools look for /usr/share/doc/<package>/copyright.
     let root = tree(deb);
-    fs::remove_file(root.path().join("usr/share/doc/dictate/copyright")).unwrap();
+    fs::remove_file(root.path().join("usr/share/doc/loah/copyright")).unwrap();
 
     assert_fails(&Tools::new().run(root.path()), &["copyright"]);
 }

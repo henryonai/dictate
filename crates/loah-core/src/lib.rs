@@ -1,4 +1,4 @@
-//! Shared logic for Dictate: no UI and no OS-specific code.
+//! Shared logic for Loah: no UI and no OS-specific code.
 
 pub mod mcp;
 pub mod meetings;

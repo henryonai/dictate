@@ -246,7 +246,7 @@ test("no_summary_states: no API says what to add and offers the settings of the 
 
   expect(screen.getByText("No summary yet")).toBeInTheDocument();
   expect(
-    screen.getByText("Add an API (OpenRouter, Anthropic…) so Dictate can summarize and pull out decisions and action items."),
+    screen.getByText("Add an API (OpenRouter, Anthropic…) so Loah can summarize and pull out decisions and action items."),
   ).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Summarize now" })).not.toBeInTheDocument();
 

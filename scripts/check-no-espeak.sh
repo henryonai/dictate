@@ -3,7 +3,7 @@
 #
 # Usage: scripts/check-no-espeak.sh FILE...
 #
-# The speaker separation library (sherpa-onnx) comes with espeak-ng, which is GPL-3.0, for its speech synthesis, which Dictate does
+# The speaker separation library (sherpa-onnx) comes with espeak-ng, which is GPL-3.0, for its speech synthesis, which Loah does
 # not use. A static link takes from an archive only what the program refers to, so espeak-ng stays out of a program that only
 # separates speakers; this is the check that it does, on the files that are shipped. A shared library has all of its own code in
 # it, whatever the program refers to, so the check is on it too.

@@ -43,7 +43,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   setLanguage("en");
-  delete (window as unknown as Record<string, unknown>).__dictateOpenRecorder;
+  delete (window as unknown as Record<string, unknown>).__loahOpenRecorder;
 });
 
 // ---- The list
@@ -68,7 +68,7 @@ test("a library shows its recordings grouped by day, with no one selected, and t
 test("a library with nothing in it shows the empty state, with no list and no search", async () => {
   await open([]);
 
-  expect(await screen.findByRole("heading", { level: 1, name: "Record it, Dictate summarizes it" })).toBeInTheDocument();
+  expect(await screen.findByRole("heading", { level: 1, name: "Record it, Loah summarizes it" })).toBeInTheDocument();
   expect(screen.queryByRole("searchbox")).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Hide list" })).not.toBeInTheDocument();
   // The toolbar still adds a file or a link.
@@ -94,7 +94,7 @@ test("the search asks for the list with what is typed, and a search that finds n
   expect(await screen.findByText("No results for “zzz”")).toBeInTheDocument();
   expect(api.meetingsList).toHaveBeenLastCalledWith("zzz");
   expect(screen.getByRole("searchbox")).toHaveValue("zzz");
-  expect(screen.queryByRole("heading", { name: "Record it, Dictate summarizes it" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "Record it, Loah summarizes it" })).not.toBeInTheDocument();
 });
 
 test("the list can be hidden and shown again", async () => {
@@ -621,23 +621,23 @@ test("a library whose only recording is the one that goes on shows the empty sta
 
   events.sendRecordingState(fakeRecording({ phase: "recording", meetingId: RECORDING, elapsedMs: 4_000 }));
 
-  expect(await screen.findByRole("heading", { level: 1, name: "Record it, Dictate summarizes it" })).toBeInTheDocument();
+  expect(await screen.findByRole("heading", { level: 1, name: "Record it, Loah summarizes it" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Stop 00:04" })).toBeInTheDocument();
 });
 
 test("a window made for the picker opens it at once, with the error that the ask had, and the ask is taken away", async () => {
   const error = fakeError({ kind: "MissingTool", key: "recording.error.needs_ffmpeg", detail: null, command: "brew install ffmpeg" });
-  (window as unknown as Record<string, unknown>).__dictateOpenRecorder = { error };
+  (window as unknown as Record<string, unknown>).__loahOpenRecorder = { error };
 
   await open();
 
   const dialog = await screen.findByRole("dialog", { name: "Record & summarize" });
   expect(await within(dialog).findByRole("alert")).toHaveTextContent("Recording the screen needs ffmpeg: brew install ffmpeg");
-  expect("__dictateOpenRecorder" in window).toBe(false);
+  expect("__loahOpenRecorder" in window).toBe(false);
 });
 
 test("the ask of a window made for the picker is read before the window hears anything, and an ask that comes after does not open a second picker", async () => {
-  (window as unknown as Record<string, unknown>).__dictateOpenRecorder = { error: null };
+  (window as unknown as Record<string, unknown>).__loahOpenRecorder = { error: null };
   await open();
   await screen.findByRole("dialog", { name: "Record & summarize" });
 

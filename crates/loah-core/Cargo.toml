@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Shared logic for Dictate: meetings library, transcript and summary parsing, search"
+description = "Shared logic for Loah: meetings library, transcript and summary parsing, search"
 
 [dependencies]
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }

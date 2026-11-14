@@ -38,7 +38,7 @@
     return Math.min(100, Math.round((done / total) * 100));
   }
 
-  // The tools that links need (yt-dlp downloads, ffmpeg reads what Dictate can't open itself). They are installed outside the app,
+  // The tools that links need (yt-dlp downloads, ffmpeg reads what Loah can't open itself). They are installed outside the app,
   // so they are looked for again when the window gets the focus back.
   let tools = $state.raw<ToolsView | null>(null);
   let toolsError = $state("");

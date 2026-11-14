@@ -1,6 +1,6 @@
 # License texts
 
-What is in this folder is the source of `THIRD_PARTY_LICENSES.txt`, the file of license texts that every installer of Dictate carries (next to `LICENSE`, [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) and `COPYING.LGPLv2.1`). [scripts/generate-licenses.py](../scripts/generate-licenses.py) joins these files with the license files of every Rust crate and npm package that the program is built from:
+What is in this folder is the source of `THIRD_PARTY_LICENSES.txt`, the file of license texts that every installer of Loah carries (next to `LICENSE`, [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) and `COPYING.LGPLv2.1`). [scripts/generate-licenses.py](../scripts/generate-licenses.py) joins these files with the license files of every Rust crate and npm package that the program is built from:
 
 ```sh
 python3 scripts/generate-licenses.py
@@ -10,7 +10,7 @@ It needs `cargo`, and the interface installed with `pnpm --dir app install`. Run
 
 ## `native/`: the components that are not Rust crates or npm packages
 
-Each file is the license file of the release that Dictate is built with, copied as it is. When a version changes, copy the new file and change the version here and in the generator.
+Each file is the license file of the release that Loah is built with, copied as it is. When a version changes, copy the new file and change the version here and in the generator.
 
 | File | What it is | Where it was taken from |
 |---|---|---|

@@ -151,12 +151,12 @@ fn a_build_for_another_target_has_its_profile_folder_below_the_triple() {
 
 #[test]
 fn a_folder_named_build_above_the_target_folder_is_not_taken_for_the_one_of_cargo() {
-    // A checkout in ~/build/dictate: the nearest `build` is Cargo's own.
-    let out_dir = Path::new("/home/me/build/dictate/target/debug/build/loah-services/5333/out");
+    // A checkout in ~/build/loah: the nearest `build` is Cargo's own.
+    let out_dir = Path::new("/home/me/build/loah/target/debug/build/loah-services/5333/out");
 
     assert_eq!(
         profile_dir(out_dir),
-        Some(Path::new("/home/me/build/dictate/target/debug").to_path_buf())
+        Some(Path::new("/home/me/build/loah/target/debug").to_path_buf())
     );
 }
 

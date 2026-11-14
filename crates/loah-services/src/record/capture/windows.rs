@@ -78,7 +78,7 @@ fn window_name(process: Option<&str>, title: &str) -> String {
 }
 
 /// The windows that the picker offers, sorted by name (then by handle, to keep the order the same from one look to the next):
-/// those that can be captured, that have a title, and that are not Dictate's own (`own_pid`).
+/// those that can be captured, that have a title, and that are not Loah's own (`own_pid`).
 fn listed_windows(windows: &[WindowFacts], own_pid: u32) -> Vec<SourceInfo> {
     let mut listed: Vec<(usize, SourceInfo)> = windows
         .iter()
@@ -520,7 +520,7 @@ mod native {
     }
 
     /// The displays and windows that can be recorded, for the picker: the windows that Graphics Capture can take, with a title,
-    /// and not Dictate's own.
+    /// and not Loah's own.
     pub fn list_sources() -> Result<Sources, StartError> {
         let monitors =
             Monitor::enumerate().map_err(|error| StartError::Source(error.to_string()))?;

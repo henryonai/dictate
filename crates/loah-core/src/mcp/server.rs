@@ -349,7 +349,7 @@ mod tests {
                 |_| Err(ToolError::new("nothing to see")),
             ),
         ];
-        McpServer::new("dictate", "test", "Use the test tools.", tools)
+        McpServer::new("loah", "test", "Use the test tools.", tools)
     }
 
     /// One JSON-RPC message in, the parsed one-line reply out.
@@ -403,7 +403,7 @@ mod tests {
         assert_eq!(r["result"]["protocolVersion"], "2025-06-18");
         assert_eq!(
             r["result"]["serverInfo"],
-            json!({"name": "dictate", "version": "test"})
+            json!({"name": "loah", "version": "test"})
         );
         assert_eq!(
             r["result"]["capabilities"],
@@ -480,7 +480,7 @@ mod tests {
         assert_eq!(d["capabilities"], json!({"tools": {}}));
         assert_eq!(d["instructions"], "Use the test tools.");
         let info = &d["_meta"]["io.modelcontextprotocol/serverInfo"];
-        assert_eq!(*info, json!({"name": "dictate", "version": "test"}));
+        assert_eq!(*info, json!({"name": "loah", "version": "test"}));
     }
 
     #[test]
@@ -488,7 +488,7 @@ mod tests {
         let s = test_server();
         let ping = modern(&s, "ping", json!({}));
         let info =
-            json!({"io.modelcontextprotocol/serverInfo": {"name": "dictate", "version": "test"}});
+            json!({"io.modelcontextprotocol/serverInfo": {"name": "loah", "version": "test"}});
         assert_eq!(
             ping["result"],
             json!({"resultType": "complete", "_meta": info})

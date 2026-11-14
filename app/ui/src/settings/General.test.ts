@@ -75,13 +75,13 @@ test("a shortcut that was taken when the app started says so, and can be replace
   expect(screen.getByLabelText("Shortcut")).toHaveValue("F6");
 });
 
-test("a desktop with no global shortcuts for apps says how to bind dictate --toggle and dictate --record, and has nothing to change", async () => {
+test("a desktop with no global shortcuts for apps says how to bind loah --toggle and loah --record, and has nothing to change", async () => {
   vi.mocked(api.hotkeyStatus).mockResolvedValue(fakeHotkeyStatus({ backend: "none", error: "hotkey.wayland_unavailable" }));
   render(General, { store: await loadedStore() });
 
   expect(
     await screen.findByText(
-      "Your desktop doesn't offer global shortcuts to apps. Bind shortcuts in your desktop settings to run: dictate --toggle (dictation) and dictate --record (recording)",
+      "Your desktop doesn't offer global shortcuts to apps. Bind shortcuts in your desktop settings to run: loah --toggle (dictation) and loah --record (recording)",
     ),
   ).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Change…" })).not.toBeInTheDocument();
@@ -96,9 +96,9 @@ test("a shortcut that the desktop's portal binds is changed in the desktop, not 
   expect(screen.queryByRole("button", { name: "Change…" })).not.toBeInTheDocument();
 });
 
-test("tells how to run dictate --toggle", async () => {
+test("tells how to run loah --toggle", async () => {
   render(General, { store: await loadedStore() });
-  expect(screen.getByText(/dictate --toggle/)).toBeInTheDocument();
+  expect(screen.getByText(/loah --toggle/)).toBeInTheDocument();
 });
 
 test("changing the interface language saves it and switches the words at once", async () => {
@@ -163,7 +163,7 @@ test("the mode picks between press-to-toggle and push-to-talk", async () => {
 test.each([
   ["Write into the focused text field", "auto_write", true],
   ["Save recordings + transcripts", "save_recordings", true],
-  ["Open Dictate at login", "launch_at_login", false],
+  ["Open Loah at login", "launch_at_login", false],
 ] as const)("the %s switch saves %s", async (label, key, was) => {
   const user = userEvent.setup();
   render(General, { store: await loadedStore() });
@@ -180,7 +180,7 @@ test("a switch goes back when the system refuses the change", async () => {
   vi.mocked(api.saveSettings).mockRejectedValue("Could not change launch at login: denied");
   render(General, { store: await loadedStore() });
 
-  const toggle = screen.getByRole("checkbox", { name: "Open Dictate at login" });
+  const toggle = screen.getByRole("checkbox", { name: "Open Loah at login" });
   await user.click(toggle);
 
   await vi.waitFor(() => expect(toggle).not.toBeChecked());
@@ -246,7 +246,7 @@ test("the shortcut of the recording is shown next to the dictation's, and can't 
   const record = screen.getByLabelText("Recording shortcut");
   expect(record).toHaveValue("Ctrl+Alt+R");
   expect(record).toHaveAttribute("readonly");
-  expect(screen.getByText("Starts and stops a recording from anywhere. From a script, run: dictate --record")).toBeInTheDocument();
+  expect(screen.getByText("Starts and stops a recording from anywhere. From a script, run: loah --record")).toBeInTheDocument();
   // The dictation's own shortcut is not touched by it.
   expect(screen.getByLabelText("Shortcut")).toHaveValue("Ctrl+Alt+Space");
 });
@@ -264,7 +264,7 @@ test("the shortcut of the recording has words in Vietnamese", async () => {
   expect(screen.getByLabelText("Phím tắt quay màn hình")).toHaveValue("Ctrl+Alt+R");
 });
 
-const NOTICES = "https://github.com/henryonai/dictate/blob/main/THIRD_PARTY_NOTICES.md";
+const NOTICES = "https://github.com/henryonai/loah/blob/main/THIRD_PARTY_NOTICES.md";
 
 test.each([
   ["en", "Licenses"],

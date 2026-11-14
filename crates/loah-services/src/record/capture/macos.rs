@@ -83,7 +83,7 @@ fn window_name(app: Option<&str>, title: Option<&str>) -> String {
 }
 
 /// The windows that the picker offers, sorted by name (then by number, to keep the order the same from one look to the next): an
-/// ordinary window (layer 0) that is more than 120 points wide, and not one of Dictate's own (`own_pid`).
+/// ordinary window (layer 0) that is more than 120 points wide, and not one of Loah's own (`own_pid`).
 fn listed_windows(windows: &[WindowFacts], own_pid: i32) -> Vec<SourceInfo> {
     let mut listed: Vec<(u32, SourceInfo)> = windows
         .iter()
@@ -795,8 +795,8 @@ mod tests {
     }
 
     #[test]
-    fn windows_of_dictate_itself_are_not_listed() {
-        let mut own = window(1, "Dictate", "Settings");
+    fn windows_of_loah_itself_are_not_listed() {
+        let mut own = window(1, "Loah", "Settings");
         own.pid = Some(4242);
 
         let listed = listed_windows(&[own, window(2, "Safari", "Apple")], 4242);

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Writes THIRD_PARTY_LICENSES.txt: the license texts of everything that an installer of Dictate carries.
+"""Writes THIRD_PARTY_LICENSES.txt: the license texts of everything that an installer of Loah carries.
 
 Usage (from anywhere; it needs `cargo`, and `pnpm install` run for the interface):
     python3 scripts/generate-licenses.py            writes THIRD_PARTY_LICENSES.txt at the root of the repository
@@ -7,7 +7,7 @@ Usage (from anywhere; it needs `cargo`, and `pnpm install` run for the interface
 
 What is in the file:
   1. The native components that the installers carry (FFmpeg and what is linked into it, whisper.cpp, the models, sherpa-onnx, ONNX
-     Runtime): the texts in licenses/native, which are copied from the releases that Dictate is built with.
+     Runtime): the texts in licenses/native, which are copied from the releases that Loah is built with.
   2. Every Rust crate that the program of an installer is linked with, with the license files that the crate ships (LICENSE*, COPYING*,
      NOTICE*, so the copyright lines and the NOTICE of an Apache crate are there). `cargo tree -e normal` for each of the four systems of the
      installers says which crates those are (build scripts and tests are not shipped). A crate that ships no license file gets the standard
@@ -213,12 +213,12 @@ def npm_section():
 
 def build():
     out = []
-    out.append(f"""Third-party license texts of Dictate
-=====================================
+    out.append(f"""Third-party license texts of Loah
+=================================
 
-This file has the license texts of the software that an installer of Dictate carries or that Dictate downloads, with the copyright lines
+This file has the license texts of the software that an installer of Loah carries or that Loah downloads, with the copyright lines
 and the notices that the licenses ask to keep. The list of components, the written offer of the FFmpeg source and where each thing comes
-from are in THIRD_PARTY_NOTICES.md, next to this file. Dictate itself is under the MIT license (LICENSE); the text of the LGPL 2.1, for FFmpeg
+from are in THIRD_PARTY_NOTICES.md, next to this file. Loah itself is under the MIT license (LICENSE); the text of the LGPL 2.1, for FFmpeg
 and glibc, is COPYING.LGPLv2.1.
 
 This file is made by scripts/generate-licenses.py: do not edit it by hand.

@@ -1,5 +1,5 @@
 //! `scripts/check-no-espeak.sh`, which CI runs on the programs and libraries that the build makes. espeak-ng is GPL-3.0: code of it
-//! that ends up in what Dictate ships is a matter for the license, and the script is what notices it.
+//! that ends up in what Loah ships is a matter for the license, and the script is what notices it.
 //!
 //! The script is for bash, which CI runs on every system (Git Bash on Windows): these tests run where `bash` is the real one.
 #![cfg(unix)]

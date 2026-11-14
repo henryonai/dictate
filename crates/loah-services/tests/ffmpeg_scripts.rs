@@ -2,7 +2,7 @@
 //! `scripts/check-ffmpeg-lgpl.sh`, `scripts/build-ffmpeg.sh` and `scripts/stage-sidecars.sh`.
 //!
 //! ffmpeg is LGPL-2.1+ only when it is built without `--enable-gpl`, `--enable-nonfree` and `--enable-version3`; a build that has
-//! any of them (or links x264) is GPL, which Dictate (MIT) must not ship. `check-ffmpeg-lgpl.sh` is what notices it, and
+//! any of them (or links x264) is GPL, which Loah (MIT) must not ship. `check-ffmpeg-lgpl.sh` is what notices it, and
 //! `build-ffmpeg.sh` is what must never build from a source that is not the pinned one.
 //!
 //! The scripts are for bash, which CI runs on every system: these tests run where `bash` is the real one. The programs that the
@@ -879,7 +879,7 @@ fn stage_sidecars_makes_the_sidecars_executable_whatever_the_files_it_copies_wer
 #[test]
 fn stage_sidecars_puts_the_license_files_of_every_system_in_the_licenses_folder() {
     // The release overlays put them in the installers from there: macOS in Contents/Resources/Licenses, Windows in Licenses, the deb in
-    // /usr/share/doc/dictate.
+    // /usr/share/doc/loah.
     for triple in [
         "aarch64-apple-darwin",
         "x86_64-apple-darwin",

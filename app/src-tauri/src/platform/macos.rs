@@ -917,7 +917,7 @@ define_class!(
     /// Hears the mouse come into a tracking area and leave it.
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
-    #[name = "DictateMouseWatcher"]
+    #[name = "LoahMouseWatcher"]
     #[ivars = MouseWatch]
     struct MouseWatcher;
 
@@ -1150,7 +1150,7 @@ mod tests {
     fn private_board() -> Retained<NSPasteboard> {
         // One name for the whole run: `pasteboardWithName` gives the same board for it every time.
         NSPasteboard::pasteboardWithName(&NSString::from_str(&format!(
-            "io.github.henryonai.dictate.test.{}",
+            "io.github.henryonai.loah.test.{}",
             std::process::id()
         )))
     }

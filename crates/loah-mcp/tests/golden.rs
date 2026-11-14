@@ -6,7 +6,9 @@
 //!
 //! The `instructions` of every `initialize` reply are deliberately not the Swift server's: the app runs on macOS,
 //! Windows and Linux now, so the first sentence says that and not "the user's macOS app" (`INSTRUCTIONS` in
-//! `loah-core`). The golden files hold the new sentence; the rest of each reply is the Swift server's own.
+//! `loah-core`). The app is also called Loah and not Dictate: the server name (`"name":"loah"`), the description of
+//! `list_meetings` and `list_action_items` and the "ticked off in Loah" line of `get_meeting` say so. The golden files hold
+//! the new sentence and these names; the rest of each reply is the Swift server's own.
 //!
 //! One reply is deliberately not the Swift server's: a transcript saved with Windows line ends (CRLF) is read
 //! paragraph by paragraph here, while the Swift server takes it for one long paragraph with "\r\n" inside. The
@@ -155,12 +157,12 @@ fn the_comparison_ignores_the_server_version_and_nothing_else() {
     };
     let modern = |version: &str, text: &str| {
         format!(
-            r#"{{"jsonrpc":"2.0","id":2,"result":{{"content":[{{"type":"text","text":"{text}"}}],"_meta":{{"io.modelcontextprotocol/serverInfo":{{"name":"dictate","version":"{version}"}}}}}}}}"#
+            r#"{{"jsonrpc":"2.0","id":2,"result":{{"content":[{{"type":"text","text":"{text}"}}],"_meta":{{"io.modelcontextprotocol/serverInfo":{{"name":"loah","version":"{version}"}}}}}}}}"#
         )
     };
     // Other versions: the legacy and the modern place, alone and inside a batch.
     assert_eq!(
-        compare(&legacy("dictate", "dev"), &legacy("dictate", "1.2.3")),
+        compare(&legacy("loah", "dev"), &legacy("loah", "1.2.3")),
         Ok(())
     );
     assert_eq!(compare(&modern("dev", "x"), &modern("1.2.3", "x")), Ok(()));
@@ -172,7 +174,7 @@ fn the_comparison_ignores_the_server_version_and_nothing_else() {
         Ok(())
     );
     // Anything else counts: the server's name, a reply's text, the number of replies.
-    assert!(compare(&legacy("dictate", "dev"), &legacy("other", "dev")).is_err());
+    assert!(compare(&legacy("loah", "dev"), &legacy("other", "dev")).is_err());
     assert!(compare(&modern("dev", "x"), &modern("dev", "y")).is_err());
     assert!(compare(&modern("dev", "x"), "").is_err());
     // A "version" elsewhere in a reply is data, not the server's.

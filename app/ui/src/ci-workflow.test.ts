@@ -557,3 +557,13 @@ describe("the Intel Mac is checked before a release finds out that it does not b
     expect(text()).toContain("key: sherpa-onnx-1.13.8-${{ runner.os }}-${{ runner.arch }}");
   });
 });
+
+describe("the macOS bundle that the app job looks at", () => {
+  test("it_is_Loah_app_because_the_product_name_is_the_name_of_the_bundle", () => {
+    // `tauri build --bundles app` writes <productName>.app: a path with the old name is a bundle that is not there, and the step fails.
+    const bundle = steps().find((step) => step.includes("Bundle the macOS app and check what it declares"));
+    expect(bundle).toBeDefined();
+    expect(bundle).toContain("bundle=../target/debug/bundle/macos/Loah.app");
+    expect(workflow).not.toContain("macos/Dictate.app");
+  });
+});

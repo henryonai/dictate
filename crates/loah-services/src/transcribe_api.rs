@@ -412,7 +412,7 @@ async fn chat_audio(
     let data = base64::engine::general_purpose::STANDARD.encode(&audio.bytes);
     let request = http::client()?
         .post(url)
-        .header("X-Title", "Dictate")
+        .header("X-Title", "Loah")
         .json(&json!({
             "model": c.model,
             "max_tokens": max_tokens,
@@ -871,7 +871,7 @@ mod tests {
             header(&request, "authorization"),
             Some("Bearer sk-test-key-123")
         );
-        assert_eq!(header(&request, "x-title"), Some("Dictate"));
+        assert_eq!(header(&request, "x-title"), Some("Loah"));
         assert_eq!(header(&request, "content-type"), Some("application/json"));
         let body = json_body(&request);
         assert_eq!(body["model"], "google/gemini-3.5-flash");
@@ -1095,7 +1095,7 @@ mod tests {
         assert_eq!(text, "Xin chào, đây là bản nháp.");
         let request = only_request(&server).await;
         assert_eq!(request.url.path(), "/chat/completions");
-        assert_eq!(header(&request, "x-title"), Some("Dictate"));
+        assert_eq!(header(&request, "x-title"), Some("Loah"));
         let body = json_body(&request);
         assert_eq!(body["max_tokens"], 4000);
         assert_eq!(body["temperature"], 0);

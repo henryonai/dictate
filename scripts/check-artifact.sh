@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fails when an installer of Dictate is missing what it must ship, or has what it must not. The release workflow runs it on every installer
+# Fails when an installer of Loah is missing what it must ship, or has what it must not. The release workflow runs it on every installer
 # before the installer is attached to a release, so that a broken one fails the job and is never published.
 #
 # Usage: scripts/check-artifact.sh ARTIFACT
@@ -16,15 +16,18 @@
 #   - no espeak-ng (GPL-3.0) in the main program, in the two sidecars or in any .so, .dylib or .dll: scripts/check-no-espeak.sh.
 #   - `loah-ffmpeg` is a plain LGPL ffmpeg: scripts/check-ffmpeg-lgpl.sh.
 #   - the license files: LICENSE, THIRD_PARTY_NOTICES.md, THIRD_PARTY_LICENSES.txt and COPYING.LGPLv2.1, not empty, where the system keeps
-#     them (macOS Contents/Resources/Licenses, Windows `Licenses` next to the program, the package /usr/share/doc/dictate). The MIT, BSD,
+#     them (macOS Contents/Resources/Licenses, Windows `Licenses` next to the program, the package /usr/share/doc/loah). The MIT, BSD,
 #     Apache and LGPL licenses of what is inside ask that their texts go with the binary.
 # The package for Linux (deb):
 #   - a `copyright` file next to the license files, which is where the tools of Debian look for it;
 #   - no /usr/bin/ffmpeg: it would collide with the package `ffmpeg` of Debian and Ubuntu (the sidecar is called loah-ffmpeg);
-#   - the two libraries of sherpa-onnx in /usr/lib/dictate, and the run path `$ORIGIN/../lib/dictate` in /usr/bin/loah (readelf -d), which
+#   - the two libraries of sherpa-onnx in /usr/lib/loah, and the run path `$ORIGIN/../lib/loah` in /usr/bin/loah (readelf -d), which
 #     is how the program finds them, and no other entry in its RPATH or RUNPATH (the ones of a build in the source tree would make it look in
 #     /usr and in /);
-#   - a dependency on libpipewire in `Depends` (the program does not start without it).
+#   - a dependency on libpipewire in `Depends` (the program does not start without it);
+#   - the package is called `loah`, and it takes the place of the `dictate` package of 2.0.0: `Provides`, `Conflicts` and `Replaces` name `dictate`;
+#   - /usr/bin/dictate and /usr/bin/dictate-mcp, the commands of Dictate 2.0.0 that MCP clients and shortcuts still run: executable, and
+#     each one `exec`s the new program (loah, loah-mcp) with the same arguments. The bundler copies the mode of the file of the repository.
 # The installer for Windows: the four DLLs of the runtime of Visual C++ (vcruntime140.dll, vcruntime140_1.dll, msvcp140.dll, msvcp140_1.dll)
 # next to the program: a Windows that has no runtime would not start it. And every DLL of that family that a program or a DLL of the
 # installer asks for by name (read from its bytes: msvcp, vcruntime, concrt, vcomp or vccorlib and a number, such as MSVCP140_1.dll) is
@@ -32,7 +35,7 @@
 # The disk image for macOS: Info.plist has NSMicrophoneUsageDescription, NSScreenCaptureUsageDescription and LSMinimumSystemVersion 13.0,
 # `codesign --verify --strict` passes on the app and on both sidecars (the signature of a sidecar that was written over is broken, and
 # macOS kills the program), and each of the three programs is of the architecture that the name of the image says (`lipo -archs`;
-# Dictate_<version>_aarch64.dmg is arm64, Dictate_<version>_x64.dmg is x86_64; for a folder, LOAH_ARTIFACT_ARCH says it) and has 13.0 as
+# Loah_<version>_aarch64.dmg is arm64, Loah_<version>_x64.dmg is x86_64; for a folder, LOAH_ARTIFACT_ARCH says it) and has 13.0 as
 # its minimum system (`vtool -show-build`, `minos`). An image whose architecture is not known is exit status 2, not a pass.
 #
 # Every problem is told, not only the first. Exit status: 0 when the installer is fine, 1 when it is not, 2 when it could not be looked at
@@ -193,7 +196,7 @@ if [ "$kind" = macos ]; then
     arm64 | x86_64) ;;
     *) cannot "do not know which architecture the programs of $artifact have to be: the name of an image ends in _aarch64.dmg (arm64) or _x64.dmg (x86_64), and for a folder LOAH_ARTIFACT_ARCH is arm64 or x86_64" ;;
   esac
-  # The program is the one that Info.plist names (the app is `Dictate`, the program `loah`).
+  # The program is the one that Info.plist names (the app is `Loah`, the program `loah`).
   main_name="$(plist_value CFBundleExecutable)"
   main_name="${main_name:-loah}"
 else
@@ -263,7 +266,7 @@ fi
 # Where the installer keeps its license files (the release overlay puts them there).
 case "$kind" in
   macos) licenses_dir="$app/Contents/Resources/Licenses" ;;
-  deb) licenses_dir="$root/usr/share/doc/dictate" ;;
+  deb) licenses_dir="$root/usr/share/doc/loah" ;;
   windows) licenses_dir="$root/Licenses" ;;
 esac
 
@@ -285,13 +288,19 @@ check_licenses
 
 # ---- what is only in one kind of installer -----------------------------------------------------------------------------------
 
+# The lines of a field of a Debian control file: `Name: value`, and the lines that go on from it (a long field goes on in the lines that start
+# with a blank). Nothing when the field is not there.
+control_field() {
+  awk -v field="$1:" 'index($0, field) == 1 { keep = 1; print; next } /^[[:space:]]/ { if (keep) print; next } { keep = 0 }' "$2"
+}
+
 check_deb() {
   if [ -e "$root/usr/bin/ffmpeg" ]; then
     problem "the package has /usr/bin/ffmpeg: it would collide with the package ffmpeg of Debian and Ubuntu (dpkg refuses to overwrite it); the sidecar is loah-ffmpeg"
   fi
   local library
   for library in libsherpa-onnx-c-api.so libonnxruntime.so; do
-    [ -f "$root/usr/lib/dictate/$library" ] || problem "/usr/lib/dictate/$library is not in the package: the program would not start"
+    [ -f "$root/usr/lib/loah/$library" ] || problem "/usr/lib/loah/$library is not in the package: the program would not start"
   done
 
   # The run path that finds those libraries from /usr/bin/loah: a whole entry of the RPATH or the RUNPATH.
@@ -301,30 +310,56 @@ check_deb() {
     else
       local paths
       paths="$(readelf -d "$bin_dir/$main_name" 2>/dev/null | sed -n -E 's/.*\((RPATH|RUNPATH)\).*\[(.*)\].*/\2/p' | tr ':' '\n')"
-      if ! printf '%s\n' "$paths" | grep -q -x -F -e '$ORIGIN/../lib/dictate'; then
-        problem '/usr/bin/loah has no RPATH or RUNPATH with $ORIGIN/../lib/dictate: it would not find its libraries in /usr/lib/dictate (readelf -d says: '"$(printf '%s' "$paths" | tr '\n' ' ')"')'
+      if ! printf '%s\n' "$paths" | grep -q -x -F -e '$ORIGIN/../lib/loah'; then
+        problem '/usr/bin/loah has no RPATH or RUNPATH with $ORIGIN/../lib/loah: it would not find its libraries in /usr/lib/loah (readelf -d says: '"$(printf '%s' "$paths" | tr '\n' ' ')"')'
       fi
       # And no other: the entries of a build in the source tree ($ORIGIN, $ORIGIN/.., $ORIGIN/../../../..) are, from /usr/bin, /usr/bin, /usr
       # and /: a program that looks there loads a library that somebody put there.
       local others
-      others="$(printf '%s\n' "$paths" | grep -v -x -F -e '$ORIGIN/../lib/dictate' | grep -v '^$' | tr '\n' ' ' || true)"
+      others="$(printf '%s\n' "$paths" | grep -v -x -F -e '$ORIGIN/../lib/loah' | grep -v '^$' | tr '\n' ' ' || true)"
       if [ -n "$others" ]; then
-        problem '/usr/bin/loah has other entries in its RPATH or RUNPATH than $ORIGIN/../lib/dictate: '"$others"'(the release is built with LOAH_RPATH_INSTALLED=1, which gives only $ORIGIN/../lib/dictate)'
+        problem '/usr/bin/loah has other entries in its RPATH or RUNPATH than $ORIGIN/../lib/loah: '"$others"'(the release is built with LOAH_RPATH_INSTALLED=1, which gives only $ORIGIN/../lib/loah)'
       fi
     fi
   fi
 
   # `Depends` is the field of that name (a long one goes on in the lines that start with a blank); Recommends does not count.
-  local control="$root/DEBIAN/control" depends
+  local control="$root/DEBIAN/control" depends field
   if [ ! -f "$control" ]; then
     problem "DEBIAN/control is not in the package"
   else
-    depends="$(awk '/^Depends:/ { keep = 1; print; next } /^[[:space:]]/ { if (keep) print; next } { keep = 0 }' "$control")"
+    depends="$(control_field Depends "$control")"
     case "$depends" in
       *libpipewire*) ;;
       *) problem "the Depends of the package has no libpipewire (the program does not start without it): ${depends:-no Depends field}" ;;
     esac
+    if [ "$(control_field Package "$control" | tr -d '[:space:]')" != "Package:loah" ]; then
+      problem "the Package of the package is not loah (DEBIAN/control says: $(control_field Package "$control" | tr '\n' ' '))"
+    fi
+    # The package takes the place of the `dictate` package of 2.0.0: dpkg removes it when this one is installed (Replaces and Conflicts),
+    # and what asks for `dictate` is still satisfied (Provides).
+    for field in Provides Conflicts Replaces; do
+      case ", $(control_field "$field" "$control" | sed "s/^$field:[[:space:]]*//" | tr -s '[:space:]' ' ' | sed 's/ $//')," in
+        *", dictate,"* | *", dictate ("*) ;;
+        *) problem "the $field of the package does not name dictate: the package of Dictate 2.0.0 would not be taken over by it (DEBIAN/control has: $(control_field "$field" "$control" | tr '\n' ' '))" ;;
+      esac
+    done
   fi
+
+  # The commands of Dictate 2.0.0 that are still run: an MCP client that was set up for it starts /usr/bin/dictate-mcp, and a shortcut of
+  # the desktop runs `dictate --toggle`. Each is a script that hands over to the new program with the same arguments.
+  local wrapper target
+  for wrapper in dictate dictate-mcp; do
+    target="/usr/bin/${wrapper/dictate/loah}"
+    if [ ! -f "$root/usr/bin/$wrapper" ]; then
+      problem "/usr/bin/$wrapper is not in the package: what was set up for Dictate runs it, and would find nothing after the upgrade"
+      continue
+    fi
+    [ -x "$root/usr/bin/$wrapper" ] || problem "/usr/bin/$wrapper is not executable (the bundler keeps the mode of the file in app/src-tauri/linux)"
+    if ! grep -q -x -F "exec $target \"\$@\"" "$root/usr/bin/$wrapper"; then
+      problem "/usr/bin/$wrapper does not run $target with its arguments: it needs the line exec $target \"\$@\""
+    fi
+  done
 }
 
 check_windows() {

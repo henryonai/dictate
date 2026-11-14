@@ -362,7 +362,7 @@ test("the meetings-open-recorder event asks for the picker, with the error that 
 });
 
 describe("the ask for the picker that a window made for it was given", () => {
-  const key = "__dictateOpenRecorder";
+  const key = "__loahOpenRecorder";
   const globals = window as unknown as Record<string, unknown>;
 
   afterEach(() => {

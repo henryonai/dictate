@@ -50,7 +50,7 @@ pub fn resolve_language(setting: UiLanguage, os_locale: Option<&str>) -> Lang {
     }
 }
 
-/// The words of the tray menu. The version line ("Dictate 1.2.3") has no words to translate.
+/// The words of the tray menu. The version line ("Loah 1.2.3") has no words to translate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TrayLabels {
     pub settings: &'static str,
@@ -173,7 +173,7 @@ fn menu_entries(lang: Lang, hotkey: &str, recording: bool) -> Vec<Option<Entry>>
         None,
         entry(
             ID_VERSION,
-            &format!("Dictate {}", env!("CARGO_PKG_VERSION")),
+            &format!("{} {}", crate::APP_NAME, env!("CARGO_PKG_VERSION")),
             false,
         ),
         entry(ID_QUIT, labels.quit, true),
@@ -280,7 +280,7 @@ struct TrayLook(Mutex<Look>);
 pub fn create(app: &AppHandle, lang: Lang, hotkey: &str) -> tauri::Result<()> {
     app.manage(TrayLook(Mutex::new(Look::new(lang, hotkey.to_owned()))));
     let mut tray = TrayIconBuilder::with_id(TRAY_ID)
-        .tooltip("Dictate")
+        .tooltip(crate::APP_NAME)
         .menu(&build_menu(app, lang, hotkey, false)?)
         .show_menu_on_left_click(true)
         .on_menu_event(on_menu_event);
@@ -441,6 +441,19 @@ mod tests {
         assert_eq!(vi.quit, "Thoát");
         assert_eq!(vi.record, "Quay & tóm tắt…");
         assert_eq!(vi.stop_recording, "Dừng quay & tóm tắt");
+    }
+
+    #[test]
+    fn the_version_line_names_the_app_loah_and_its_version() {
+        // The line has no words to translate: the name of the app and its version, the same in both languages.
+        for lang in [Lang::En, Lang::Vi] {
+            let version = menu_entries(lang, "Ctrl+Alt+Space", false)
+                .into_iter()
+                .flatten()
+                .find(|entry| entry.id == ID_VERSION)
+                .expect("the version line");
+            assert_eq!(version.text, format!("Loah {}", env!("CARGO_PKG_VERSION")));
+        }
     }
 
     #[test]

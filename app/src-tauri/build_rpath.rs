@@ -15,7 +15,7 @@ pub fn installed_only(value: Option<&str>) -> bool {
 /// that `target_os` (`CARGO_CFG_TARGET_OS`) names. `installed_only` is [`installed_only`] of the variable.
 ///
 /// Linux: the shared sherpa-onnx libraries, which are not next to the program everywhere.
-///  - `$ORIGIN/../lib/dictate`: the installed package, which has the program in `/usr/bin` and the libraries in `/usr/lib/dictate`
+///  - `$ORIGIN/../lib/loah`: the installed package, which has the program in `/usr/bin` and the libraries in `/usr/lib/loah`
 ///    (`tauri.release.conf.json` puts them there). Without it a `.deb` does not start. It comes first, and an installed program has
 ///    nothing else: the entries below would make it look for libraries in `/usr` and in `/`.
 ///  - `$ORIGIN`: `target/<profile>`, where `sherpa-onnx-sys` and the build script of `loah-services` copy them and where the program is.
@@ -30,9 +30,9 @@ pub fn installed_only(value: Option<&str>) -> bool {
 /// Windows looks for a DLL beside the program, which is where the installer puts the runtime of Visual C++.
 pub fn link_args(target_os: &str, installed_only: bool) -> Vec<String> {
     let rpaths: &[&str] = match (target_os, installed_only) {
-        ("linux", true) => &["$ORIGIN/../lib/dictate"],
+        ("linux", true) => &["$ORIGIN/../lib/loah"],
         ("linux", false) => &[
-            "$ORIGIN/../lib/dictate",
+            "$ORIGIN/../lib/loah",
             "$ORIGIN",
             "$ORIGIN/..",
             "$ORIGIN/../../../..",

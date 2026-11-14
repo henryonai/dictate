@@ -229,7 +229,7 @@ impl Hotkeys {
                 .map_err(ChangeError::Save)
         };
         let Some(registry) = &self.registry else {
-            // The desktop owns the shortcut: what is saved is the one Dictate asks for the next time it binds.
+            // The desktop owns the shortcut: what is saved is the one Loah asks for the next time it binds.
             return save();
         };
 
@@ -269,7 +269,7 @@ fn label_of(accel: &str) -> String {
     display_hotkey(accel, cfg!(target_os = "macos"))
 }
 
-/// The accelerator as a shortcut, when Dictate can use it: modifiers, then one key; and Ctrl, Alt or Super with it
+/// The accelerator as a shortcut, when Loah can use it: modifiers, then one key; and Ctrl, Alt or Super with it
 /// unless the key is a function key. Shift doesn't count: Shift+D would take every capital D from typing in every
 /// app, and a letter with no modifier every D.
 pub fn parse_accelerator(accel: &str) -> Result<Shortcut, ChangeError> {
@@ -1063,7 +1063,7 @@ mod tests {
         assert!(rx.try_recv().is_err(), "the key was never up");
     }
 
-    // ---- which shortcuts Dictate takes
+    // ---- which shortcuts Loah takes
 
     #[test]
     fn shortcuts_with_a_modifier_or_a_function_key_are_taken() {
@@ -1192,7 +1192,7 @@ mod tests {
             .all(|shortcut| !shortcut.description.is_empty()));
         assert_ne!(shortcuts[0].description, shortcuts[1].description);
 
-        // A dictation shortcut that Dictate has no name for is left to the desktop; the recording's wish does not depend on it.
+        // A dictation shortcut that Loah has no name for is left to the desktop; the recording's wish does not depend on it.
         let without = portal_shortcuts(None);
         assert_eq!(without[0].preferred_trigger, None);
         assert_eq!(without[1].preferred_trigger.as_deref(), Some("CTRL+ALT+r"));

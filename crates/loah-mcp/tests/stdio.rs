@@ -77,11 +77,11 @@ fn reads_the_library_named_by_the_environment() {
     let replies = replies(&output);
     assert_eq!(replies.len(), 2, "a notification gets no reply");
     let info = &replies[0]["result"]["serverInfo"];
-    assert_eq!(info["name"], "dictate");
+    assert_eq!(info["name"], "loah");
     assert_eq!(info["version"], env!("CARGO_PKG_VERSION"));
     assert!(replies[0]["result"]["instructions"]
         .as_str()
-        .is_some_and(|text| text.starts_with("Dictate is an app for macOS, Windows and Linux")));
+        .is_some_and(|text| text.starts_with("Loah is an app for macOS, Windows and Linux")));
     assert_eq!(replies[1]["result"]["isError"], false);
     assert_eq!(
         replies[1]["result"]["content"][0]["text"],

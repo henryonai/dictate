@@ -32,7 +32,7 @@ pub const TRANSCRIPT: &str = r#"[00:00] Speaker 1: Chào mọi người, hôm na
 
 [02:10] Speaker 1: Đồng ý, Henry tạo repo trước thứ Sáu nhé."#;
 
-/// A throwaway Dictate library with three recordings, removed when dropped:
+/// A throwaway Loah library with three recordings, removed when dropped:
 /// - "2026-10-19 22-20-58": screen recording with summary, 2 action items (the first ticked off) and a transcript;
 /// - "2026-10-18 11-50-17": a link with a transcript but no summary yet;
 /// - "2026-10-17 09-00-00": no meta.json, only realtime captions.

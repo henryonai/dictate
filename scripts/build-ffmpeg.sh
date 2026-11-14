@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds the minimal LGPL ffmpeg that Dictate ships next to its own program (a Tauri sidecar called `loah-ffmpeg`).
+# Builds the minimal LGPL ffmpeg that Loah ships next to its own program (a Tauri sidecar called `loah-ffmpeg`).
 #
 # Usage: scripts/build-ffmpeg.sh TARGET OUTDIR
 #   TARGET  a Rust target triple (the name that Tauri wants after `loah-ffmpeg-`):

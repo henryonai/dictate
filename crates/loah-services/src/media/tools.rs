@@ -984,7 +984,7 @@ mod tests {
     #[tokio::test]
     async fn run_lets_the_program_start_system_programs_by_bare_name() {
         // `where` is in System32 on Windows and `uname` in /usr/bin: both are found through the PATH only. The PATH
-        // is the one Dictate builds, from the real system folders and a PATH of normal length: under `cargo test`
+        // is the one Loah builds, from the real system folders and a PATH of normal length: under `cargo test`
         // on Windows the PATH of the test process is about 15000 characters, and cmd.exe ignores a PATH longer
         // than 8191 altogether, so no order of the folders would let cmd find `where` there.
         let short_path = std::env::join_paths(short_system_path()).unwrap();

@@ -1,4 +1,4 @@
-//! The MCP server Dictate offers to AI clients: protocol over stdio, tools supplied by the caller.
+//! The MCP server Loah offers to AI clients: protocol over stdio, tools supplied by the caller.
 
 pub mod server;
 pub mod tools;

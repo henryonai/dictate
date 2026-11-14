@@ -389,7 +389,7 @@ export interface OpenRecorder {
 }
 
 /** The global that a meetings window made for the picker has before its page runs (`meetings::window::OPEN_RECORDER_GLOBAL`). */
-const OPEN_RECORDER_GLOBAL = "__dictateOpenRecorder";
+const OPEN_RECORDER_GLOBAL = "__loahOpenRecorder";
 
 /**
  * The ask for the picker that the window was made with, read once: a page that is not there yet can't hear `meetings-open-recorder`,

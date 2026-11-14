@@ -142,7 +142,7 @@ fn shaped<'a, R: Runtime>(
     builder: WebviewWindowBuilder<'a, R, AppHandle<R>>,
 ) -> WebviewWindowBuilder<'a, R, AppHandle<R>> {
     builder
-        .title("Dictate")
+        .title(crate::APP_NAME)
         .inner_size(WIDTH, HEIGHT)
         .transparent(true)
         .decorations(false)

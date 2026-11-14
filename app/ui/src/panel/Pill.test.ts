@@ -108,7 +108,7 @@ test("what went wrong while listening is said above the caption", () => {
   render(Pill, {
     panel: fakePanelState({ view: "pill", error: { key: "audio.silent", detail: null, action: null } }),
   });
-  expect(screen.getByRole("alert")).toHaveTextContent("Dictate only hears silence");
+  expect(screen.getByRole("alert")).toHaveTextContent("Loah only hears silence");
 });
 
 test("with nothing wrong the pill has no alert", () => {

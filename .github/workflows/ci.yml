@@ -51,7 +51,7 @@ jobs:
           shared-key: ${{ runner.os }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # The sherpa-onnx library (onnxruntime inside), and why each system gets it from where it does. The one thing that is the same
-      # everywhere: the speech synthesis of sherpa-onnx has espeak-ng in it, which is GPL-3.0 and which Dictate has no use for, and
+      # everywhere: the speech synthesis of sherpa-onnx has espeak-ng in it, which is GPL-3.0 and which Loah has no use for, and
       # scripts/check-no-espeak.sh (the `app` job) fails when a program or a library that is shipped has any of it.
       #  - macOS: the static library that the build script of sherpa-onnx-sys downloads and unpacks into
       #    target/sherpa-onnx-prebuilt (20 MB). A static link keeps out what the program does not use, and the check shows it.
@@ -275,7 +275,7 @@ jobs:
       - run: pnpm --dir app/ui test
       - run: pnpm --dir app/ui build
       - run: cargo build -p loah-app --locked
-      # sherpa-onnx comes with espeak-ng, which is GPL-3.0 and which Dictate has no use for (it is for speech synthesis). Windows and
+      # sherpa-onnx comes with espeak-ng, which is GPL-3.0 and which Loah has no use for (it is for speech synthesis). Windows and
       # Linux link the builds of sherpa-onnx that have none (see the test job), and macOS links the static library, which keeps out what
       # the program does not use: no program or library that is shipped may have any of it. On Windows the symbol names are in a
       # separate file, so the script looks for the string that espeak-ng reads its data path from. scripts/check-no-espeak.sh says more.
@@ -301,7 +301,7 @@ jobs:
           APPLE_SIGNING_IDENTITY: "-"
         run: |
           pnpm tauri build --debug --bundles app
-          bundle=../target/debug/bundle/macos/Dictate.app
+          bundle=../target/debug/bundle/macos/Loah.app
           plutil -extract NSMicrophoneUsageDescription raw "$bundle/Contents/Info.plist"
           codesign --verify --strict "$bundle"
           codesign -d --entitlements - "$bundle" 2>&1 | grep com.apple.security.device.audio-input

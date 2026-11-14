@@ -12,7 +12,7 @@ pub enum CardReason {
     AutoWriteOff,
     /// macOS only lets an app that has the Accessibility permission look into other apps' fields.
     AccessibilityMissing,
-    /// The app in front is Dictate: its own window is no place to paste into.
+    /// The app in front is Loah: its own window is no place to paste into.
     OwnWindow,
     /// The focus is on something that doesn't take text: a button, the desktop, a password field.
     NoField,

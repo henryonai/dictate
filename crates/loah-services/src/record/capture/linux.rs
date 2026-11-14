@@ -403,7 +403,7 @@ mod native {
             .map_err(|error| cannot(error.to_string()))?;
         let handle = runtime.handle().clone();
         thread::Builder::new()
-            .name("dictate portal".into())
+            .name("loah portal".into())
             .spawn(move || runtime.block_on(std::future::pending::<()>()))
             .map_err(|error| cannot(error.to_string()))?;
         *kept = Some(handle.clone());
@@ -730,7 +730,7 @@ mod native {
         let core = context.connect_fd_rc(fd, None).map_err(text)?;
         let stream = pw::stream::StreamBox::new(
             &core,
-            "dictate-screen",
+            "loah-screen",
             properties! {
                 *pw::keys::MEDIA_TYPE => "Video",
                 *pw::keys::MEDIA_CATEGORY => "Capture",
@@ -879,7 +879,7 @@ mod native {
         let (ready, readied) = mpsc::channel();
         let (finished, over) = mpsc::channel();
         let thread: JoinHandle<()> = thread::Builder::new()
-            .name("dictate screen".into())
+            .name("loah screen".into())
             .spawn({
                 let ender = ender.clone();
                 move || {

@@ -186,7 +186,7 @@ test("what went wrong while listening is said under the words, and the recording
   render(Bubble, {
     panel: fakePanelState({ committed: "Hello", error: { key: "audio.silent", detail: null, action: null } }),
   });
-  expect(screen.getByRole("alert")).toHaveTextContent("Dictate only hears silence");
+  expect(screen.getByRole("alert")).toHaveTextContent("Loah only hears silence");
   expect(screen.getByText("Listening")).toBeInTheDocument();
 });
 

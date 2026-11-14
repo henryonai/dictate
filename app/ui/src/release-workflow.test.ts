@@ -2,7 +2,7 @@
 // a dry run, and a release is never given another body than the one release-please wrote. These are the checks that nobody sees run until
 // the day a release ships without a sidecar. The workflow is read as text (as ci-workflow.test.ts reads the CI workflow); a Windows
 // checkout may have CRLF line ends, so they are made LF first.
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
@@ -149,23 +149,53 @@ describe("the Tauri build", () => {
   test("the_deb_puts_the_two_sherpa_libraries_where_the_run_path_of_the_program_looks_and_the_licenses_in_the_doc_folder", () => {
     const overlay = readJson("app/src-tauri/tauri.release.conf.json");
     expect(overlay.bundle.linux.deb.files).toEqual({
-      "/usr/lib/dictate/libsherpa-onnx-c-api.so": "libs/libsherpa-onnx-c-api.so",
-      "/usr/lib/dictate/libonnxruntime.so": "libs/libonnxruntime.so",
-      // The licenses of what is inside ask that their texts go with it: /usr/share/doc/dictate, and the `copyright` file of Debian.
-      "/usr/share/doc/dictate/LICENSE": "licenses/LICENSE",
-      "/usr/share/doc/dictate/THIRD_PARTY_NOTICES.md": "licenses/THIRD_PARTY_NOTICES.md",
-      "/usr/share/doc/dictate/THIRD_PARTY_LICENSES.txt": "licenses/THIRD_PARTY_LICENSES.txt",
-      "/usr/share/doc/dictate/COPYING.LGPLv2.1": "licenses/COPYING.LGPLv2.1",
-      "/usr/share/doc/dictate/copyright": "linux/copyright",
+      "/usr/lib/loah/libsherpa-onnx-c-api.so": "libs/libsherpa-onnx-c-api.so",
+      "/usr/lib/loah/libonnxruntime.so": "libs/libonnxruntime.so",
+      // The licenses of what is inside ask that their texts go with it: /usr/share/doc/loah, and the `copyright` file of Debian.
+      "/usr/share/doc/loah/LICENSE": "licenses/LICENSE",
+      "/usr/share/doc/loah/THIRD_PARTY_NOTICES.md": "licenses/THIRD_PARTY_NOTICES.md",
+      "/usr/share/doc/loah/THIRD_PARTY_LICENSES.txt": "licenses/THIRD_PARTY_LICENSES.txt",
+      "/usr/share/doc/loah/COPYING.LGPLv2.1": "licenses/COPYING.LGPLv2.1",
+      "/usr/share/doc/loah/copyright": "linux/copyright",
+      // The commands of Dictate 2.0.0, which the next test looks into.
+      "/usr/bin/dictate": "linux/dictate",
+      "/usr/bin/dictate-mcp": "linux/dictate-mcp",
     });
-    // /usr/bin/dictate finds /usr/lib/dictate through the run path that build.rs gives it (and tests/build_rpath.rs pins).
-    expect(read("app/src-tauri/build_rpath.rs")).toContain('"$ORIGIN/../lib/dictate"');
+    // /usr/bin/loah finds /usr/lib/loah through the run path that build.rs gives it (and tests/build_rpath.rs pins).
+    expect(read("app/src-tauri/build_rpath.rs")).toContain('"$ORIGIN/../lib/loah"');
     // Files that stage-sidecars.sh puts in libs/ (the same names, in the folder that the overlay names).
     expect(read("scripts/stage-sidecars.sh")).toContain('lib_dir="app/src-tauri/libs"');
   });
 
+  test("the_deb_keeps_the_commands_of_dictate_working_with_two_wrappers_that_hand_over_to_the_new_programs", () => {
+    // An MCP client set up for Dictate runs /usr/bin/dictate-mcp, and a shortcut of the desktop runs `dictate --toggle`: for the 2.x series
+    // they are two-line scripts (the bundler copies a file, and does not make a link) that run the new programs with the same arguments.
+    const files = readJson("app/src-tauri/tauri.release.conf.json").bundle.linux.deb.files;
+    expect(files["/usr/bin/dictate"]).toBe("linux/dictate");
+    expect(files["/usr/bin/dictate-mcp"]).toBe("linux/dictate-mcp");
+    expect(read("app/src-tauri/linux/dictate")).toBe('#!/bin/sh\nexec /usr/bin/loah "$@"\n');
+    expect(read("app/src-tauri/linux/dictate-mcp")).toBe('#!/bin/sh\nexec /usr/bin/loah-mcp "$@"\n');
+  });
+
+  test.skipIf(process.platform === "win32")("the_wrappers_are_executable_in_the_repository_because_the_bundler_keeps_the_mode_of_the_file", () => {
+    // tauri-bundler copies a `files` entry with fs::copy and writes the archive with a deterministic header: 0755 when the owner can run the
+    // file, 0644 when not. So the mode of the file here is the mode in the package (scripts/check-artifact.sh checks it there too).
+    for (const name of ["dictate", "dictate-mcp"]) {
+      const mode = statSync(join(repoRoot, "app/src-tauri/linux", name)).mode;
+      expect(mode & 0o111, name).toBe(0o111);
+    }
+  });
+
+  test("the_wrappers_keep_their_line_ends_on_every_system_so_that_the_shebang_still_finds_sh", () => {
+    // They have no `.sh`, which .gitattributes names for the scripts of the repository.
+    const attributes = read(".gitattributes");
+    for (const name of ["dictate", "dictate-mcp"]) {
+      expect(attributes, name).toMatch(new RegExp(`^app/src-tauri/linux/${name} text eol=lf$`, "m"));
+    }
+  });
+
   test("the_program_of_the_installer_gets_only_the_run_path_of_the_installed_package", () => {
-    // The entries for a build in the source tree ($ORIGIN/.., $ORIGIN/../../../..) would make /usr/bin/dictate look in /usr and in /.
+    // The entries for a build in the source tree ($ORIGIN/.., $ORIGIN/../../../..) would make /usr/bin/loah look in /usr and in /.
     const variable = /pub const INSTALLED_ONLY_VARIABLE: &str = "([A-Z_]+)";/.exec(read("app/src-tauri/build_rpath.rs"))?.[1];
     expect(variable).toBe("LOAH_RPATH_INSTALLED");
     expect(build()).toContain(`${variable}: "1"`);
@@ -192,7 +222,7 @@ describe("the Tauri build", () => {
   });
 
   test("the_license_files_go_in_contents_resources_licenses_of_the_mac_app_through_an_overlay_that_only_the_mac_rows_get", () => {
-    // Not in the overlay that every row gets: `bundle.resources` would put them in /usr/lib/Dictate on Linux too, where the deb has its own place.
+    // Not in the overlay that every row gets: `bundle.resources` would put them in /usr/lib/Loah on Linux too, where the deb has its own place.
     const mac = readJson("app/src-tauri/tauri.release.macos.conf.json");
     expect(mac.bundle.resources).toEqual(Object.fromEntries(LICENSE_FILES.map((name) => [`licenses/${name}`, `Licenses/${name}`])));
     for (const name of ["macos-arm64", "macos-x64"]) {
@@ -210,7 +240,7 @@ describe("the Tauri build", () => {
     expect(copyright).toMatch(/^Format: https:\/\/www\.debian\.org\/doc\/packaging-manuals\/copyright-format\/1\.0\/$/m);
     expect(copyright).toMatch(/^License: MIT$/m);
     expect(copyright).toContain("THIRD_PARTY_LICENSES.txt");
-    expect(copyright).toContain("/usr/share/doc/dictate/COPYING.LGPLv2.1");
+    expect(copyright).toContain("/usr/share/doc/loah/COPYING.LGPLv2.1");
   });
 
   test("tauri_action_is_not_used_so_nothing_can_blank_the_notes_that_release_please_wrote", () => {

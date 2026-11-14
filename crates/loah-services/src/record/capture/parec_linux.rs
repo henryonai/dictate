@@ -301,7 +301,7 @@ mod tests {
     fn a_parec_that_is_not_installed_is_a_start_that_needs_it() {
         let (tx, _rx) = mpsc::channel();
 
-        let started = start_with(Path::new("dictate-test-no-such-program"), tx);
+        let started = start_with(Path::new("loah-test-no-such-program"), tx);
 
         assert_eq!(started.err(), Some(StartError::NeedsParec));
     }

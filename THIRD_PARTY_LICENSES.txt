@@ -1,9 +1,9 @@
-Third-party license texts of Dictate
-=====================================
+Third-party license texts of Loah
+=================================
 
-This file has the license texts of the software that an installer of Dictate carries or that Dictate downloads, with the copyright lines
+This file has the license texts of the software that an installer of Loah carries or that Loah downloads, with the copyright lines
 and the notices that the licenses ask to keep. The list of components, the written offer of the FFmpeg source and where each thing comes
-from are in THIRD_PARTY_NOTICES.md, next to this file. Dictate itself is under the MIT license (LICENSE); the text of the LGPL 2.1, for FFmpeg
+from are in THIRD_PARTY_NOTICES.md, next to this file. Loah itself is under the MIT license (LICENSE); the text of the LGPL 2.1, for FFmpeg
 and glibc, is COPYING.LGPLv2.1.
 
 This file is made by scripts/generate-licenses.py: do not edit it by hand.

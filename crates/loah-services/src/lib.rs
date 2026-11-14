@@ -1,4 +1,4 @@
-//! Services for the Dictate app: settings, secrets, AI and transcription clients.
+//! Services for the Loah app: settings, secrets, AI and transcription clients.
 
 pub mod ai;
 pub mod audio;

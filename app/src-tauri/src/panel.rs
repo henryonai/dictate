@@ -515,7 +515,7 @@ fn floating(
     size: (f64, f64),
 ) -> WebviewWindowBuilder<'_, tauri::Wry, AppHandle> {
     builder
-        .title("Dictate")
+        .title(crate::APP_NAME)
         .inner_size(size.0, size.1)
         .transparent(true)
         .decorations(false)
@@ -918,7 +918,7 @@ async fn ask_controller<T: Send + 'static>(
         .map_err(|e| format!("The work stopped unexpectedly: {e}"))
 }
 
-const STARTING: &str = "Dictate is still starting. Try again in a moment.";
+const STARTING: &str = "Loah is still starting. Try again in a moment.";
 
 /// The panel as it is now: a page that loads after a state was sent asks for it, so that it is not blank until the next one.
 #[tauri::command]

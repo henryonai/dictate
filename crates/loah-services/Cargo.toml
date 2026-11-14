@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Services for the Dictate app: settings, secrets, AI and transcription clients"
+description = "Services for the Loah app: settings, secrets, AI and transcription clients"
 
 [features]
 # The scripted `MeetingBackend` of the meeting pipeline's tests (`meetings::fakes`) and the scripted sources of the

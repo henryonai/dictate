@@ -1,4 +1,4 @@
-//! loah-mcp: lets Claude (Code or Desktop) read the Dictate library over MCP on stdio.
+//! loah-mcp: lets Claude (Code or Desktop) read the Loah library over MCP on stdio.
 //! `DICTATE_MEETINGS_DIR` points it at another library (see `MeetingLibrary::default_directory`).
 
 use std::io::{self, IsTerminal, Write};
@@ -15,7 +15,7 @@ fn main() {
     }
     let library = MeetingLibrary::new(MeetingLibrary::default_directory());
     McpServer::new(
-        "dictate",
+        "loah",
         env!("CARGO_PKG_VERSION"),
         tools::INSTRUCTIONS,
         tools::all(library),
@@ -33,8 +33,8 @@ fn help(executable: &str) -> String {
     };
     format!(
         "loah-mcp is an MCP server for Claude: it reads JSON-RPC on stdin. Add it with\n  \
-         claude mcp add dictate -- {command}\n\
-         or in Claude Desktop's config (see the Dictate README).\n"
+         claude mcp add loah -- {command}\n\
+         or in Claude Desktop's config (see the Loah README).\n"
     )
 }
 
@@ -53,16 +53,16 @@ mod tests {
     #[test]
     fn help_says_how_to_add_the_server_with_the_executable_path() {
         assert_eq!(
-            help("/opt/dictate/loah-mcp"),
+            help("/opt/loah/loah-mcp"),
             "loah-mcp is an MCP server for Claude: it reads JSON-RPC on stdin. Add it with\n  \
-             claude mcp add dictate -- /opt/dictate/loah-mcp\n\
-             or in Claude Desktop's config (see the Dictate README).\n"
+             claude mcp add loah -- /opt/loah/loah-mcp\n\
+             or in Claude Desktop's config (see the Loah README).\n"
         );
     }
 
     #[test]
     fn help_quotes_a_path_with_spaces() {
-        let text = help("C:\\Program Files\\Dictate\\loah-mcp.exe");
-        assert!(text.contains("-- \"C:\\Program Files\\Dictate\\loah-mcp.exe\"\n"));
+        let text = help("C:\\Program Files\\Loah\\loah-mcp.exe");
+        assert!(text.contains("-- \"C:\\Program Files\\Loah\\loah-mcp.exe\"\n"));
     }
 }

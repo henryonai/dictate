@@ -31,7 +31,7 @@ function readyRows() {
 test("empty_library_shows_cards_and_ready_rows: the heading, the two cards, the drop zone and what is ready", () => {
   render(Empty, { store });
 
-  expect(screen.getByRole("heading", { level: 1, name: "Record it, Dictate summarizes it" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { level: 1, name: "Record it, Loah summarizes it" })).toBeInTheDocument();
   expect(screen.getByText("Get a summary, decisions and action items — with the transcript to check against.")).toBeInTheDocument();
 
   expect(screen.getByRole("button", { name: /Choose file/ })).toHaveTextContent("Existing video or audio: mp4, mov, m4a, mp3, wav.");
@@ -140,7 +140,7 @@ test("speaks Vietnamese when the language is", () => {
   setLanguage("vi");
   render(Empty, { store });
 
-  expect(screen.getByRole("heading", { level: 1, name: "Ghi lại, Dictate tóm tắt giúp bạn" })).toBeInTheDocument();
+  expect(screen.getByRole("heading", { level: 1, name: "Ghi lại, Loah tóm tắt giúp bạn" })).toBeInTheDocument();
   expect(screen.getByText("Hoặc kéo thả file video/audio vào đây")).toBeInTheDocument();
   expect(screen.getByRole("region", { name: "Sẵn sàng chưa?" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: /Quay màn hình/ })).toHaveTextContent("Cuộc họp Zoom, Meet, bài giảng — thu cả âm thanh máy và micro.");
