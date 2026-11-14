@@ -49,9 +49,10 @@ env:
   FFMPEG_VERSION: 9.0.2
 
 jobs:
-  # First, and cheap: what a release needs that a dry run may lack. With a tag, a repository without the notices of third-party licenses
-  # fails here, and not after the hour that the installers take (the job that attaches the files has the same rule, for when it is run
-  # alone). Every job builds `inputs.tag` when there is one (a run started by hand on main with a tag builds the tag, and not the tip of
+  # First, and cheap: what every installer carries. The files of the licenses (the repository's LICENSE, the notices of third-party licenses,
+  # their texts and the LGPL) go into each installer, and scripts/stage-sidecars.sh stops without any of them: a run that lacks one fails
+  # here, a dry run too, and not after the hour that the installers take (the job that attaches the files has the same rule, for when it is
+  # run alone). Every job builds `inputs.tag` when there is one (a run started by hand on main with a tag builds the tag, and not the tip of
   # main, which may be a later commit), and the commit that the run was started on when there is not (a dry run).
   preflight:
     name: what a release needs
@@ -62,16 +63,16 @@ jobs:
         with:
           ref: ${{ inputs.tag || github.sha }}
           persist-credentials: false
-      - name: Check that the notices of third-party licenses are there
-        env:
-          TAG: ${{ inputs.tag }}
+      - name: Check that the files of the licenses are there
         run: |
-          if [ -n "$TAG" ] && [ ! -f THIRD_PARTY_NOTICES.md ]; then
-            echo "::error::THIRD_PARTY_NOTICES.md is not in the repository at $TAG, and a release has to come with it (the licenses of what is inside ask for it)"
-            exit 1
-          elif [ ! -f THIRD_PARTY_NOTICES.md ]; then
-            echo "::warning::THIRD_PARTY_NOTICES.md is not in the repository yet: this dry run goes on without it"
-          fi
+          missing=0
+          for name in LICENSE THIRD_PARTY_NOTICES.md THIRD_PARTY_LICENSES.txt COPYING.LGPLv2.1; do
+            if [ ! -f "$name" ]; then
+              echo "::error::$name is not in the repository, and every installer carries it (scripts/stage-sidecars.sh stops without it): the licenses of what is inside ask for it"
+              missing=1
+            fi
+          done
+          exit "$missing"
 
   # The Windows ffmpeg is built on Linux with mingw-w64 (the Windows runner has no toolchain that builds ffmpeg quickly), and the Windows row
   # takes the program from the artifact of this job. The source tarball that it was built from goes up too, for the release.
@@ -386,20 +387,15 @@ jobs:
           pattern: buildconf-*
           path: release-files
           merge-multiple: true
-      # The notices are in the repository (the file is written by the task that adds the licenses). A release without them does not go out;
-      # a dry run is tried before they are there, and says so.
+      # The notices are in the repository, and a run without them does not go on, a dry run neither (no installer is built without them: the
+      # licenses of what is inside ask for them).
       - name: Add the notices of third-party licenses
-        env:
-          TAG: ${{ inputs.tag }}
         run: |
-          if [ -f THIRD_PARTY_NOTICES.md ]; then
-            cp THIRD_PARTY_NOTICES.md release-files/
-          elif [ -n "$TAG" ]; then
-            echo "::error::THIRD_PARTY_NOTICES.md is not in the repository, and a release has to come with it (the licenses of what is inside ask for it)"
+          if [ ! -f THIRD_PARTY_NOTICES.md ]; then
+            echo "::error::THIRD_PARTY_NOTICES.md is not in the repository, and every installer carries it (the licenses of what is inside ask for it)"
             exit 1
-          else
-            echo "::warning::THIRD_PARTY_NOTICES.md is not in the repository yet: this dry run goes on without it"
           fi
+          cp THIRD_PARTY_NOTICES.md release-files/
       - name: Check that every file is there
         run: |
           missing=0

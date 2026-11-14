@@ -315,27 +315,38 @@ describe("what the workflow builds, and what it is allowed to keep of its token"
   });
 });
 
-describe("the notices are checked before anything is built, when there is a tag", () => {
+describe("the license files are checked before anything is built, for every run", () => {
   const preflight = () => job("preflight");
 
-  test("a_job_that_runs_first_fails_a_tag_without_the_notices_and_a_dry_run_goes_on", () => {
+  test("a_job_that_runs_first_fails_any_run_that_lacks_one_of_the_license_files_a_dry_run_included", () => {
+    // stage-sidecars.sh stops without any of the four, so a dry run that goes on without one would only fail an hour later: the same rule
+    // for every run, and no branch that says "a dry run goes on".
     const check = step("preflight", "THIRD_PARTY_NOTICES.md");
-    expect(check).toContain("TAG: ${{ inputs.tag }}");
-    expect(check).toMatch(/if \[ -n "\$TAG" \] && \[ ! -f THIRD_PARTY_NOTICES\.md \]; then/);
-    expect(check).toMatch(/::error::[^\n]*THIRD_PARTY_NOTICES\.md/);
-    expect(check).toContain("exit 1");
-    // A dry run says so: the notices are written by a later task.
-    expect(check).toMatch(/::warning::[^\n]*dry run/);
+    for (const name of LICENSE_FILES) expect(check, name).toContain(name);
+    expect(check).toMatch(/if \[ ! -f "\$name" \]; then/);
+    expect(check).toMatch(/::error::[^\n]*\$name[^\n]*stage-sidecars\.sh/);
+    expect(check).toContain('exit "$missing"');
+    expect(check).not.toContain("::warning::");
+    expect(check).not.toContain("TAG");
+    expect(check).not.toContain("inputs.tag");
     // It has the files of the commit that is built.
     expect(stepsOf("preflight")[0]).toContain("ref: ${{ inputs.tag || github.sha }}");
     expect(preflight()).not.toMatch(/^ {4}needs:/m);
+  });
+
+  test("the_files_it_names_are_the_ones_the_staging_script_needs", () => {
+    const stage = read("scripts/stage-sidecars.sh");
+    const loop = /for license in ([^;]+); do/.exec(stage)?.[1].split(/\s+/);
+    expect(loop).toEqual(LICENSE_FILES);
+    const check = step("preflight", "THIRD_PARTY_NOTICES.md");
+    expect(/for name in ([^;]+); do/.exec(check)?.[1].split(/\s+/)).toEqual(LICENSE_FILES);
   });
 
   test("nothing_is_built_before_it_and_the_job_that_attaches_the_files_still_has_its_own_rule", () => {
     expect(job("ffmpeg-windows")).toMatch(/^ {4}needs: preflight$/m);
     expect(job("build")).toMatch(/^ {4}needs: \[preflight, ffmpeg-windows\]$/m);
     // The later job copies the file and keeps the rule: it is the one that attaches it.
-    expect(step("sources", "THIRD_PARTY_NOTICES.md")).toMatch(/elif \[ -n "\$TAG" \]/);
+    expect(step("sources", "THIRD_PARTY_NOTICES.md")).toContain("if [ ! -f THIRD_PARTY_NOTICES.md ]; then");
   });
 });
 
@@ -523,20 +534,16 @@ describe("the files that go with the installers: the ffmpeg source, the build li
     expect(sources().indexOf(list)).toBeLessThan(sources().indexOf("gh release upload"));
   });
 
-  test("the_notices_are_attached_and_a_tag_without_them_fails_while_a_dry_run_goes_on_without", () => {
+  test("the_notices_are_attached_and_a_run_without_them_fails", () => {
     const notices = step("sources", "THIRD_PARTY_NOTICES.md");
-    // A dry run is run before the notices are written (and after): it says so and goes on. A release without them does not go out: the
-    // LGPL, Apache-2.0, MIT and CC-BY licenses of what is inside ask for them.
-    expect(notices).toContain("TAG: ${{ inputs.tag }}");
-    expect(notices).toMatch(/if \[ -f THIRD_PARTY_NOTICES\.md \]/);
-    expect(notices).toMatch(/elif \[ -n "\$TAG" \]/);
+    // The LGPL, Apache-2.0, MIT and CC-BY licenses of what is inside ask for them, and no installer is built without them (preflight, and
+    // stage-sidecars.sh): this job, run alone, has the same rule for a dry run and for a tag.
+    expect(notices).toContain("if [ ! -f THIRD_PARTY_NOTICES.md ]; then");
     expect(notices).toMatch(/::error::[^\n]*THIRD_PARTY_NOTICES\.md/);
-    expect(notices).toMatch(/exit 1/);
-    expect(notices).toMatch(/::warning::[^\n]*dry run/);
-    // The error is for a tag: the branch with the warning is the one without.
-    expect(notices.indexOf("elif")).toBeLessThan(notices.indexOf("::error::"));
-    expect(notices.indexOf("::error::")).toBeLessThan(notices.indexOf("else"));
-    expect(notices.indexOf("else")).toBeLessThan(notices.indexOf("::warning::"));
+    expect(notices).toContain("exit 1");
+    expect(notices).toContain("cp THIRD_PARTY_NOTICES.md release-files/");
+    expect(notices).not.toContain("::warning::");
+    expect(notices).not.toContain("TAG");
   });
 
   test("they_are_attached_only_when_a_tag_is_given_and_kept_as_an_artifact_always", () => {
