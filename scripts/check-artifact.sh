@@ -303,6 +303,15 @@ esac
 
 # ---- the result --------------------------------------------------------------------------------------------------------------
 
+# What the installer has, with the size of each file: the log of a release is where it is looked at afterwards.
+echo "what $artifact has (bytes, file):"
+(
+  cd "$root" &&
+    find . -type f -print | LC_ALL=C sort | while IFS= read -r file; do
+      printf '%12d %s\n' "$(wc -c <"$file")" "$file"
+    done
+)
+
 if [ -n "$problems" ]; then
   echo "check-artifact: $artifact ($kind) is not fit to be released:" >&2
   printf '%s' "$problems" >&2

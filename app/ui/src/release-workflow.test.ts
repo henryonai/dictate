@@ -284,9 +284,19 @@ describe("the same pins as ci.yml, so that a bump of one cannot leave the other 
     expect(`${ours![1]} ${ours![2]}`).toBe(`${theirs![1]} ${theirs![2]}`);
   });
 
-  test("the_rust_is_the_stable_one_with_the_target_of_the_row", () => {
-    const rust = step("build", "dtolnay/rust-toolchain@stable");
-    expect(rust).toContain("targets: ${{ matrix.target }}");
+  test("the_rust_is_1_99_with_the_target_of_the_row_and_it_beats_the_stable_of_rust_toolchain_toml", () => {
+    // tauri-build 2.6.3 (Tauri 2.11) takes the folder of the program to be three levels above OUT_DIR, which is where Cargo until 1.99 builds
+    // it. Cargo 1.100 builds it in build/<package>/<hash>/out, so the sidecars are copied into target/<target>/release/build, where the
+    // folder that Cargo made for dictate-mcp stops the copy. tauri-build 2.7 (Tauri 2.12) walks up to `build`: the pin goes with that bump.
+    const rust = step("build", "- name: Install Rust 1.99");
+    expect(rust).toContain("rustup toolchain install 1.99.1 --profile minimal --target ${{ matrix.target }}");
+    expect(rust).toContain('echo "RUSTUP_TOOLCHAIN=1.99.1" >> "$GITHUB_ENV"');
+    // Before anything is built, and before the cache of the build reads which compiler it is for.
+    const text = job("build");
+    expect(text.indexOf(rust)).toBeLessThan(text.indexOf("Swatinem/rust-cache@v2"));
+    expect(text.indexOf(rust)).toBeLessThan(text.indexOf("scripts/stage-sidecars.sh"));
+    expect(read("rust-toolchain.toml")).toContain('channel = "stable"');
+    expect(workflow).not.toContain("dtolnay/rust-toolchain");
   });
 });
 
@@ -311,8 +321,13 @@ describe("what happens to an installer once it is built", () => {
     const sums = step("build", "- name: Write the checksum");
     // The hash is made in the folder of the installer, so that the file has the name and not the path.
     expect(sums).toMatch(/cd "\$\(dirname "\$INSTALLER"\)"/);
-    expect(sums).toContain('sha256sum "$name" > "$name.sha256"');
-    expect(sums).toContain('shasum -a 256 "$name" > "$name.sha256"');
+    // The line is written here, with the two blanks: the sha256sum of Git Bash on Windows writes `<hash> *<name>` (binary mode), which the
+    // verification of a person on another system would read as a file called `*name`.
+    expect(sums).toContain("printf '%s  %s\\n' \"$hash\" \"$name\" > \"$name.sha256\"");
+    expect(sums).not.toMatch(/sha256sum "\$name" >|shasum -a 256 "\$name" >/);
+    // Both ways of hashing, and the check of the file that was written with the tool of the system.
+    expect(sums).toContain('sha256sum "$name"');
+    expect(sums).toContain('shasum -a 256 "$name"');
     expect(sums).toContain('sha256sum -c "$name.sha256"');
     expect(sums).toContain('shasum -a 256 -c "$name.sha256"');
   });

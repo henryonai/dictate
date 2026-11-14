@@ -245,6 +245,35 @@ fn a_complete_deb_passes() {
 }
 
 #[test]
+fn it_lists_what_the_installer_has_with_the_size_of_each_file_so_that_the_log_of_a_release_shows_it(
+) {
+    // The log of the job is where a release is looked at afterwards: what was in the installer, and how big.
+    let root = tree(deb);
+
+    let output = Tools::new().run(root.path());
+
+    assert_passes(&output);
+    let listing = stdout(&output);
+    for file in [
+        "./usr/bin/dictate",
+        "./usr/bin/dictate-ffmpeg",
+        "./usr/lib/dictate/libonnxruntime.so",
+    ] {
+        assert!(
+            listing.lines().any(|line| line.trim_end().ends_with(file)),
+            "{file} is not in:\n{listing}"
+        );
+    }
+    // The size comes first: the length of the stand-in for the libraries ("ELF stand-in\n") is 13 bytes.
+    assert!(
+        listing
+            .lines()
+            .any(|line| line.trim_start().starts_with("13 ") && line.ends_with("libonnxruntime.so")),
+        "{listing}"
+    );
+}
+
+#[test]
 fn a_deb_without_the_ffmpeg_sidecar_fails_and_says_which_file_is_missing() {
     let root = tree(deb);
     fs::remove_file(root.path().join("usr/bin/dictate-ffmpeg")).unwrap();

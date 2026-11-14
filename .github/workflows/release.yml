@@ -131,9 +131,15 @@ jobs:
             bundles: deb
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
+      # Rust 1.99, and not the latest: tauri-build 2.6.3 (the one of Tauri 2.11) takes the folder of the program to be three levels above
+      # OUT_DIR, which is where Cargo until 1.99 builds it. Cargo 1.100 builds it in build/<package>/<hash>/out, so the sidecars would be
+      # copied into target/<target>/release/build, and the copy stops on the folder that Cargo made there for dictate-mcp ("Is a directory").
+      # tauri-build 2.7 (Tauri 2.12) walks up to the `build` folder: move to the latest Rust together with it. RUSTUP_TOOLCHAIN beats the
+      # `stable` of rust-toolchain.toml for every command of the job; MSRV and the tests of ci.yml stay on the ones they are on.
+      - name: Install Rust 1.99 for the target of the row
+        run: |
+          rustup toolchain install 1.99.1 --profile minimal --target ${{ matrix.target }}
+          echo "RUSTUP_TOOLCHAIN=1.99.1" >> "$GITHUB_ENV"
       # One cache for each target. A dry run (no tag) on a branch saves it too, so that the next try of the same branch does not start
       # cold; a release is called from main.
       - uses: Swatinem/rust-cache@v2
@@ -266,8 +272,9 @@ jobs:
         env:
           INSTALLER: ${{ steps.installer.outputs.path }}
         run: bash scripts/check-artifact.sh "$INSTALLER"
-      # <installer>.sha256 holds `<hash>  <name>`, the format that sha256sum -c and shasum -c read. The hash is made in the folder of the
-      # installer so that the file has the name and not the path, and it is checked at once.
+      # <installer>.sha256 holds `<hash>  <name>` (two blanks), the format that sha256sum -c and shasum -c read. The line is written here
+      # because the sha256sum of Git Bash on Windows writes `<hash> *<name>`. The hash is made in the folder of the installer so that the
+      # file has the name and not the path, and the file is checked at once.
       - name: Write the checksum
         env:
           INSTALLER: ${{ steps.installer.outputs.path }}
@@ -275,10 +282,14 @@ jobs:
           cd "$(dirname "$INSTALLER")"
           name="$(basename "$INSTALLER")"
           if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum "$name" > "$name.sha256"
+            hash="$(sha256sum "$name" | cut -d' ' -f1)"
+          else
+            hash="$(shasum -a 256 "$name" | cut -d' ' -f1)"
+          fi
+          printf '%s  %s\n' "$hash" "$name" > "$name.sha256"
+          if command -v sha256sum >/dev/null 2>&1; then
             sha256sum -c "$name.sha256"
           else
-            shasum -a 256 "$name" > "$name.sha256"
             shasum -a 256 -c "$name.sha256"
           fi
           cat "$name.sha256"
