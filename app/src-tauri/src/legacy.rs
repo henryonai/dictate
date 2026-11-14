@@ -162,8 +162,9 @@ fn process_is_old_app(exe_link: &str, is_program: impl Fn(&std::path::Path) -> b
         || (exe_link == PROGRAM && is_program(std::path::Path::new(PROGRAM)))
 }
 
-/// Whether a process under `proc_root` (`/proc`) is the old Dictate.
-#[cfg(any(test, target_os = "linux"))]
+/// Whether a process under `proc_root` (`/proc`) is the old Dictate. (Its test needs symbolic links, so on Windows the
+/// function is left out of the test build too.)
+#[cfg(any(all(test, unix), target_os = "linux"))]
 fn old_app_in_proc(proc_root: &std::path::Path) -> bool {
     let Ok(entries) = std::fs::read_dir(proc_root) else {
         return false;
