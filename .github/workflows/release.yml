@@ -134,12 +134,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      # One cache for each target. A dry run on a branch saves it too, so that the next try of the same branch does not start cold; a
-      # release is called from main.
+      # One cache for each target. A dry run (no tag) on a branch saves it too, so that the next try of the same branch does not start
+      # cold; a release is called from main.
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: release-${{ matrix.target }}
-          save-if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' }}
+          save-if: ${{ github.ref == 'refs/heads/main' || inputs.tag == '' }}
       # The binary runs on macOS 13 and later, as Info.plist says: the C, C++ and Swift code of the libraries is built for that too (the
       # default of Rust for Intel is older than std::filesystem, which whisper.cpp uses), and so is ffmpeg (scripts/build-ffmpeg.sh).
       - name: Build for macOS 13 and later
