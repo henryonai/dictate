@@ -486,7 +486,10 @@ mod tests {
         );
     }
 
-    /// `ping` by its path, as a script of the system's own programs is run by `cmd`: through `%SystemRoot%`, which is not a PATH.
+    /// `ping` by its path, through `%SystemRoot%`, which is not a PATH. The PATH that the programs are started with is the one of the
+    /// machine with the folders of the system and of the tools added, and on the Windows runners of CI it is over 15,000 characters:
+    /// `cmd.exe` ignores a PATH of more than 8191 altogether, so a batch file that says `ping` gets "'ping' is not recognized" and goes
+    /// on to its next line at once.
     #[cfg(windows)]
     const PING: &str = r#""%SystemRoot%\System32\PING.EXE""#;
 
@@ -499,10 +502,11 @@ mod tests {
         // until it ends (or is full), so that only a `ping` that was left running to its end has filled this one. Once
         // the sink is dropped, no such `ping` is left, and the job that counts what ffmpeg started is empty.
         //
-        // What is not looked at is a file that the program's `cmd` writes after its `ping` has ended: a program of the
-        // kind may end by itself at any moment (a `ping` that was not found ends at once), and a job is ended one
-        // process after the other, so that a `cmd` whose `ping` was ended first may write it in the moment before it is
-        // ended itself. It says nothing of whether anything was left running.
+        // The test used to have a program of `ping -n 4 127.0.0.1 >nul & echo late> late.txt` (`ping` found through the PATH, see
+        // `PING`), and ask whether `late.txt` was there some seconds after the drop. The `ping` was never found on CI, so the
+        // program wrote the file by itself a few hundred milliseconds after it started, and the test passed only when the drop
+        // got there first, which it did not every time. The kill was not at fault: with a `ping` that runs, the drop left nothing
+        // behind in 80 of 80 runs (the program started in two ways), with the job empty each time.
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("audio.m4a");
         let pinged = dir.path().join("ping.txt");
@@ -548,258 +552,6 @@ mod tests {
         assert!(
             lines < 8,
             "a program that ffmpeg started went on to its end ({lines} lines of ping.txt); in the job before the drop, {before}"
-        );
-    }
-
-    // ---- A hunt for the flake of the test above (temporary): the same drop, in three ways of making the fake's own program, many at once.
-
-    /// Every cmd.exe, ping.exe and conhost.exe on the machine, as `pid<-ppid name`.
-    #[cfg(windows)]
-    fn some_processes() -> Vec<String> {
-        use windows::Win32::Foundation::CloseHandle;
-        use windows::Win32::System::Diagnostics::ToolHelp::{
-            CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
-            TH32CS_SNAPPROCESS,
-        };
-        let mut found = Vec::new();
-        // SAFETY: the snapshot handle is closed before this returns, and the entry is the size that is told.
-        unsafe {
-            let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
-                return found;
-            };
-            let mut entry = PROCESSENTRY32W {
-                dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
-                ..Default::default()
-            };
-            let mut more = Process32FirstW(snapshot, &mut entry).is_ok();
-            while more {
-                let length = entry
-                    .szExeFile
-                    .iter()
-                    .position(|c| *c == 0)
-                    .unwrap_or(entry.szExeFile.len());
-                let name = String::from_utf16_lossy(&entry.szExeFile[..length]).to_lowercase();
-                if name == "cmd.exe" || name == "ping.exe" || name == "conhost.exe" {
-                    found.push(format!(
-                        "{}<-{} {name}",
-                        entry.th32ProcessID, entry.th32ParentProcessID
-                    ));
-                }
-                more = Process32NextW(snapshot, &mut entry).is_ok();
-            }
-            let _ = CloseHandle(snapshot);
-        }
-        found
-    }
-
-    /// What one run of the hunt found.
-    #[cfg(windows)]
-    #[derive(Debug, Default)]
-    struct Found {
-        /// `late.txt` is there: written by the program's `cmd` after its `ping` ends.
-        old_late: bool,
-        /// `late.txt` was written before the drop began (the program was over by itself), and not while the job was being ended.
-        late_before_drop: bool,
-        /// `ping` itself went on to its end after the drop: it prints its statistics only then. A program that survived the kill.
-        ping_done: bool,
-        /// How many processes of the job were left when the drop returned.
-        left_after_drop: u32,
-        /// The control: how long the program lived by itself when the sink was kept, how many lines its ping wrote, and what it said
-        /// on its standard error.
-        lived_ms: Option<u128>,
-        ping_lines: usize,
-        said: String,
-        note: String,
-    }
-
-    /// 1: the control with `ping` found through the PATH, as the test above has it. 2: the control with `ping` by its path. In a
-    /// control the sink is kept for six seconds and the program is watched. 3: the fake runs the program (by its path) and waits for
-    /// it, as a shim does, and the sink is dropped when the program says that it is running. 4: `start /b` makes the program.
-    /// The program is `echo up & ping -n 4 > ping.txt & echo late > late.txt`.
-    #[cfg(windows)]
-    fn hunt_one(variant: u8, tag: &str) -> Result<Found, String> {
-        let dir = tempfile::tempdir().unwrap();
-        let out = dir.path().join("audio.m4a");
-        let late = dir.path().join("late.txt");
-        let pinged = dir.path().join("ping.txt");
-        let said = dir.path().join("said.txt");
-        let started = dir.path().join("started.txt");
-        let up = dir.path().join("up.txt");
-        let tool = if variant == 1 { "ping" } else { PING };
-        let ping = format!(
-            "{tool} -n 4 127.0.0.1 > \"{}\" 2> \"{}\"",
-            pinged.display(),
-            said.display()
-        );
-        let (fake, waits) = if variant != 4 {
-            let own = script(
-                dir.path(),
-                "own",
-                "",
-                &format!(
-                    "echo started> \"{}\" & echo up> \"{}\" & {ping} & echo late> \"{}\"",
-                    started.display(),
-                    up.display(),
-                    late.display()
-                ),
-            );
-            let fake = script(
-                dir.path(),
-                "fake-ffmpeg",
-                "",
-                &format!("cmd /c \"{}\"", own.display()),
-            );
-            (fake, vec![started.clone(), up.clone()])
-        } else {
-            let own = script(
-                dir.path(),
-                "own",
-                "",
-                &format!(
-                    "echo up> \"{}\" & {ping} & echo late> \"{}\"",
-                    up.display(),
-                    late.display()
-                ),
-            );
-            let fake = script(
-                dir.path(),
-                "fake-ffmpeg",
-                "",
-                &format!(
-                    "start \"\" /b cmd /c \"{}\" & echo started> \"{}\" & {PING} -n 60 127.0.0.1 >nul",
-                    own.display(),
-                    started.display()
-                ),
-            );
-            (fake, vec![started.clone(), up.clone()])
-        };
-        let control = variant <= 2;
-        let t0 = std::time::Instant::now();
-        let sink = start(&out, &fake).map_err(|e| format!("{tag}: {e:?}"))?;
-        let job = sink.job.clone();
-        let describe = |job: &Option<Arc<job::Job>>| {
-            job.as_ref()
-                .map_or_else(|| "no job".to_owned(), |job| job.describe())
-        };
-        let mut timeline: Vec<String> = Vec::new();
-        let mut last = String::new();
-        let give_up = std::time::Instant::now() + Duration::from_secs(20);
-        while !waits.iter().all(|file| file.exists()) {
-            if std::time::Instant::now() > give_up {
-                return Err(format!("{tag}: the fake never started"));
-            }
-            let now = describe(&job);
-            if now != last {
-                timeline.push(format!("+{}ms {now}", t0.elapsed().as_millis()));
-                last = now;
-            }
-            std::thread::sleep(Duration::from_millis(2));
-        }
-        let before = describe(&job);
-        let seen_at = t0.elapsed().as_millis();
-
-        // The control: the sink is kept, and what the job holds is watched until it is empty or six seconds have gone by.
-        let mut lived_ms = None;
-        if control {
-            let begun = std::time::Instant::now();
-            while begun.elapsed() < Duration::from_secs(6) {
-                if job
-                    .as_ref()
-                    .and_then(|job| job.active_processes().ok())
-                    .is_some_and(|active| active == 0)
-                {
-                    lived_ms = Some(begun.elapsed().as_millis());
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(5));
-            }
-        }
-
-        let before_drop = std::time::SystemTime::now();
-        drop(sink);
-        let dropped_at = t0.elapsed().as_millis();
-        let left_after_drop = job
-            .as_ref()
-            .and_then(|job| job.active_processes().ok())
-            .unwrap_or(u32::MAX);
-
-        std::thread::sleep(Duration::from_secs(1));
-        let survivors = some_processes();
-        std::thread::sleep(Duration::from_secs(5));
-        let ping_text = std::fs::read_to_string(&pinged).unwrap_or_default();
-        let written = std::fs::metadata(&late).and_then(|m| m.modified()).ok();
-        let found = Found {
-            old_late: late.exists(),
-            late_before_drop: written.is_some_and(|written| written < before_drop),
-            ping_done: ping_text.contains("statistics") || ping_text.lines().count() >= 8,
-            left_after_drop,
-            lived_ms,
-            ping_lines: ping_text.lines().count(),
-            said: std::fs::read_to_string(&said)
-                .unwrap_or_default()
-                .chars()
-                .take(120)
-                .collect(),
-            note: String::new(),
-        };
-        if !control && (found.old_late || found.ping_done || left_after_drop != 0) {
-            return Ok(Found {
-                note: format!(
-                    "{tag}: old_late {}, written before the drop {}, ping_done {}, left when the drop returned {left_after_drop}. seen at +{seen_at}ms, dropped by +{dropped_at}ms\n  timeline: {timeline:?}\n  before: {before}\n  1 s after the drop: {survivors:?}\n  ping.txt: {ping_text:?}",
-                    found.old_late, found.late_before_drop, found.ping_done
-                ),
-                ..found
-            });
-        }
-        Ok(found)
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn hunt_the_windows_flake() {
-        // Per variant: runs, old oracle, written before the drop, ping finished, job not empty at the drop.
-        let mut counts = [[0usize; 5]; 4];
-        let mut control: Vec<(u8, Option<u128>, usize, String)> = Vec::new();
-        let mut notes: Vec<String> = Vec::new();
-        for round in 0..2 {
-            let handles: Vec<_> = (0..40)
-                .map(|i| {
-                    let variant = (i % 4) as u8 + 1;
-                    std::thread::spawn(move || {
-                        (
-                            variant,
-                            hunt_one(variant, &format!("variant {variant} round {round} #{i}")),
-                        )
-                    })
-                })
-                .collect();
-            for handle in handles {
-                let (variant, result) = handle.join().unwrap();
-                let row = &mut counts[variant as usize - 1];
-                row[0] += 1;
-                match result {
-                    Ok(found) => {
-                        row[1] += usize::from(found.old_late);
-                        row[2] += usize::from(found.late_before_drop);
-                        row[3] += usize::from(found.ping_done);
-                        row[4] += usize::from(found.left_after_drop != 0);
-                        if variant <= 2 {
-                            control.push((variant, found.lived_ms, found.ping_lines, found.said));
-                        } else if (found.ping_done || found.left_after_drop != 0 || notes.len() < 4)
-                            && !found.note.is_empty()
-                        {
-                            notes.push(found.note);
-                        }
-                    }
-                    Err(message) => notes.push(message),
-                }
-            }
-        }
-        let path = std::env::var_os("PATH").map_or(0, |p| p.len());
-        panic!(
-            "HUNT RESULT, [runs, old oracle, written before the drop, ping finished, job not empty at the drop] per variant: {counts:?}\nPATH of the test {path} characters, the search path of the programs it starts {}\ncontrol, (variant, ms the program lived alone, lines of ping.txt, what it said on stderr): {control:?}\n{}",
-            tools::search_path().len(),
-            notes.join("\n")
         );
     }
 }
