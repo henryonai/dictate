@@ -2,7 +2,8 @@
 // them goes somewhere, the MCP server is named by its path on every system, the notices of third-party licenses carry what the
 // licenses ask for, and the developer guide no longer says what the installers made untrue. The files are read as text (as
 // ci-workflow.test.ts reads the CI workflow); a Windows checkout may have CRLF line ends, so they are made LF.
-import { existsSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
@@ -24,6 +25,7 @@ const DOCUMENTS = [
   "SECURITY.md",
   "THIRD_PARTY_NOTICES.md",
   "app/README.md",
+  "licenses/README.md",
   ".github/pull_request_template.md",
 ];
 
@@ -257,7 +259,8 @@ describe("the notices of third-party licenses", () => {
     // espeak-ng is GPL and is kept out of the program: the notices say why a reader will not find it.
     expect(notices).toContain("espeak-ng");
     // The method of the list of Rust and npm licenses, and where each non-permissive license is.
-    expect(notices).toContain("cargo metadata");
+    expect(notices).toContain("scripts/generate-licenses.py");
+    expect(notices).toContain("cargo tree");
     expect(notices).toContain("pnpm licenses");
   });
 
@@ -266,6 +269,136 @@ describe("the notices of third-party licenses", () => {
       expect(text).toMatch(/Third-party|bên thứ ba/);
       expect(text).toContain("LGPL");
     }
+  });
+});
+
+/** The digest that scripts/generate-licenses.py writes in the header of the license texts: the third-party packages of Cargo.lock. */
+function lockDigest(): string {
+  const lines = read("Cargo.lock")
+    .split("[[package]]")
+    .slice(1)
+    .flatMap((block) => {
+      const fields = Object.fromEntries([...block.matchAll(/^(\w+) = "([^"]*)"$/gm)].map((match) => [match[1], match[2]]));
+      return fields.source ? [`${fields.name} ${fields.version} ${fields.checksum ?? ""}`] : [];
+    })
+    .sort();
+  return createHash("sha256").update(lines.join("\n")).digest("hex");
+}
+
+describe("the license texts that every installer carries", () => {
+  const licenses = read("THIRD_PARTY_LICENSES.txt");
+  const native = "licenses/native";
+
+  test("the_license_texts_are_made_from_this_cargo_lock", () => {
+    // A dependency that is added, removed or updated changes the digest: run `python3 scripts/generate-licenses.py` to write the file again.
+    const written = /^Cargo\.lock \(third-party packages\): sha256:([0-9a-f]{64})$/m.exec(licenses)?.[1];
+    expect(written, "the digest in THIRD_PARTY_LICENSES.txt").toBeDefined();
+    expect(written).toBe(lockDigest());
+  });
+
+  test("the_license_texts_have_the_native_components_the_rust_crates_and_the_npm_packages", () => {
+    for (const name of [
+      "libvpx",
+      "libopus",
+      "zlib",
+      "libgcc",
+      "GCC Runtime Library Exception",
+      "mingw-w64",
+      "winpthreads",
+      "nv-codec-headers",
+      "AMF",
+      "whisper.cpp",
+      "OpenAI Whisper",
+      "pyannote segmentation",
+      "sherpa-onnx",
+      "ONNX Runtime",
+      "THIRD PARTY SOFTWARE NOTICES AND INFORMATION", // the notices of ONNX Runtime
+    ]) {
+      expect(licenses, name).toContain(name);
+    }
+    // The Rust crates, among them the ones that a tool that reads the manifests of the workspace alone leaves out (the keyring backend of
+    // macOS comes in through a feature of a target), and the one that is MPL-2.0.
+    for (const crate of ["tauri 2.", "keyring 3.", "security-framework 3.", "whisper-rs 0.15", "symphonia-core 0.6", "windows-sys 0."]) {
+      expect(licenses, crate).toContain(`  ${crate}`);
+    }
+    expect(licenses).toContain("Mozilla Public License Version 2.0");
+    expect(licenses).toContain("Apache License");
+    // The npm packages that the interface bundles.
+    for (const name of ["svelte 5.", "clsx 2.", "esm-env 1.", "@tauri-apps/api 2.", "@tauri-apps/plugin-opener 2."]) {
+      expect(licenses, name).toContain(`  ${name}`);
+    }
+    // Every text comes with the crates that use it.
+    expect(licenses).toMatch(/^Used by:$/m);
+  });
+
+  test("the_native_texts_are_the_files_of_licenses_native_and_each_says_where_it_came_from", () => {
+    const files = readdirSync(join(repoRoot, native)).filter((name) => !name.startsWith("."));
+    expect(files.length).toBeGreaterThanOrEqual(18);
+    const sources = read("licenses/README.md");
+    for (const name of files) {
+      expect(read(`${native}/${name}`).trim().length, name).toBeGreaterThan(200);
+      expect(sources, name).toContain(name);
+      // The file is in the licenses of the installers, in full.
+      expect(licenses.replace(/\s+/g, " "), name).toContain(read(`${native}/${name}`).trim().replace(/\s+/g, " "));
+    }
+  });
+
+  test("copying_lgpl_is_the_real_text_of_the_lgpl_2_1", () => {
+    const lgpl = read("COPYING.LGPLv2.1");
+    expect(lgpl).toMatch(/GNU LESSER GENERAL PUBLIC LICENSE\s+Version 2\.1, February 1999/);
+    expect(lgpl.length).toBeGreaterThan(24000);
+    expect(lgpl).toContain("END OF TERMS AND CONDITIONS");
+    // The same file as the one in the source of the FFmpeg that is shipped (the hash is of this text, as ffmpeg-9.0.2.tar.xz has it).
+    expect(createHash("sha256").update(lgpl).digest("hex")).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  test("the_notices_carry_the_attribution_and_the_copyright_lines_of_the_models_and_the_libraries", () => {
+    // CC BY 4.0: who, which license (with its link), where from, and what was changed.
+    expect(notices).toContain("TitaNet-small");
+    expect(notices).toContain("NVIDIA");
+    expect(notices).toContain("Creative Commons Attribution 4.0 International");
+    expect(notices).toContain("https://creativecommons.org/licenses/by/4.0/");
+    expect(notices).toContain("converted to the ONNX format");
+    // The copyright line of each MIT component is the one of its license file, word for word.
+    for (const [file, name] of [
+      ["whisper.cpp-LICENSE.txt", "whisper.cpp"],
+      ["openai-whisper-LICENSE.txt", "OpenAI Whisper"],
+      ["pyannote-segmentation-3.0-LICENSE.txt", "pyannote"],
+      ["onnxruntime-LICENSE.txt", "ONNX Runtime"],
+    ]) {
+      const line = /^Copyright \(c\) .*$/m.exec(read(`${native}/${file}`))?.[0];
+      expect(line, file).toBeDefined();
+      expect(notices, `${name}: ${line}`).toContain(line!);
+    }
+    // No NOTICE file exists for sherpa-onnx and ONNX Runtime: the notices say so, and the third-party notices of ONNX Runtime are in the texts.
+    expect(notices).toMatch(/no `NOTICE` file/);
+    // The exact configure line of the Windows build has the headers of the encoders in it.
+    expect(notices).toContain("--extra-cflags=-I<build folder>/deps/include");
+    // And the libvpx, libopus and zlib copyright lines of the texts that are shipped.
+    expect(notices).toContain("Copyright (c) 2010, The WebM Project authors");
+    expect(notices).toContain("Copyright 2001-2011 Xiph.Org, Skype Limited, Octasic, Jean-Marc Valin, Timothy B. Terriberry, CSIRO, Gregory Maxwell, Mark Borgerding, Erik de Castro Lopo");
+    expect(notices).toContain("(C) 1995-2022 Jean-loup Gailly and Mark Adler");
+  });
+
+  test("the_readmes_and_the_notices_say_where_the_license_files_are_on_every_system", () => {
+    for (const text of [readme, readmeVi, notices]) {
+      expect(text).toContain("Dictate.app/Contents/Resources/Licenses");
+      expect(text).toContain("Licenses");
+      expect(text).toContain("/usr/share/doc/dictate");
+      expect(text).toContain("COPYING.LGPLv2.1");
+      expect(text).toContain("THIRD_PARTY_LICENSES.txt");
+    }
+    for (const text of [readme, readmeVi]) {
+      expect(text).toMatch(/dictate\.exe|%LOCALAPPDATA%\\Dictate\\Licenses/);
+    }
+  });
+
+  test("the_maintainer_is_told_how_to_make_the_texts_again_when_a_dependency_changes", () => {
+    for (const text of [appReadme, read("CONTRIBUTING.md")]) {
+      expect(text).toContain("python3 scripts/generate-licenses.py");
+    }
+    expect(appReadme).toContain("tauri.release.macos.conf.json");
+    expect(appReadme).toContain("app/src-tauri/linux/copyright");
   });
 });
 

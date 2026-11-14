@@ -63,7 +63,7 @@ The installers are not signed: read [Unsigned builds](#unsigned-builds) before y
 
 ### Linux
 
-The `.deb` is for Ubuntu 24.04 or later. It is built on Ubuntu 24.04, so it needs glibc 2.39 or later; other Debian-family systems with such a glibc (Debian 13, for one) should work too, but are not tested. Install it with `apt`, which also fetches the libraries that Dictate needs:
+The `.deb` is for Ubuntu 24.04 or later. It is built on Ubuntu 24.04, so it needs glibc 2.39 or later; other Debian-family systems with such a glibc (Debian 13, for one) should work too, but are not tested. Install it with `apt`, which also fetches the libraries that Dictate needs (replace `<version>` with the version of the file you downloaded, such as `2.0.0`):
 
 ```sh
 sudo apt install ./Dictate_<version>_amd64.deb
@@ -86,19 +86,19 @@ Dictate has no signing certificate yet, so the macOS and Windows installers are 
 
 ### Verify the download
 
-Each installer has a checksum file next to it on the release page, with a line of the form `<hash>  <file name>`. Download both into the same folder and check:
+Each installer has a checksum file next to it on the release page, with a line of the form `<hash>  <file name>`. Download both into the same folder and check. In each command, replace `<version>` with the version of the files you downloaded (such as `2.0.0`):
 
 ```sh
 shasum -a 256 -c Dictate_<version>_aarch64.dmg.sha256
 ```
 
-on macOS (use the name of the `.dmg` you downloaded),
+on macOS (use the name of the `.dmg` you downloaded: `_aarch64` for Apple silicon, `_x64` for Intel),
 
 ```sh
 sha256sum -c Dictate_<version>_amd64.deb.sha256
 ```
 
-on Linux, and on Windows, in PowerShell, which prints `True` when the file is the right one:
+on Linux, and on Windows, in PowerShell (with the version of your `.exe` in both file names), which prints `True` when the file is the right one:
 
 ```powershell
 (Get-FileHash -Algorithm SHA256 .\Dictate_<version>_x64-setup.exe).Hash -eq (Get-Content .\Dictate_<version>_x64-setup.exe.sha256).Split(' ')[0]
@@ -117,6 +117,8 @@ This app replaces the older Swift Dictate (versions 1.x). It has the same name a
 1. **Quit the old one first** (menu bar icon → Quit).
 2. Drag the new `Dictate.app` into `/Applications` and choose **Replace**.
 3. Grant the permissions again: macOS sees a different app, so Microphone, Accessibility and Screen Recording have to be turned on again ([First run](#first-run)). Settings and API keys are not carried over either: enter them again in Settings.
+
+The old app's own files stay where they were and the new one does not use them: the WhisperKit models in `~/Library/Application Support/Dictate/Models` and the recordings of its dictation in `Recordings` next to them. You can delete both folders to free the space.
 
 What stays: your library (the `Dictate Meetings` folder in Documents has the same format, and the recordings of the old app open as they are) and the path of the MCP server, `/Applications/Dictate.app/Contents/MacOS/dictate-mcp`, so Claude Code and Claude Desktop keep working with no change. What is gone: Apple Speech and WhisperKit. Speech is recognized with Whisper models that you download again in Settings.
 
@@ -317,6 +319,8 @@ Dictate has no account, analytics or telemetry. It only talks to the services yo
 ## Third-party software
 
 Dictate is built on the work of others: whisper.cpp and the Whisper models, sherpa-onnx and ONNX Runtime, the pyannote and NeMo speaker models, Tauri, Svelte and many Rust libraries. The installers also carry [FFmpeg](https://ffmpeg.org), under the GNU LGPL version 2.1 or later. [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) lists all of them with their licenses, has the written offer of the FFmpeg source, and says how the FFmpeg that comes with Dictate was built and how to replace it. Every release has the FFmpeg source and the lines it was configured with attached to it. Settings → General has a **Licenses** link to the same file.
+
+The license files go with every installer: `LICENSE`, `THIRD_PARTY_NOTICES.md`, `THIRD_PARTY_LICENSES.txt` (the full license texts and copyright lines of everything in Dictate, each Rust crate and npm package included) and `COPYING.LGPLv2.1` (the text of the LGPL for FFmpeg). On macOS they are in `Dictate.app/Contents/Resources/Licenses` (in Finder, right-click the app and choose *Show Package Contents*); on Windows, in the `Licenses` folder next to `dictate.exe` (`%LOCALAPPDATA%\Dictate\Licenses`); on Linux, in `/usr/share/doc/dictate`.
 
 ## Contributing
 

@@ -63,7 +63,7 @@ Các bộ cài chưa được ký: đọc [Bản phát hành chưa ký](#bản-p
 
 ### Linux
 
-File `.deb` dành cho Ubuntu 24.04 trở lên. Nó được build trên Ubuntu 24.04 nên cần glibc 2.39 trở lên; các hệ Debian khác có glibc như vậy (ví dụ Debian 13) chắc cũng chạy được nhưng chưa được thử. Cài bằng `apt`, apt sẽ tải luôn các thư viện Dictate cần:
+File `.deb` dành cho Ubuntu 24.04 trở lên. Nó được build trên Ubuntu 24.04 nên cần glibc 2.39 trở lên; các hệ Debian khác có glibc như vậy (ví dụ Debian 13) chắc cũng chạy được nhưng chưa được thử. Cài bằng `apt`, apt sẽ tải luôn các thư viện Dictate cần (thay `<version>` bằng số phiên bản của file bạn đã tải, ví dụ `2.0.0`):
 
 ```sh
 sudo apt install ./Dictate_<version>_amd64.deb
@@ -86,19 +86,19 @@ Dictate chưa có chứng chỉ ký, nên bộ cài macOS và Windows chưa đư
 
 ### Kiểm tra bản tải về
 
-Mỗi bộ cài có một file checksum ngay cạnh trên trang phát hành, một dòng dạng `<hash>  <tên file>`. Tải cả hai vào cùng một thư mục rồi kiểm tra:
+Mỗi bộ cài có một file checksum ngay cạnh trên trang phát hành, một dòng dạng `<hash>  <tên file>`. Tải cả hai vào cùng một thư mục rồi kiểm tra. Trong mỗi lệnh, hãy thay `<version>` bằng số phiên bản của các file bạn đã tải (ví dụ `2.0.0`):
 
 ```sh
 shasum -a 256 -c Dictate_<version>_aarch64.dmg.sha256
 ```
 
-trên macOS (dùng tên file `.dmg` bạn đã tải),
+trên macOS (dùng tên file `.dmg` bạn đã tải: `_aarch64` cho chip Apple, `_x64` cho chip Intel),
 
 ```sh
 sha256sum -c Dictate_<version>_amd64.deb.sha256
 ```
 
-trên Linux, và trên Windows, trong PowerShell, lệnh này in `True` khi file đúng:
+trên Linux, và trên Windows, trong PowerShell (với số phiên bản của file `.exe` bạn tải ở cả hai tên file), lệnh này in `True` khi file đúng:
 
 ```powershell
 (Get-FileHash -Algorithm SHA256 .\Dictate_<version>_x64-setup.exe).Hash -eq (Get-Content .\Dictate_<version>_x64-setup.exe.sha256).Split(' ')[0]
@@ -117,6 +117,8 @@ App này thay cho Dictate cũ viết bằng Swift (các bản 1.x). Nó cùng t�
 1. **Thoát app cũ trước** (icon trên menu bar → Quit).
 2. Kéo `Dictate.app` mới vào `/Applications` rồi chọn **Replace**.
 3. Cấp lại các quyền: macOS thấy đây là app khác, nên Microphone, Accessibility và Screen Recording phải bật lại ([Lần chạy đầu tiên](#lần-chạy-đầu-tiên)). Cài đặt và API key cũng không được chuyển sang: hãy nhập lại trong Cài đặt.
+
+Các file riêng của app cũ vẫn nằm nguyên chỗ cũ và app mới không dùng chúng: các model WhisperKit trong `~/Library/Application Support/Dictate/Models` và các bản ghi âm đọc chính tả của nó trong thư mục `Recordings` cạnh đó. Bạn có thể xoá cả hai thư mục để lấy lại dung lượng.
 
 Những gì giữ nguyên: thư viện của bạn (thư mục `Dictate Meetings` trong Documents cùng định dạng, các bản ghi của app cũ mở được như thường) và đường dẫn của MCP server, `/Applications/Dictate.app/Contents/MacOS/dictate-mcp`, nên Claude Code và Claude Desktop vẫn chạy mà không phải đổi gì. Những gì không còn: Apple Speech và WhisperKit. Giọng nói được nhận dạng bằng các model Whisper, bạn tải lại trong Cài đặt.
 
@@ -189,7 +191,7 @@ Mục **Quay & tóm tắt…** trên menu khay (và nút **Quay** của cửa s�
 - **Mỗi chế độ quay gì.** *Toàn màn hình* là một màn hình, kèm âm thanh của máy và micro của bạn (có nhiều màn hình thì màn chọn cho bạn chọn; mặc định là màn hình chính). *Một cửa sổ* là một cửa sổ, cho tới khi bạn dừng hoặc đóng nó. *Chỉ âm thanh* là âm thanh không có hình. Ở mọi chế độ, âm thanh của máy và micro đều tắt được từng cái (trừ khi cả hai cùng tắt ở *Chỉ âm thanh*). *Chất lượng video* có **Nhẹ** (10 hình/giây, cạnh dài tối đa 1280 px), **Chuẩn** (15, tối đa 1920; mặc định) hoặc **Nét** (30, tối đa 3840). Màn chọn nhớ chế độ, chất lượng và hai nguồn âm thanh cho lần sau.
 - **Thanh quay.** Trong lúc quay, một thanh nhỏ ở đầu màn hình hiện thời gian và mức âm của từng nguồn, kèm **Tạm dừng** và **Tiếp tục**, **Dừng & tóm tắt** và **Bỏ bản ghi**. Kéo thanh để đổi chỗ; nó không bao giờ giành focus.
 - **Phím tắt.** `Ctrl+Alt+R` (trên Mac là `⌃⌥R`) bắt đầu hoặc dừng quay ở mọi nơi, dùng lựa chọn của lần trước. Khi chế độ lần trước là *Một cửa sổ*, phím tắt mở màn chọn, vì app không nhớ cửa sổ. Trên desktop Wayland không có GlobalShortcuts portal, hãy gán một phím trong cài đặt của desktop để chạy `dictate --record`.
-- **Khi có sự cố.** Rút tai nghe hoặc micro ra thì bản ghi vẫn tiếp tục với thiết bị mà hệ thống đang dùng (khoảng giữa là im lặng) và thanh quay báo "đã kết nối lại". Đóng cửa sổ đang quay, mất màn hình hoặc tắt quyền thì bản ghi tự kết thúc, phần đã quay được giữ lại và xử lý, và một thông báo nói lý do. Nếu Dictate bị tắt giữa chừng khi đang quay do lỗi treo (crash), lần mở sau sẽ hoàn tất bản ghi từ những gì có trên đĩa và mất tối đa khoảng một giây cuối (hình thì hai giây), và log ghi rằng bản ghi đã bị gián đoạn. Còn nếu mất điện thì có thể mất nhiều hơn, vì các file không được ép ghi xuống đĩa bằng `fsync`, nên phần hệ thống chưa kịp ghi sẽ mất. Chọn **Thoát** trên menu khay khi đang quay thì app lưu bản ghi trước (chờ tối đa một phút) rồi mới thoát.
+- **Khi có sự cố.** Rút tai nghe hoặc micro ra thì bản ghi vẫn tiếp tục với thiết bị mà hệ thống đang dùng (khoảng giữa là im lặng) và thanh quay báo "đã nối lại". Đóng cửa sổ đang quay, mất màn hình hoặc tắt quyền thì bản ghi tự kết thúc, phần đã quay được giữ lại và xử lý, và một thông báo nói lý do. Nếu Dictate bị tắt giữa chừng khi đang quay bị sập (crash), lần mở sau sẽ hoàn tất bản ghi từ những gì có trên đĩa và mất tối đa khoảng một giây cuối (hình thì hai giây), và log ghi rằng bản ghi đã bị gián đoạn. Còn nếu mất điện thì có thể mất nhiều hơn, vì các file không được ép ghi xuống đĩa bằng `fsync`, nên phần hệ thống chưa kịp ghi sẽ mất. Chọn **Thoát** trên menu khay khi đang quay thì app lưu bản ghi trước (chờ tối đa một phút) rồi mới thoát.
 - **Lưu ở đâu.** Bản ghi là một thư mục của thư viện như các bản khác, gồm video (`recording.mp4`, hoặc `recording.webm` trên Linux, nơi VP9 được chọn trước), `audio.m4a` và các file còn lại. Khác với file được thêm vào, bản ghi nằm hẳn trong thư viện.
 - **macOS** 13 trở lên. Quay màn hình **và âm thanh của máy, kể cả ở chế độ *Chỉ âm thanh*,** cần quyền Screen Recording (Cài đặt → Chung → Quyền truy cập có hiện; bật xong cần mở lại Dictate). macOS 15 trở lên thỉnh thoảng hỏi lại xem Dictate có được tiếp tục quay màn hình không: hãy cho phép. Bản ghi không có các cửa sổ của chính Dictate, kể cả thanh quay. Ở chế độ *Một cửa sổ*, âm thanh của máy chỉ là âm thanh do app của cửa sổ đó phát: chọn *Toàn màn hình* để ghi mọi âm thanh.
 - **Windows:** thanh quay, cửa sổ Cuộc họp và Cài đặt không xuất hiện trong video trên Windows 10 phiên bản 2004 trở lên; các cửa sổ của đọc chính tả (bong bóng và thẻ) thì không được loại ra.
@@ -317,6 +319,8 @@ Dictate không có tài khoản, không thu thập số liệu sử dụng hay t
 ## Phần mềm của bên thứ ba
 
 Dictate được xây trên công sức của nhiều người: whisper.cpp và các model Whisper, sherpa-onnx và ONNX Runtime, các model tách người nói của pyannote và NeMo, Tauri, Svelte cùng nhiều thư viện Rust. Bộ cài còn có [FFmpeg](https://ffmpeg.org), theo giấy phép GNU LGPL phiên bản 2.1 trở lên. [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) (tiếng Anh) liệt kê tất cả cùng giấy phép của chúng, có lời cam kết bằng văn bản về mã nguồn FFmpeg, và nói cách FFmpeg đi kèm Dictate được build ra sao và thay nó thế nào. Mỗi bản phát hành đều đính kèm mã nguồn FFmpeg và các dòng cấu hình đã dùng để build. Cài đặt → Chung có liên kết **Giấy phép** tới chính file này.
+
+Các file giấy phép đi kèm mọi bộ cài: `LICENSE`, `THIRD_PARTY_NOTICES.md`, `THIRD_PARTY_LICENSES.txt` (toàn văn giấy phép và dòng bản quyền của mọi thứ trong Dictate, kể cả từng crate Rust và package npm) và `COPYING.LGPLv2.1` (văn bản LGPL cho FFmpeg). Trên macOS chúng nằm trong `Dictate.app/Contents/Resources/Licenses` (trong Finder, bấm chuột phải vào app rồi chọn *Show Package Contents*); trên Windows, trong thư mục `Licenses` cạnh `dictate.exe` (`%LOCALAPPDATA%\Dictate\Licenses`); trên Linux, trong `/usr/share/doc/dictate`.
 
 ## Đóng góp
 

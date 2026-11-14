@@ -73,7 +73,9 @@ The interface is in English and Vietnamese, in `app/ui/src/locales/en.json` and 
 
 1. Use the key in the interface with `t("area.name")` (a text with a value takes `{name}` in it: `t("area.name", { name })`).
 2. Add `"area.name": "…"` to `en.json` and the same key to `vi.json`, in natural Vietnamese (the files hold the way the app already talks; look at the keys around yours).
-3. Run `pnpm --dir app/ui test`. `lib/i18n.test.ts` fails when one file has a key that the other does not, and `locales/catalog.test.ts` fails when a key that the sources or the Rust side name has no words.
+3. Run `pnpm --dir app/ui test`. Two tests guard the two files:
+   - `lib/i18n.test.ts` fails when one file has a key that the other does not.
+   - `locales/catalog.test.ts` fails when a key that the code names has no text in either file. It reads the Rust and the Svelte sources for the keys they use: the title and the note of every Whisper model of the catalog, the title of every edit preset, the `dictation.*` and `audio.*` error keys of the dictation controller, the `meetings.*` keys of the Meetings window, its store and its formats, and the `recording.*` keys of the picker, the bar and the recorder (why a start failed, why a recording ended). A text that you add for one of those areas is found by it; a key that is used somewhere else is not, so the parity test is what keeps those two files in step.
 
 The tray menu is written in Rust, with the two languages side by side (`app/src-tauri/src/tray.rs`), and the banners of the meetings are built in Rust from the same words as the `meetings.notify.*` keys (`app/src-tauri/src/meetings/notify.rs`, which has a test that keeps the two in step): change both together.
 
@@ -81,7 +83,7 @@ The tray menu is written in Rust, with the two languages side by side (`app/src-
 
 - Keep one change per pull request, and make sure the checks above pass. The pull request template has a short checklist.
 - When a change is visible to users, update both `README.md` and `README.vi.md`.
-- A new dependency or a new component that ships in the installers needs its license in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Code under the GPL or the AGPL cannot go into an installer, and the LGPL one only the way that FFmpeg does (a separate program that can be replaced).
+- A new dependency or a new component that ships in the installers needs its license in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), and the file of license texts that the installers carry has to be written again: run `python3 scripts/generate-licenses.py` (it needs `cargo` and `pnpm --dir app install`) and commit `THIRD_PARTY_LICENSES.txt`. A test fails until you do, whenever `Cargo.lock` has changed. Code under the GPL or the AGPL cannot go into an installer, and the LGPL one only the way that FFmpeg does (a separate program that can be replaced).
 - Pull requests are merged with **rebase** or **squash**, never with a merge commit: a merge commit repeats the change in the release notes.
 
 ## Commits and releases
