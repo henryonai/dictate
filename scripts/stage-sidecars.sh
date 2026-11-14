@@ -14,10 +14,13 @@
 #     SHERPA_ONNX_LIB_DIR (scripts/fetch-sherpa-onnx-no-tts.sh prints it; target/sherpa-onnx-no-tts/lib unless it is set)
 #   - Windows: the runtime of Visual C++ (vcruntime140.dll, vcruntime140_1.dll, msvcp140.dll) in app/src-tauri/libs/, from the
 #     redistributable folder of the Visual Studio of the machine (VC_REDIST_DIR, when it is set, names the folder of the three)
+#   - every system: the license files in app/src-tauri/licenses/ (LICENSE, THIRD_PARTY_NOTICES.md, THIRD_PARTY_LICENSES.txt, COPYING.LGPLv2.1,
+#     from the root of the repository), which the release overlays put in the installer: the licenses of what is inside ask that their texts
+#     go with it. THIRD_PARTY_LICENSES.txt is written by scripts/generate-licenses.py
 #
 # `externalBin` of the bundler takes `binaries/NAME` and looks for `binaries/NAME-TRIPLE[.exe]`; the file goes in the package as NAME. The
-# release configuration (app/src-tauri/tauri.release.conf.json) names them: the ordinary one does not, so that a build or a test that
-# is not for an installer does not need these files. Both folders are ignored by git.
+# release configuration (app/src-tauri/tauri.release.conf.json, with a file for macOS and one for Windows) names them: the ordinary one
+# does not, so that a build or a test that is not for an installer does not need these files. The three folders are ignored by git.
 #
 # What is missing is found before anything is built: the build of the MCP server takes minutes.
 set -euo pipefail
@@ -49,6 +52,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 ffmpeg_dir="${args[1]:-target/ffmpeg/$target}"
 bin_dir="app/src-tauri/binaries"
 lib_dir="app/src-tauri/libs"
+licenses_dir="app/src-tauri/licenses"
 
 # What there is to copy, as "source -> destination" pairs, in the order of the copies.
 mcp_from="target/$target/release/dictate-mcp$exe"
@@ -57,6 +61,17 @@ copies=("$mcp_from -> $bin_dir/dictate-mcp-$target$exe" "$ffmpeg_from -> $bin_di
 # What has to be there before the build starts.
 needed=("$ffmpeg_from")
 hints=("run scripts/build-ffmpeg.sh $target $ffmpeg_dir first")
+
+# The license files go in every installer, from the root of the repository.
+for license in LICENSE THIRD_PARTY_NOTICES.md THIRD_PARTY_LICENSES.txt COPYING.LGPLv2.1; do
+  copies+=("$license -> $licenses_dir/$license")
+  needed+=("$license")
+  if [ "$license" = THIRD_PARTY_LICENSES.txt ]; then
+    hints+=("run python3 scripts/generate-licenses.py first: it writes the file of the license texts")
+  else
+    hints+=("the repository has no such file")
+  fi
+done
 
 case "$target" in
   x86_64-unknown-linux-gnu)

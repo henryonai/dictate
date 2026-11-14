@@ -11,6 +11,9 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "../../..");
 const read = (file: string) => readFileSync(join(repoRoot, file), "utf8").replace(/\r\n/g, "\n");
 const readJson = (file: string) => JSON.parse(read(file));
 
+/** What every installer carries beside the program (stage-sidecars.sh copies them from the root of the repository). */
+const LICENSE_FILES = ["LICENSE", "THIRD_PARTY_NOTICES.md", "THIRD_PARTY_LICENSES.txt", "COPYING.LGPLv2.1"];
+
 const workflow = read(".github/workflows/release.yml");
 const ci = read(".github/workflows/ci.yml");
 
@@ -143,11 +146,17 @@ describe("the Tauri build", () => {
     expect(overlay.bundle.externalBin).toEqual(["binaries/dictate-mcp", "binaries/dictate-ffmpeg"]);
   });
 
-  test("the_deb_puts_the_two_sherpa_libraries_where_the_run_path_of_the_program_looks", () => {
+  test("the_deb_puts_the_two_sherpa_libraries_where_the_run_path_of_the_program_looks_and_the_licenses_in_the_doc_folder", () => {
     const overlay = readJson("app/src-tauri/tauri.release.conf.json");
     expect(overlay.bundle.linux.deb.files).toEqual({
       "/usr/lib/dictate/libsherpa-onnx-c-api.so": "libs/libsherpa-onnx-c-api.so",
       "/usr/lib/dictate/libonnxruntime.so": "libs/libonnxruntime.so",
+      // The licenses of what is inside ask that their texts go with it: /usr/share/doc/dictate, and the `copyright` file of Debian.
+      "/usr/share/doc/dictate/LICENSE": "licenses/LICENSE",
+      "/usr/share/doc/dictate/THIRD_PARTY_NOTICES.md": "licenses/THIRD_PARTY_NOTICES.md",
+      "/usr/share/doc/dictate/THIRD_PARTY_LICENSES.txt": "licenses/THIRD_PARTY_LICENSES.txt",
+      "/usr/share/doc/dictate/COPYING.LGPLv2.1": "licenses/COPYING.LGPLv2.1",
+      "/usr/share/doc/dictate/copyright": "linux/copyright",
     });
     // /usr/bin/dictate finds /usr/lib/dictate through the run path that build.rs gives it (and tests/build_rpath.rs pins).
     expect(read("app/src-tauri/build_rpath.rs")).toContain('"$ORIGIN/../lib/dictate"');
@@ -173,10 +182,34 @@ describe("the Tauri build", () => {
       "libs/vcruntime140.dll": "vcruntime140.dll",
       "libs/vcruntime140_1.dll": "vcruntime140_1.dll",
       "libs/msvcp140.dll": "msvcp140.dll",
+      // The license files go in a `Licenses` folder of the install folder, next to the program.
+      ...Object.fromEntries(LICENSE_FILES.map((name) => [`licenses/${name}`, `Licenses/${name}`])),
     });
     expect(row("windows-x64").extra_config).toBe("--config src-tauri/tauri.release.windows.conf.json");
-    for (const name of ["macos-arm64", "macos-x64", "linux-x64"]) expect(row(name)).not.toHaveProperty("extra_config");
+    expect(row("linux-x64")).not.toHaveProperty("extra_config");
     expect(build()).toContain("${{ matrix.extra_config }}");
+  });
+
+  test("the_license_files_go_in_contents_resources_licenses_of_the_mac_app_through_an_overlay_that_only_the_mac_rows_get", () => {
+    // Not in the overlay that every row gets: `bundle.resources` would put them in /usr/lib/Dictate on Linux too, where the deb has its own place.
+    const mac = readJson("app/src-tauri/tauri.release.macos.conf.json");
+    expect(mac.bundle.resources).toEqual(Object.fromEntries(LICENSE_FILES.map((name) => [`licenses/${name}`, `Licenses/${name}`])));
+    for (const name of ["macos-arm64", "macos-x64"]) {
+      expect(row(name).extra_config, name).toBe("--config src-tauri/tauri.release.macos.conf.json");
+    }
+  });
+
+  test("the_license_files_are_staged_by_the_script_from_the_root_and_are_never_committed", () => {
+    const stage = read("scripts/stage-sidecars.sh");
+    expect(stage).toContain('licenses_dir="app/src-tauri/licenses"');
+    for (const name of LICENSE_FILES) expect(stage, name).toContain(name);
+    expect(read(".gitignore")).toMatch(/^app\/src-tauri\/licenses\/$/m);
+    // The copyright file of the deb is the one thing that is in the repository, because nothing makes it.
+    const copyright = read("app/src-tauri/linux/copyright");
+    expect(copyright).toMatch(/^Format: https:\/\/www\.debian\.org\/doc\/packaging-manuals\/copyright-format\/1\.0\/$/m);
+    expect(copyright).toMatch(/^License: MIT$/m);
+    expect(copyright).toContain("THIRD_PARTY_LICENSES.txt");
+    expect(copyright).toContain("/usr/share/doc/dictate/COPYING.LGPLv2.1");
   });
 
   test("tauri_action_is_not_used_so_nothing_can_blank_the_notes_that_release_please_wrote", () => {

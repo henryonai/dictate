@@ -70,6 +70,21 @@ fn ffmpeg(buildconf: &str) -> String {
 }
 
 const SHERPA_LIBRARIES: [&str; 2] = ["libsherpa-onnx-c-api.so", "libonnxruntime.so"];
+/// The license files that every installer carries (the release overlay puts them there): the MIT license of Dictate, the notices and the
+/// license texts of what is inside, and the LGPL text that FFmpeg and glibc ask for.
+const LICENSE_FILES: [&str; 4] = [
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "THIRD_PARTY_LICENSES.txt",
+    "COPYING.LGPLv2.1",
+];
+
+/// The license files in `folder`.
+fn licenses(folder: &Path) {
+    for name in LICENSE_FILES {
+        write(&folder.join(name), "a license text\n");
+    }
+}
 const VC_DLLS: [&str; 3] = ["vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"];
 
 /// What an unpacked `.deb` has: `usr/bin/dictate` and its two sidecars, the two libraries, and the `DEBIAN/control` that `dpkg-deb -R` writes.
@@ -89,6 +104,12 @@ fn deb(root: &Path) {
             "ELF stand-in\n",
         );
     }
+    // The documentation folder of the package: the license files, and the `copyright` file that the tools of Debian read.
+    licenses(&root.join("usr/share/doc/dictate"));
+    write(
+        &root.join("usr/share/doc/dictate/copyright"),
+        "Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/\nUpstream-Name: Dictate\n",
+    );
     write(
         &root.join("DEBIAN/control"),
         "Package: dictate\nVersion: 2.0.0\nArchitecture: amd64\nDepends: libwebkit2gtk-4.1-0, libgtk-3-0, libasound2t64 | libasound2, libpipewire-0.3-0t64 | libpipewire-0.3-0\nRecommends: pulseaudio-utils\nDescription: Dictation and meeting notes\n",
@@ -104,6 +125,7 @@ fn windows(root: &Path) {
         write(&root.join(dll), "MZ stand-in\n");
     }
     write(&root.join("uninstall.exe"), "MZ stand-in\n");
+    licenses(&root.join("Licenses"));
 }
 
 /// What the volume of the `.dmg` has: the app (with its sidecars in `Contents/MacOS`) and the link to /Applications.
@@ -119,6 +141,7 @@ fn mac(root: &Path) {
         &app.join("Info.plist"),
         "CFBundleExecutable=dictate\nNSMicrophoneUsageDescription=Dictate records your voice to turn it into text.\nNSScreenCaptureUsageDescription=Dictate records your screen.\nLSMinimumSystemVersion=13.0\n",
     );
+    licenses(&app.join("Resources/Licenses"));
     std::os::unix::fs::symlink("/Applications", root.join("Applications")).unwrap();
 }
 
@@ -961,4 +984,81 @@ fn it_says_how_to_use_it_when_it_is_given_no_artifact() {
 
     assert_eq!(code(&output), 2);
     assert!(stderr(&output).contains("usage"), "{}", stderr(&output));
+}
+
+// ---- the license texts that every installer carries -----------------------------------------------------------------------------
+
+/// The three kinds of installer: what they are called here, and the tree that each unpacks to.
+type Build = fn(&Path);
+const KINDS: [(&str, Build); 3] = [("deb", deb), ("windows", windows), ("mac", mac)];
+
+/// Where each kind of installer has its license files, from the root of what it unpacks to (macOS: inside the app).
+fn license_folder(kind: &str, root: &Path) -> PathBuf {
+    match kind {
+        "deb" => root.join("usr/share/doc/dictate"),
+        "windows" => root.join("Licenses"),
+        _ => root.join("Dictate.app/Contents/Resources/Licenses"),
+    }
+}
+
+#[test]
+fn an_installer_without_one_of_the_license_files_fails_and_says_which() {
+    // The MIT, BSD, Apache and LGPL licenses of what is inside ask that their texts go with the binary: the installer carries them, and
+    // a release whose installer lacks one does not go out.
+    for (kind, build) in KINDS {
+        for name in LICENSE_FILES {
+            let root = tree(build);
+            fs::remove_file(license_folder(kind, root.path()).join(name)).unwrap();
+
+            let output = Tools::new().run(root.path());
+
+            assert_fails(&output, &[name]);
+            assert!(
+                stderr(&output).contains("license"),
+                "{kind}: without {name}, it said:\n{}",
+                stderr(&output)
+            );
+        }
+    }
+}
+
+#[test]
+fn an_installer_whose_license_folder_is_not_there_fails() {
+    for (kind, build) in KINDS {
+        let root = tree(build);
+        fs::remove_dir_all(license_folder(kind, root.path())).unwrap();
+
+        let output = Tools::new().run(root.path());
+
+        assert_fails(&output, &["THIRD_PARTY_NOTICES.md", "COPYING.LGPLv2.1"]);
+    }
+}
+
+#[test]
+fn a_license_file_that_is_empty_does_not_count() {
+    let root = tree(windows);
+    write(&root.path().join("Licenses/THIRD_PARTY_NOTICES.md"), "");
+
+    assert_fails(
+        &Tools::new().run(root.path()),
+        &["THIRD_PARTY_NOTICES.md", "empty"],
+    );
+}
+
+#[test]
+fn a_deb_without_the_copyright_file_fails() {
+    // Debian tools look for /usr/share/doc/<package>/copyright.
+    let root = tree(deb);
+    fs::remove_file(root.path().join("usr/share/doc/dictate/copyright")).unwrap();
+
+    assert_fails(&Tools::new().run(root.path()), &["copyright"]);
+}
+
+#[test]
+fn the_license_files_in_another_place_than_the_one_of_the_system_do_not_count() {
+    // A Windows tree whose files are in usr/share/doc, or a mac app whose files are beside the app and not in Contents/Resources/Licenses.
+    let root = tree(windows);
+    fs::rename(root.path().join("Licenses"), root.path().join("Elsewhere")).unwrap();
+
+    assert_fails(&Tools::new().run(root.path()), &["Licenses"]);
 }

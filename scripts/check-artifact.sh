@@ -15,7 +15,11 @@
 #     and, on macOS and Linux, executable (upload-artifact and download-artifact drop the permission bits of a file).
 #   - no espeak-ng (GPL-3.0) in the main program, in the two sidecars or in any .so, .dylib or .dll: scripts/check-no-espeak.sh.
 #   - `dictate-ffmpeg` is a plain LGPL ffmpeg: scripts/check-ffmpeg-lgpl.sh.
+#   - the license files: LICENSE, THIRD_PARTY_NOTICES.md, THIRD_PARTY_LICENSES.txt and COPYING.LGPLv2.1, not empty, where the system keeps
+#     them (macOS Contents/Resources/Licenses, Windows `Licenses` next to the program, the package /usr/share/doc/dictate). The MIT, BSD,
+#     Apache and LGPL licenses of what is inside ask that their texts go with the binary.
 # The package for Linux (deb):
+#   - a `copyright` file next to the license files, which is where the tools of Debian look for it;
 #   - no /usr/bin/ffmpeg: it would collide with the package `ffmpeg` of Debian and Ubuntu (the sidecar is called dictate-ffmpeg);
 #   - the two libraries of sherpa-onnx in /usr/lib/dictate, and the run path `$ORIGIN/../lib/dictate` in /usr/bin/dictate (readelf -d), which
 #     is how the program finds them, and no other entry in its RPATH or RUNPATH (the ones of a build in the source tree would make it look in
@@ -251,6 +255,31 @@ if [ -f "$bin_dir/dictate-ffmpeg$exe" ]; then
 $(cat "$errors")"
   fi
 fi
+
+# ---- the license texts -------------------------------------------------------------------------------------------------------
+
+# Where the installer keeps its license files (the release overlay puts them there).
+case "$kind" in
+  macos) licenses_dir="$app/Contents/Resources/Licenses" ;;
+  deb) licenses_dir="$root/usr/share/doc/dictate" ;;
+  windows) licenses_dir="$root/Licenses" ;;
+esac
+
+check_licenses() {
+  local name
+  for name in LICENSE THIRD_PARTY_NOTICES.md THIRD_PARTY_LICENSES.txt COPYING.LGPLv2.1; do
+    if [ ! -f "$licenses_dir/$name" ]; then
+      problem "$(inside "$licenses_dir/$name") is not in the installer: the licenses of what is inside ask that their texts go with it (the release overlay puts the license files there)"
+    elif [ ! -s "$licenses_dir/$name" ]; then
+      problem "$(inside "$licenses_dir/$name") is empty: it is a license file with no license text"
+    fi
+  done
+  if [ "$kind" = deb ] && [ ! -s "$licenses_dir/copyright" ]; then
+    problem "$(inside "$licenses_dir/copyright") is not in the package, or is empty: the tools of Debian look for the copyright file of a package there"
+  fi
+}
+
+check_licenses
 
 # ---- what is only in one kind of installer -----------------------------------------------------------------------------------
 

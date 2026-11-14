@@ -6,7 +6,12 @@
       "deb": {
         "files": {
           "/usr/lib/dictate/libsherpa-onnx-c-api.so": "libs/libsherpa-onnx-c-api.so",
-          "/usr/lib/dictate/libonnxruntime.so": "libs/libonnxruntime.so"
+          "/usr/lib/dictate/libonnxruntime.so": "libs/libonnxruntime.so",
+          "/usr/share/doc/dictate/LICENSE": "licenses/LICENSE",
+          "/usr/share/doc/dictate/THIRD_PARTY_NOTICES.md": "licenses/THIRD_PARTY_NOTICES.md",
+          "/usr/share/doc/dictate/THIRD_PARTY_LICENSES.txt": "licenses/THIRD_PARTY_LICENSES.txt",
+          "/usr/share/doc/dictate/COPYING.LGPLv2.1": "licenses/COPYING.LGPLv2.1",
+          "/usr/share/doc/dictate/copyright": "linux/copyright"
         }
       }
     }

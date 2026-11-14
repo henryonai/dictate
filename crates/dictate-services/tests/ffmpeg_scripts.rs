@@ -759,6 +759,11 @@ fn staging_repo(triple: &str, mode: u32) -> tempfile::TempDir {
             format!("target/ffmpeg/{triple}/dictate-ffmpeg"),
             "the new ffmpeg",
         ),
+        // The license files that go in every installer, from the root of the repository.
+        ("LICENSE".to_owned(), "the MIT license"),
+        ("THIRD_PARTY_NOTICES.md".to_owned(), "the notices"),
+        ("THIRD_PARTY_LICENSES.txt".to_owned(), "the license texts"),
+        ("COPYING.LGPLv2.1".to_owned(), "the LGPL"),
     ] {
         let path = repo.path().join(relative);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -867,4 +872,68 @@ fn stage_sidecars_makes_the_sidecars_executable_whatever_the_files_it_copies_wer
             assert_eq!(mode, 0o755, "{triple}: {name} is {mode:o}");
         }
     }
+}
+
+#[test]
+fn stage_sidecars_puts_the_license_files_of_every_system_in_the_licenses_folder() {
+    // The release overlays put them in the installers from there: macOS in Contents/Resources/Licenses, Windows in Licenses, the deb in
+    // /usr/share/doc/dictate.
+    for triple in [
+        "aarch64-apple-darwin",
+        "x86_64-apple-darwin",
+        "x86_64-unknown-linux-gnu",
+        "x86_64-pc-windows-msvc",
+    ] {
+        let destinations = destinations(&stage(&["--dry-run", triple]));
+        for name in [
+            "LICENSE",
+            "THIRD_PARTY_NOTICES.md",
+            "THIRD_PARTY_LICENSES.txt",
+            "COPYING.LGPLv2.1",
+        ] {
+            let expected = format!("app/src-tauri/licenses/{name}");
+            assert!(
+                destinations.contains(&expected),
+                "{triple}: {expected} in {destinations:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn stage_sidecars_copies_the_license_files_from_the_root_of_the_repository() {
+    let triple = "aarch64-apple-darwin";
+    let repo = staging_repo(triple, 0o755);
+
+    let output = stage_in(repo.path(), triple);
+
+    assert_eq!(code(&output), 0, "{}{}", stdout(&output), stderr(&output));
+    let licenses = repo.path().join("app/src-tauri/licenses");
+    assert_eq!(
+        fs::read_to_string(licenses.join("COPYING.LGPLv2.1")).unwrap(),
+        "the LGPL"
+    );
+    assert_eq!(
+        fs::read_to_string(licenses.join("THIRD_PARTY_LICENSES.txt")).unwrap(),
+        "the license texts"
+    );
+}
+
+#[test]
+fn stage_sidecars_says_how_to_make_the_license_texts_when_they_are_not_there() {
+    // The file of the license texts is generated: a checkout that never ran the generator does not have a current one, and the build of an
+    // installer stops before it builds anything.
+    let triple = "aarch64-apple-darwin";
+    let repo = staging_repo(triple, 0o755);
+    fs::remove_file(repo.path().join("THIRD_PARTY_LICENSES.txt")).unwrap();
+
+    let output = stage_in(repo.path(), triple);
+
+    assert_eq!(code(&output), 1, "{}", stdout(&output));
+    assert!(
+        stderr(&output).contains("THIRD_PARTY_LICENSES.txt")
+            && stderr(&output).contains("scripts/generate-licenses.py"),
+        "{}",
+        stderr(&output)
+    );
 }

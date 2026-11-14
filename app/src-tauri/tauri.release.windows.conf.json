@@ -4,7 +4,11 @@
     "resources": {
       "libs/vcruntime140.dll": "vcruntime140.dll",
       "libs/vcruntime140_1.dll": "vcruntime140_1.dll",
-      "libs/msvcp140.dll": "msvcp140.dll"
+      "libs/msvcp140.dll": "msvcp140.dll",
+      "licenses/LICENSE": "Licenses/LICENSE",
+      "licenses/THIRD_PARTY_NOTICES.md": "Licenses/THIRD_PARTY_NOTICES.md",
+      "licenses/THIRD_PARTY_LICENSES.txt": "Licenses/THIRD_PARTY_LICENSES.txt",
+      "licenses/COPYING.LGPLv2.1": "Licenses/COPYING.LGPLv2.1"
     }
   }
 }
