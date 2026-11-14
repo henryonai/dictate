@@ -592,11 +592,30 @@ mod tests {
         first.unwrap().stop();
 
         let (second, rx) = start(&fake, Track::System);
-        std::thread::sleep(Duration::from_millis(150));
+        // What the second start delivers is waited for, and not slept on (a loaded machine can be slow to run the thread of the source,
+        // and a fixed time then saw nothing): events come in order, so once the sound that is due 100 ms after the first one has arrived,
+        // an end at 40 ms (which the first start had) would have come before it.
+        let mut events = Vec::new();
+        let mut first_at = None;
+        loop {
+            let event = rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("sound from the second start");
+            let done = match &event {
+                SourceEvent::Audio { at, .. } => {
+                    at.duration_since(*first_at.get_or_insert(*at)) >= Duration::from_millis(100)
+                }
+                _ => true,
+            };
+            events.push(event);
+            if done {
+                break;
+            }
+        }
         second.unwrap().stop();
+        events.extend(rx.try_iter());
 
         assert_eq!(fake.started(), [Track::System, Track::System]);
-        let events: Vec<SourceEvent> = rx.try_iter().collect();
         assert!(!events.is_empty());
         assert!(
             events
