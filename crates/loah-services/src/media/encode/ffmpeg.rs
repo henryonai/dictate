@@ -567,20 +567,23 @@ mod tests {
     #[cfg(windows)]
     #[derive(Debug, Default)]
     struct Found {
-        /// `late.txt` is there: the old oracle, written by the program's `cmd` after its `ping` ends.
+        /// `late.txt` is there: written by the program's `cmd` after its `ping` ends.
         old_late: bool,
+        /// `late.txt` was written before the drop began (the program was over by itself), and not while the job was being ended.
+        late_before_drop: bool,
         /// `ping` itself went on to its end after the drop: it prints its statistics only then. A program that survived the kill.
         ping_done: bool,
         /// How many processes of the job were left when the drop returned.
         left_after_drop: u32,
+        /// The control: how long the program lived by itself when the sink was kept, and how many lines its ping wrote.
+        lived_ms: Option<u128>,
+        ping_lines: usize,
         note: String,
     }
 
-    /// 1: the test as it is (`start /b` makes the program, and the test goes when the fake says it has started). 2: the same, and the
-    /// test also waits for the program to say that it is running. 3: no `start`: the fake runs the program and waits for it, as a shim does.
-    /// In each the program is `echo up & ping -n 4 > ping.txt & echo late > late.txt`: `late.txt` is the old oracle, which a `cmd` that
-    /// outlives its `ping` by an instant (the job is ended one process after the other) writes too; `ping.txt` is finished only by a `ping`
-    /// that was not killed.
+    /// 1: the control: a program that is left alone for six seconds, and how long it lives. 2: the fake runs the program and waits for it,
+    /// as a shim does, and the sink is dropped when the program says that it is running. 3: `start /b` makes the program, and the test goes
+    /// when the program says that it is running. The program is `echo up & ping -n 4 > ping.txt & echo late > late.txt`.
     #[cfg(windows)]
     fn hunt_one(variant: u8, tag: &str) -> Result<Found, String> {
         let dir = tempfile::tempdir().unwrap();
@@ -590,7 +593,7 @@ mod tests {
         let started = dir.path().join("started.txt");
         let up = dir.path().join("up.txt");
         let ping = format!("ping -n 4 127.0.0.1 > \"{}\"", pinged.display());
-        let (fake, waits) = if variant == 3 {
+        let (fake, waits) = if variant != 3 {
             let own = script(
                 dir.path(),
                 "own",
@@ -610,16 +613,15 @@ mod tests {
             );
             (fake, vec![started.clone(), up.clone()])
         } else {
-            let marker = if variant == 2 {
-                format!("echo up> \"{}\" & ", up.display())
-            } else {
-                String::new()
-            };
             let own = script(
                 dir.path(),
                 "own",
                 "",
-                &format!("{marker}{ping} & echo late> \"{}\"", late.display()),
+                &format!(
+                    "echo up> \"{}\" & {ping} & echo late> \"{}\"",
+                    up.display(),
+                    late.display()
+                ),
             );
             let fake = script(
                 dir.path(),
@@ -631,12 +633,7 @@ mod tests {
                     started.display()
                 ),
             );
-            let waits = if variant == 2 {
-                vec![started.clone(), up.clone()]
-            } else {
-                vec![started.clone()]
-            };
-            (fake, waits)
+            (fake, vec![started.clone(), up.clone()])
         };
         let t0 = std::time::Instant::now();
         let sink = start(&out, &fake).map_err(|e| format!("{tag}: {e:?}"))?;
@@ -662,6 +659,24 @@ mod tests {
         let before = describe(&job);
         let seen_at = t0.elapsed().as_millis();
 
+        // The control: the sink is kept, and what the job holds is watched until it is empty or six seconds have gone by.
+        let mut lived_ms = None;
+        if variant == 1 {
+            let begun = std::time::Instant::now();
+            while begun.elapsed() < Duration::from_secs(6) {
+                if job
+                    .as_ref()
+                    .and_then(|job| job.active_processes().ok())
+                    .is_some_and(|active| active == 0)
+                {
+                    lived_ms = Some(begun.elapsed().as_millis());
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+
+        let before_drop = std::time::SystemTime::now();
         drop(sink);
         let dropped_at = t0.elapsed().as_millis();
         let left_after_drop = job
@@ -673,17 +688,21 @@ mod tests {
         let survivors = some_processes();
         std::thread::sleep(Duration::from_secs(5));
         let ping_text = std::fs::read_to_string(&pinged).unwrap_or_default();
+        let written = std::fs::metadata(&late).and_then(|m| m.modified()).ok();
         let found = Found {
             old_late: late.exists(),
+            late_before_drop: written.is_some_and(|written| written < before_drop),
             ping_done: ping_text.contains("statistics") || ping_text.lines().count() >= 8,
             left_after_drop,
+            lived_ms,
+            ping_lines: ping_text.lines().count(),
             note: String::new(),
         };
-        if found.old_late || found.ping_done || left_after_drop != 0 {
+        if variant != 1 && (found.old_late || found.ping_done || left_after_drop != 0) {
             return Ok(Found {
                 note: format!(
-                    "{tag}: old_late {}, ping_done {}, left when the drop returned {left_after_drop}. seen at +{seen_at}ms, dropped by +{dropped_at}ms\n  timeline: {timeline:?}\n  before: {before}\n  1 s after the drop: {survivors:?}\n  ping.txt: {ping_text:?}",
-                    found.old_late, found.ping_done
+                    "{tag}: old_late {}, written before the drop {}, ping_done {}, left when the drop returned {left_after_drop}. seen at +{seen_at}ms, dropped by +{dropped_at}ms\n  timeline: {timeline:?}\n  before: {before}\n  1 s after the drop: {survivors:?}\n  ping.txt: {ping_text:?}",
+                    found.old_late, found.late_before_drop, found.ping_done
                 ),
                 ..found
             });
@@ -694,8 +713,9 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn hunt_the_windows_flake() {
-        // Per variant: runs, old oracle, ping finished, job not empty when the drop returned.
-        let mut counts = [[0usize; 4]; 3];
+        // Per variant: runs, old oracle, written before the drop, ping finished, job not empty at the drop.
+        let mut counts = [[0usize; 5]; 3];
+        let mut control: Vec<(Option<u128>, usize)> = Vec::new();
         let mut notes: Vec<String> = Vec::new();
         for round in 0..2 {
             let handles: Vec<_> = (0..30)
@@ -716,12 +736,13 @@ mod tests {
                 match result {
                     Ok(found) => {
                         row[1] += usize::from(found.old_late);
-                        row[2] += usize::from(found.ping_done);
-                        row[3] += usize::from(found.left_after_drop != 0);
-                        // The notes that are not about the old oracle alone are the ones to read.
-                        if found.ping_done
-                            || found.left_after_drop != 0
-                            || (notes.len() < 3 && !found.note.is_empty())
+                        row[2] += usize::from(found.late_before_drop);
+                        row[3] += usize::from(found.ping_done);
+                        row[4] += usize::from(found.left_after_drop != 0);
+                        if variant == 1 {
+                            control.push((found.lived_ms, found.ping_lines));
+                        } else if (found.ping_done || found.left_after_drop != 0 || notes.len() < 4)
+                            && !found.note.is_empty()
                         {
                             notes.push(found.note);
                         }
@@ -731,7 +752,7 @@ mod tests {
             }
         }
         panic!(
-            "HUNT RESULT, [runs, old oracle, ping finished, job not empty at the drop] per variant: {counts:?}\n{}",
+            "HUNT RESULT, [runs, old oracle, written before the drop, ping finished, job not empty at the drop] per variant: {counts:?}\ncontrol, (ms the program lived alone, lines of ping.txt): {control:?}\n{}",
             notes.join("\n")
         );
     }
