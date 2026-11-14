@@ -43,7 +43,7 @@ function pane(overrides: Partial<MeetingDetail> = {}, canSeek = true, tab: "summ
 
 /** The part of the pane that has this heading. */
 const part = (name: string) => screen.getByRole("heading", { name }).closest("section") as HTMLElement;
-/** A tab by its name, whatever count it has after it ("Actions" is "Actions (2)"). */
+/** A tab by its name, whatever count it has after it ("Actions" is "Actions (1)"). */
 const tab = (name: string) => screen.getByRole("tab", { name: new RegExp(`^${name}( \\(\\d+\\))?$`) });
 const headings = () => screen.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent);
 
@@ -179,7 +179,7 @@ test("a recording with no transcript has nothing to ask: the Ask tab is not offe
   pane({ transcript: [] });
 
   expect(screen.queryByRole("tab", { name: "Ask" })).not.toBeInTheDocument();
-  expect(screen.getAllByRole("tab").map((item) => item.textContent?.trim())).toEqual(["Summary", "Actions (2)", "Chapters (2)"]);
+  expect(screen.getAllByRole("tab").map((item) => item.textContent?.trim())).toEqual(["Summary", "Actions (1)", "Chapters (2)"]);
 });
 
 test("without a summary the tabs are the Summary tab, which says so, and Ask when there is a transcript", () => {
@@ -366,10 +366,10 @@ test("the pane is Vietnamese in Vietnamese", async () => {
   pane();
 
   expect(screen.getByRole("tablist", { name: "Các phần của bản ghi" })).toBeInTheDocument();
-  expect(screen.getAllByRole("tab").map((item) => item.textContent?.trim())).toEqual(["Tóm tắt", "Việc cần làm (2)", "Chương (2)", "Hỏi"]);
+  expect(screen.getAllByRole("tab").map((item) => item.textContent?.trim())).toEqual(["Tóm tắt", "Việc cần làm (1)", "Chương (2)", "Hỏi"]);
   expect(headings()).toEqual(["Tóm tắt", "Ý chính", "Quyết định", "Câu hỏi còn mở"]);
 
-  await user.click(screen.getByRole("tab", { name: "Việc cần làm (2)" }));
+  await user.click(screen.getByRole("tab", { name: "Việc cần làm (1)" }));
   expect(headings()).toEqual(["Việc cần làm"]);
   expect(screen.getByRole("button", { name: "Copy dạng checklist" })).toBeInTheDocument();
 
@@ -512,7 +512,7 @@ test("a_trailing_time_is_a_chip_that_seeks: a summary from before the times show
 
 test("tabs_show_counts_and_hide_zero: Actions and Chapters say how many they have, and say nothing when they have none", () => {
   pane();
-  expect(screen.getAllByRole("tab").map((item) => item.textContent?.trim())).toEqual(["Summary", "Actions (2)", "Chapters (2)", "Ask"]);
+  expect(screen.getAllByRole("tab").map((item) => item.textContent?.trim())).toEqual(["Summary", "Actions (1)", "Chapters (2)", "Ask"]);
   cleanup();
 
   pane({ summary: fakeSummary({ actions: [], timeline: [{ seconds: 0, label: "00:00", text: "Kick-off" }] }) });
@@ -522,13 +522,45 @@ test("tabs_show_counts_and_hide_zero: Actions and Chapters say how many they hav
   expect(screen.queryByText(/\(0\)/)).not.toBeInTheDocument();
 });
 
-test("the count of the actions is of all of them, so that a tick does not change it", async () => {
+test("the count of the actions is of the open ones, as the list's badge is: items that are done do not count, and a tick takes one off", async () => {
   const user = userEvent.setup();
-  pane({}, true, "actions");
+  // Three items, one of them done: two are open.
+  pane({
+    summary: fakeSummary({
+      actions: [
+        { index: 0, owner: "An", text: "Send the budget", done: false },
+        { index: 1, owner: null, text: "Book the room", done: true },
+        { index: 2, owner: null, text: "Call Binh", done: false },
+      ],
+    }),
+  }, true, "actions");
+  expect(screen.getByRole("tab", { name: "Actions (2)" })).toBeInTheDocument();
 
   await user.click(screen.getByRole("checkbox", { name: "Send the budget" }));
+  expect(screen.getByRole("tab", { name: "Actions (1)" })).toBeInTheDocument();
 
-  expect(screen.getByRole("tab", { name: "Actions (2)" })).toBeInTheDocument();
+  // The last one open ticked: nothing is open, and a count of 0 is not shown. The list is still there.
+  await user.click(screen.getByRole("checkbox", { name: "Call Binh" }));
+  expect(screen.getByRole("tab", { name: "Actions" })).toBeInTheDocument();
+  expect(screen.queryByText(/\(0\)/)).not.toBeInTheDocument();
+  expect(screen.getAllByRole("checkbox")).toHaveLength(3);
+
+  // And a tick that is taken back puts it back.
+  await user.click(screen.getByRole("checkbox", { name: "Call Binh" }));
+  expect(screen.getByRole("tab", { name: "Actions (1)" })).toBeInTheDocument();
+});
+
+test("a recording whose items are all done has the Actions tab with no count", () => {
+  pane({
+    summary: fakeSummary({
+      actions: [
+        { index: 0, owner: "An", text: "Send the budget", done: true },
+        { index: 1, owner: null, text: "Book the room", done: true },
+      ],
+    }),
+  });
+
+  expect(screen.getByRole("tab", { name: "Actions" })).toBeInTheDocument();
 });
 
 test("the_tabs_are_an_ARIA_tablist: one tab is selected and tabbable, the panel is named by it, and the arrow keys move between them", async () => {
@@ -584,9 +616,17 @@ test("the tabs keep their words whole in a narrow column: the row scrolls sidewa
   expect(open["box-shadow"]).toBe("inset 0 -2px 0 var(--accent)");
 });
 
-test("the panel is in the order of the Tab key, so that a keyboard can scroll it", () => {
+test("the panel of a tab that scrolls is in the order of the Tab key, so that a keyboard can scroll it; the Ask panel, which does not, is not", async () => {
+  const user = userEvent.setup();
   pane();
-  expect(screen.getByRole("tabpanel").tabIndex).toBe(0);
+
+  for (const view of ["Summary", "Actions", "Chapters"]) {
+    await user.click(tab(view));
+    expect(screen.getByRole("tabpanel"), `the ${view} panel`).toHaveAttribute("tabindex", "0");
+  }
+  // Its answers scroll, and its field is in the order of the Tab key as it is: a stop on the panel would be one more for nothing.
+  await user.click(tab("Ask"));
+  expect(screen.getByRole("tabpanel")).not.toHaveAttribute("tabindex");
 });
 
 test("the_last_tab_is_remembered: a tab that is chosen is kept, and the pane of the next recording opens on it", async () => {

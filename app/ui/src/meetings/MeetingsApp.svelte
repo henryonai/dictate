@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import { api, errorText, takeOpenRecorder } from "../lib/api";
   import { t } from "../lib/i18n";
   import { MeetingsStore } from "../lib/meetings-store.svelte";
@@ -62,9 +62,31 @@
     const problem = await store.importLink(url);
     if (problem) store.notify(problem);
   }
+
+  /** The list lies over the recording: the window is narrow, and the list is open. */
+  const overlaid = $derived(store.narrow && store.sidebarOpen);
+
+  /**
+   * Where the focus goes when the list that lay over the recording is put away (it was in the list, which is gone): the button that
+   * opens it again, in the toolbar, and not the page.
+   */
+  async function focusToggle() {
+    await tick();
+    document.getElementById("library-toggle")?.focus();
+  }
+
+  // Esc puts away a list that lies over the recording, as it closes the Add menu. It is not for the list when something else took it (the
+  // Add menu says so with `preventDefault`, a dialog too) or a dialog is open.
+  function onkeydown(event: KeyboardEvent) {
+    if (event.key !== "Escape" || event.defaultPrevented || store.modalOpen || !overlaid) return;
+    event.preventDefault();
+    store.toggleSidebar();
+    void focusToggle();
+  }
 </script>
 
 <svelte:document {onpaste} />
+<svelte:window {onkeydown} />
 
 <main class="meetings">
   <ImportBar {store} />
@@ -83,9 +105,12 @@
   {:else}
     <div class="body">
       {#if store.sidebarOpen}
-        <aside id="library-list" class:overlay={store.narrow}><List {store} /></aside>
+        <aside id="library-list" class:overlay={store.narrow}>
+          <List {store} onpick={() => store.narrow && void focusToggle()} />
+        </aside>
       {/if}
-      <section class="detail"><Detail {store} /></section>
+      <!-- Under the list that lies over it the recording is out of reach of the keyboard and of the pointer: the list is what is being used. -->
+      <section class="detail" inert={overlaid}><Detail {store} /></section>
     </div>
   {/if}
 

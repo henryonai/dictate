@@ -199,6 +199,120 @@ test("picking_a_recording_closes_the_overlay_list: in a wide window the list is 
   expect(recordings()).toBeInTheDocument();
 });
 
+test("escape_closes_the_overlay_list: Esc puts away a list that lies over the recording, and the focus goes to its button", async () => {
+  const user = userEvent.setup();
+  window.innerWidth = 900;
+  await open();
+  await user.click(screen.getByRole("button", { name: "Show list" }));
+  expect(recordings()).toBeInTheDocument();
+
+  await user.keyboard("{Escape}");
+
+  expect(recordings()).not.toBeInTheDocument();
+  const toggle = screen.getByRole("button", { name: "Show list" });
+  expect(toggle).toHaveAttribute("aria-expanded", "false");
+  expect(toggle).toHaveFocus();
+});
+
+test("escape_closes_the_overlay_list: Esc leaves a list that is beside the recording where it is", async () => {
+  const user = userEvent.setup();
+  await open();
+
+  await user.keyboard("{Escape}");
+
+  expect(recordings()).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Hide list" })).toBeInTheDocument();
+});
+
+test("escape_closes_the_overlay_list: with the Add menu open, Esc closes the menu first and the list on the next one", async () => {
+  const user = userEvent.setup();
+  window.innerWidth = 900;
+  await open();
+  await user.click(screen.getByRole("button", { name: "Show list" }));
+  await user.click(screen.getByRole("button", { name: "Add file or link" }));
+  expect(screen.getByRole("group", { name: "Add file or link" })).toBeInTheDocument();
+
+  await user.keyboard("{Escape}");
+  expect(screen.queryByRole("group", { name: "Add file or link" })).not.toBeInTheDocument();
+  expect(recordings()).toBeInTheDocument();
+
+  await user.keyboard("{Escape}");
+  expect(recordings()).not.toBeInTheDocument();
+});
+
+test("escape_closes_the_overlay_list: with a dialog open, Esc closes the dialog and leaves the list", async () => {
+  const user = userEvent.setup();
+  window.innerWidth = 900;
+  await open();
+  await user.click(screen.getByRole("button", { name: "Show list" }));
+  await user.click(screen.getByRole("button", { name: "Add file or link" }));
+  await user.click(screen.getByRole("button", { name: /^Paste a link/ }));
+  expect(await screen.findByRole("dialog")).toBeInTheDocument();
+
+  await user.keyboard("{Escape}");
+
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(recordings()).toBeInTheDocument();
+});
+
+test("a pick in the overlay list moves the focus to the button of the list, by mouse and by keyboard, and not to the page", async () => {
+  const user = userEvent.setup();
+  window.innerWidth = 900;
+  await open();
+  await user.click(screen.getByRole("button", { name: "Show list" }));
+
+  await user.click(screen.getByRole("button", { name: /Weekly planning/ }));
+  expect(recordings()).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Show list" })).toHaveFocus();
+
+  // By keyboard: the list is opened, a recording is reached with Tab and picked with Enter.
+  await user.click(screen.getByRole("button", { name: "Show list" }));
+  const retro = screen.getByRole("button", { name: /Retro/ });
+  retro.focus();
+  await user.keyboard("{Enter}");
+  expect(recordings()).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Show list" })).toHaveFocus();
+  expect(await screen.findByRole("heading", { level: 1, name: "Retro" })).toBeInTheDocument();
+});
+
+test("a pick in a list that is beside the recording leaves the focus where it is", async () => {
+  const user = userEvent.setup();
+  await open();
+
+  const weekly = screen.getByRole("button", { name: /Weekly planning/ });
+  weekly.focus();
+  await user.keyboard("{Enter}");
+
+  expect(await screen.findByRole("heading", { level: 1, name: "Weekly planning" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /Weekly planning/ })).toHaveFocus();
+});
+
+test("the recording under the overlay list can't be reached while the list is over it, and can be otherwise", async () => {
+  const user = userEvent.setup();
+  window.innerWidth = 900;
+  const { container } = await open();
+  // `inert` is a property of the element that the web view reflects as the attribute (jsdom has the property only).
+  const inert = (element: Element | null | undefined) => (element as (HTMLElement & { inert?: boolean }) | null | undefined)?.inert === true;
+  const detail = () => container.querySelector(".detail");
+
+  expect(inert(detail())).toBe(false);
+  await user.click(screen.getByRole("button", { name: "Show list" }));
+  expect(inert(detail())).toBe(true);
+  // The toolbar and the list are not inert: they are what the person is at.
+  expect(inert(screen.getByRole("toolbar"))).toBe(false);
+  expect(inert(recordings()?.closest("aside"))).toBe(false);
+
+  await user.keyboard("{Escape}");
+  expect(inert(detail())).toBe(false);
+});
+
+test("a list that is beside the recording leaves it reachable", async () => {
+  const { container } = await open();
+
+  expect(recordings()).toBeInTheDocument();
+  expect((container.querySelector(".detail") as HTMLElement & { inert?: boolean }).inert).not.toBe(true);
+});
+
 test("a title that looks like HTML is shown as text, in the list and in the header", async () => {
   const user = userEvent.setup();
   const evil = '<img src=x onerror="alert(1)">';

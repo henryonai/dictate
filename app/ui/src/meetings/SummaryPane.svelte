@@ -78,8 +78,14 @@
   /** The tab that was chosen last, which this recording may have no place for (the choice is left as it was then). */
   let chosen = $state<DetailTab>(storedTab());
   const active = $derived(tabs.includes(chosen) ? chosen : "summary");
-  /** What a tab counts, when it counts: the action items and the chapters. Zero says nothing. */
-  const counts = $derived<Partial<Record<DetailTab, number>>>({ actions: actions.length, chapters: summary?.timeline.length ?? 0 });
+  /**
+   * What a tab counts, when it counts: the action items that are still open (as the badge of the list does, and a tick shows at once) and
+   * the chapters. Zero says nothing.
+   */
+  const counts = $derived<Partial<Record<DetailTab, number>>>({
+    actions: actions.filter((action) => !action.done).length,
+    chapters: summary?.timeline.length ?? 0,
+  });
 
   function choose(tab: DetailTab) {
     chosen = tab;
@@ -141,8 +147,15 @@
   </div>
 
   <!-- A panel that scrolls is reached with the keyboard too (there may be nothing in it to focus); the Ask panel does not scroll as a
-       whole: its answers do, and its field stays in reach. -->
-  <div class="sections" class:fill={active === "ask"} role="tabpanel" id={panelId} aria-labelledby={tabId(active)} tabindex="0">
+       whole (its answers do, and its field is in the order of the Tab key), so it has no stop of its own. -->
+  <div
+    class="sections"
+    class:fill={active === "ask"}
+    role="tabpanel"
+    id={panelId}
+    aria-labelledby={tabId(active)}
+    tabindex={active === "ask" ? undefined : 0}
+  >
     {#if active === "summary"}
       {#if short}
         <p class="hint note">{t("meetings.summary.short")}</p>
