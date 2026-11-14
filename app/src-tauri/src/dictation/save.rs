@@ -30,6 +30,12 @@ impl SavePaths {
         ))
     }
 
+    /// The folder that Open folder opens: where the saved dictations are. Loah's, unless the copy of Dictate's dictations
+    /// failed (`dictates` is then the folder of Dictate, which is only read): the ones that were not copied are there.
+    pub fn folder_to_open<'a>(&'a self, dictates: Option<&'a Path>) -> &'a Path {
+        dictates.unwrap_or(&self.dir)
+    }
+
     /// `Loah/Dictations` below `data_dir`, with `temp` for the audio that isn't saved.
     fn below(data_dir: &Path, temp: PathBuf) -> SavePaths {
         SavePaths {
@@ -200,6 +206,21 @@ mod tests {
     use super::*;
     use chrono::NaiveDate;
     use loah_services::whisper::local::read_wav_16k_mono;
+
+    #[test]
+    fn open_folder_opens_dictates_dictations_only_when_they_could_not_be_copied() {
+        let paths = SavePaths::below(Path::new("data"), PathBuf::from("tmp"));
+        // As ever, when all came over.
+        assert_eq!(
+            paths.folder_to_open(None),
+            Path::new("data/Loah/Dictations")
+        );
+        // When the copy failed that is where the saved dictations are.
+        let dictates = Path::new("data/Dictate/Dictations");
+        assert_eq!(paths.folder_to_open(Some(dictates)), dictates);
+        // New dictations are saved in Loah's folder either way.
+        assert_eq!(paths.dir, Path::new("data/Loah/Dictations"));
+    }
 
     #[test]
     fn saved_dictations_go_to_loah_dictations_below_the_data_dir() {

@@ -162,6 +162,13 @@ impl KeyringStore {
             .legacy_asked
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
+        // Looked at again under the lock: another thread may have saved Loah's entry (or removed the key) while this one waited,
+        // and asking Dictate's entry then would be a second prompt for nothing.
+        match self.vault.read(SERVICE, a.name())? {
+            Some(removed) if removed == REMOVED => return Ok(None),
+            Some(key) => return Ok(Some(key)),
+            None => {}
+        }
         if asked.contains(&a) {
             return Ok(None);
         }
@@ -332,6 +339,8 @@ mod tests {
         reads: Mutex<Vec<(String, String)>>,
         unreadable: Mutex<Vec<String>>,
         unwritable: Mutex<Vec<String>>,
+        /// A service whose first read sees nothing, as a read that was made just before another thread saved the entry.
+        stale_first_read: Mutex<Option<String>>,
     }
 
     impl MemoryVault {
@@ -367,6 +376,11 @@ mod tests {
                 .push((service.to_string(), account.to_string()));
             if self.unreadable.lock().unwrap().iter().any(|s| s == service) {
                 return Err(SecretError::PlatformFailure("denied".into()));
+            }
+            let mut stale = self.stale_first_read.lock().unwrap();
+            if stale.as_deref() == Some(service) {
+                *stale = None;
+                return Ok(None);
             }
             Ok(self.peek(service, account))
         }
@@ -426,6 +440,34 @@ mod tests {
             0,
             "the old entry is not even read"
         );
+    }
+
+    #[test]
+    fn a_key_saved_under_loah_since_the_first_read_is_used_and_dictate_is_not_asked() {
+        // Two reads at the same time: one finds nothing and goes to Dictate's entry, and the other has saved Loah's meanwhile.
+        // The one that waits for its turn looks at Loah's entry again before it asks anything of Dictate.
+        let vault = MemoryVault::with(&[
+            ("Loah", "default", "sk-new"),
+            ("Dictate", "default", "sk-old"),
+        ]);
+        *vault.stale_first_read.lock().unwrap() = Some("Loah".into());
+        let store = store_on(&vault);
+
+        assert_eq!(store.get(Account::Ai), Ok(Some("sk-new".into())));
+        assert_eq!(vault.reads_of("Dictate"), 0, "no second prompt");
+        assert_eq!(vault.peek("Loah", "default"), Some("sk-new".into()));
+    }
+
+    #[test]
+    fn a_key_removed_under_loah_since_the_first_read_stays_removed() {
+        let vault = MemoryVault::with(&[
+            ("Loah", "default", "(removed)"),
+            ("Dictate", "default", "sk-old"),
+        ]);
+        *vault.stale_first_read.lock().unwrap() = Some("Loah".into());
+
+        assert_eq!(store_on(&vault).get(Account::Ai), Ok(None));
+        assert_eq!(vault.reads_of("Dictate"), 0);
     }
 
     #[test]

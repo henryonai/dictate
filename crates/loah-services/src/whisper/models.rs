@@ -139,18 +139,49 @@ pub struct ModelStatus {
 }
 
 /// The folder the models live in.
+///
+/// It may have a second folder, `fallback`, that is only read: Dictate's own models folder, when Loah could not copy it. The
+/// models that are there are listed and used where they are; a download, a delete and everything else Loah writes is in `root`.
 #[derive(Debug, Clone)]
 pub struct ModelDir {
     root: PathBuf,
+    fallback: Option<PathBuf>,
 }
 
 impl ModelDir {
     pub fn new(root: PathBuf) -> Self {
-        ModelDir { root }
+        ModelDir {
+            root,
+            fallback: None,
+        }
+    }
+
+    /// The same folder, and `fallback` to read the models from that `root` does not have. Never written to.
+    pub fn with_fallback(mut self, fallback: PathBuf) -> Self {
+        self.fallback = Some(fallback);
+        self
     }
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Whether the folder `dir` has the final file of the model, with something in it.
+    fn holds(dir: &Path, model: &ModelInfo) -> bool {
+        fs::metadata(dir.join(model.file)).is_ok_and(|m| m.is_file() && m.len() > 0)
+    }
+
+    /// Where the file of a model that is downloaded is: in `root`, or else in the fallback; `path(id)` when it is in neither.
+    /// This is where a model is read from; where one is downloaded to is `path`.
+    pub fn existing_path(&self, id: &str) -> PathBuf {
+        match (find(id), &self.fallback) {
+            (Some(model), Some(fallback))
+                if !ModelDir::holds(&self.root, model) && ModelDir::holds(fallback, model) =>
+            {
+                fallback.join(model.file)
+            }
+            _ => self.path(id),
+        }
     }
 
     /// Where the file of a model is (or will be). An id outside the catalog gets a name that is no model's, so
@@ -164,10 +195,15 @@ impl ModelDir {
         self.root.join(part_name(model.file))
     }
 
-    /// Whether the model's final file is there and holds something. A `.part` file does not count.
+    /// Whether the model's final file is there (in `root`, or in the fallback) and holds something. A `.part` file does not
+    /// count.
     pub fn is_downloaded(&self, id: &str) -> bool {
         find(id).is_some_and(|model| {
-            fs::metadata(self.root.join(model.file)).is_ok_and(|m| m.is_file() && m.len() > 0)
+            ModelDir::holds(&self.root, model)
+                || self
+                    .fallback
+                    .as_deref()
+                    .is_some_and(|fallback| ModelDir::holds(fallback, model))
         })
     }
 
@@ -189,30 +225,55 @@ impl ModelDir {
             .collect()
     }
 
-    /// Removes a model and any half-finished download of it; a model that is not there is not an error.
+    /// Removes a model and any half-finished download of it from `root`; a model that is not there is not an error. A model
+    /// that only the fallback has is Dictate's, and is not touched: that is an error, which says so.
     pub fn delete(&self, id: &str) -> io::Result<()> {
         let model = find(id).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "There is no such model.")
         })?;
+        let mut removed = false;
         for path in [self.root.join(model.file), self.part_path(model)] {
             match fs::remove_file(path) {
+                Ok(()) => removed = true,
                 Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
-                _ => {}
+                Err(_) => {}
             }
+        }
+        let dictates = self
+            .fallback
+            .as_deref()
+            .is_some_and(|fallback| ModelDir::holds(fallback, model));
+        if dictates && !removed {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "This model is kept in Dictate's folder, which Loah does not change. Delete it there.",
+            ));
         }
         Ok(())
     }
 
-    /// MiB on disk: the models, and the unfinished downloads of them.
+    /// MiB on disk: the models, and the unfinished downloads of them; and the models of the fallback that are used.
     pub fn disk_usage_mb(&self) -> u64 {
-        let bytes: u64 = CATALOG
+        let own: u64 = CATALOG
             .iter()
             .flat_map(|model| [self.root.join(model.file), self.part_path(model)])
             .filter_map(|path| fs::metadata(path).ok())
             .filter(|meta| meta.is_file())
             .map(|meta| meta.len())
             .sum();
-        bytes / (1024 * 1024)
+        let dictates: u64 = self
+            .fallback
+            .iter()
+            .flat_map(|fallback| {
+                CATALOG
+                    .iter()
+                    .filter(|model| !ModelDir::holds(&self.root, model))
+                    .filter_map(|model| fs::metadata(fallback.join(model.file)).ok())
+                    .filter(|meta| meta.is_file())
+                    .map(|meta| meta.len())
+            })
+            .sum();
+        (own + dictates) / (1024 * 1024)
     }
 }
 
@@ -964,6 +1025,96 @@ mod tests {
         assert!(!models.path("tiny").exists());
         assert!(!models.root().join("ggml-tiny.bin.part").exists());
         assert!(models.is_downloaded("base"), "other models stay");
+    }
+
+    /// Loah's models folder, and Dictate's beside it (what Loah could not copy, read only).
+    fn dir_with_dictates() -> (tempfile::TempDir, ModelDir, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let dictates = tmp.path().join("dictate-models");
+        fs::create_dir_all(&dictates).unwrap();
+        let models = ModelDir::new(tmp.path().join("models")).with_fallback(dictates.clone());
+        fs::create_dir_all(models.root()).unwrap();
+        (tmp, models, dictates)
+    }
+
+    #[test]
+    fn a_model_that_only_dictate_has_is_listed_and_used_where_it_is() {
+        let (_tmp, models, dictates) = dir_with_dictates();
+        fs::write(dictates.join("ggml-tiny.bin"), b"ggml").unwrap();
+
+        assert!(models.is_downloaded("tiny"));
+        assert!(!models.is_downloaded("base"));
+        assert!(models
+            .list_with_ram(8)
+            .iter()
+            .any(|m| m.id == "tiny" && m.downloaded));
+        assert_eq!(models.existing_path("tiny"), dictates.join("ggml-tiny.bin"));
+        // What would be downloaded still goes to Loah's folder.
+        assert_eq!(models.path("tiny"), models.root().join("ggml-tiny.bin"));
+        assert_eq!(
+            models.existing_path("base"),
+            models.root().join("ggml-base.bin")
+        );
+    }
+
+    #[test]
+    fn a_model_in_loahs_folder_is_used_before_dictates() {
+        let (_tmp, models, dictates) = dir_with_dictates();
+        fs::write(dictates.join("ggml-tiny.bin"), b"ggml").unwrap();
+        fs::write(models.path("tiny"), b"ggml").unwrap();
+
+        assert_eq!(
+            models.existing_path("tiny"),
+            models.root().join("ggml-tiny.bin")
+        );
+    }
+
+    #[test]
+    fn a_part_file_of_dictate_is_not_a_model() {
+        let (_tmp, models, dictates) = dir_with_dictates();
+        fs::write(dictates.join("ggml-tiny.bin.part"), vec![1u8; 100]).unwrap();
+        fs::write(dictates.join("ggml-base.bin"), b"").unwrap();
+
+        assert!(!models.is_downloaded("tiny"));
+        assert!(!models.is_downloaded("base"), "empty");
+    }
+
+    #[test]
+    fn deleting_a_model_that_only_dictate_has_changes_nothing_and_says_so() {
+        let (_tmp, models, dictates) = dir_with_dictates();
+        fs::write(dictates.join("ggml-tiny.bin"), b"ggml").unwrap();
+        fs::write(dictates.join("ggml-tiny.bin.part"), b"gg").unwrap();
+
+        let err = models.delete("tiny").unwrap_err();
+
+        assert!(err.to_string().contains("Dictate"), "{err}");
+        assert_eq!(fs::read(dictates.join("ggml-tiny.bin")).unwrap(), b"ggml");
+        assert_eq!(
+            fs::read(dictates.join("ggml-tiny.bin.part")).unwrap(),
+            b"gg"
+        );
+    }
+
+    #[test]
+    fn deleting_loahs_copy_leaves_dictates() {
+        let (_tmp, models, dictates) = dir_with_dictates();
+        fs::write(dictates.join("ggml-tiny.bin"), b"ggml").unwrap();
+        fs::write(models.path("tiny"), b"ggml").unwrap();
+
+        models.delete("tiny").unwrap();
+
+        assert!(!models.path("tiny").exists());
+        assert_eq!(fs::read(dictates.join("ggml-tiny.bin")).unwrap(), b"ggml");
+    }
+
+    #[test]
+    fn disk_usage_counts_the_models_of_dictate_that_are_used_too() {
+        let (_tmp, models, dictates) = dir_with_dictates();
+        const MIB: usize = 1024 * 1024;
+        fs::write(models.path("tiny"), vec![0u8; MIB]).unwrap();
+        fs::write(dictates.join("ggml-base.bin"), vec![0u8; 2 * MIB]).unwrap();
+
+        assert_eq!(models.disk_usage_mb(), 3);
     }
 
     #[test]

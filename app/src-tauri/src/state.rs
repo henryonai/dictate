@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
+use loah_services::migrate::Fallbacks;
 use loah_services::secrets::{Account, SecretStore};
 use loah_services::settings::{LoadWarning, SettingsStore};
 use loah_services::whisper::local::LocalWhisper;
@@ -253,6 +254,8 @@ pub struct AppState {
     pub jobs: Arc<Jobs>,
     load_warning: Arc<Mutex<Option<String>>>,
     migration_note: Arc<Mutex<Option<String>>>,
+    /// Where an item that could not be copied from Dictate is still read from (read only); none of them when all was copied.
+    pub fallbacks: Arc<Fallbacks>,
 }
 
 impl AppState {
@@ -272,7 +275,14 @@ impl AppState {
             jobs: Arc::new(Jobs::default()),
             load_warning: Arc::new(Mutex::new(load_warning.map(|warning| warning.message))),
             migration_note: Arc::default(),
+            fallbacks: Arc::default(),
         }
+    }
+
+    /// The state, told where the items that could not be copied from Dictate are read from instead.
+    pub fn with_fallbacks(mut self, fallbacks: Fallbacks) -> AppState {
+        self.fallbacks = Arc::new(fallbacks);
+        self
     }
 
     /// Why the settings file wasn't used as it was, once: the first call gets it, later ones nothing.
@@ -317,11 +327,16 @@ pub fn models_base_dir() -> Option<PathBuf> {
 ///
 /// It is `whisper-models` and not `models`: on macOS names are compared without regard to case, and `Dictate/models` was
 /// the same folder as the Swift app's `Dictate/Models`, which holds that app's files. (Dictate 2.0.0 kept them in
-/// `Dictate/whisper-models`; `loah_services::migrate` links them into this one.)
-pub fn open_model_dir(base_dir: &Path) -> io::Result<ModelDir> {
+/// `Dictate/whisper-models`; `loah_services::migrate` links them into this one.) When that could not be done, `read_from`
+/// is Dictate's folder, from which the models that are there are used, read only.
+pub fn open_model_dir(base_dir: &Path, read_from: Option<PathBuf>) -> io::Result<ModelDir> {
     let root = base_dir.join("Loah").join("whisper-models");
     fs::create_dir_all(&root)?;
-    Ok(ModelDir::new(root))
+    let models = ModelDir::new(root);
+    Ok(match read_from {
+        Some(fallback) => models.with_fallback(fallback),
+        None => models,
+    })
 }
 
 /// The folder of the speaker separation models (`loah_services::diarize::DIARIZE_MODELS`) below `base_dir`, created
@@ -584,7 +599,7 @@ mod tests {
     #[test]
     fn the_model_folder_is_loah_whisper_models_below_the_base_dir_and_is_created() {
         let dir = tempfile::tempdir().unwrap();
-        let models = open_model_dir(dir.path()).unwrap();
+        let models = open_model_dir(dir.path(), None).unwrap();
         // Not `Loah/models`: macOS compares names without regard to case, and the folder was `Dictate/Models` for the Swift
         // app, which keeps its own files there.
         assert_eq!(
@@ -593,7 +608,45 @@ mod tests {
         );
         assert!(models.root().is_dir());
         // A second start finds it there.
-        assert!(open_model_dir(dir.path()).is_ok());
+        assert!(open_model_dir(dir.path(), None).is_ok());
+    }
+
+    #[test]
+    fn the_model_folder_reads_dictates_models_when_loah_could_not_copy_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let dictates = dir.path().join("Dictate").join("whisper-models");
+        std::fs::create_dir_all(&dictates).unwrap();
+        std::fs::write(dictates.join("ggml-tiny.bin"), b"ggml").unwrap();
+
+        let models = open_model_dir(dir.path(), Some(dictates.clone())).unwrap();
+
+        // Used where they are, and still Loah's folder to write in (it is made as well).
+        assert!(models.is_downloaded("tiny"));
+        assert_eq!(models.existing_path("tiny"), dictates.join("ggml-tiny.bin"));
+        assert_eq!(
+            models.root(),
+            dir.path().join("Loah").join("whisper-models")
+        );
+        assert!(models.root().is_dir());
+        assert!(!open_model_dir(dir.path(), None)
+            .unwrap()
+            .is_downloaded("tiny"));
+    }
+
+    #[test]
+    fn the_state_has_no_fallbacks_unless_it_is_given_some() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state_with(&dir, Arc::new(MemoryStore::default()));
+        assert_eq!(*state.fallbacks, Fallbacks::default());
+
+        let given = Fallbacks {
+            dictations: Some(dir.path().join("Dictate").join("Dictations")),
+            ..Fallbacks::default()
+        };
+        let state = state.with_fallbacks(given.clone());
+
+        // A clone is the same state, as for everything else in it.
+        assert_eq!(*state.clone().fallbacks, given);
     }
 
     #[test]
@@ -606,7 +659,10 @@ mod tests {
         assert_eq!(open_diarize_dir(dir.path()).unwrap(), models);
         assert_ne!(
             models,
-            open_model_dir(dir.path()).unwrap().root().to_path_buf()
+            open_model_dir(dir.path(), None)
+                .unwrap()
+                .root()
+                .to_path_buf()
         );
     }
 

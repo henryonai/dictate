@@ -8,37 +8,103 @@
 //! would be worse than none, so every check asks for the thing itself (the program is on the disk and is Dictate's), not
 //! only for a name that a registry or a file carries.
 
-use loah_services::migrate::{self, LegacyDirs, MigrationReport};
+use loah_services::migrate::{self, Fallbacks, LegacyDirs, MigrationReport};
 
 /// The identifier of the Tauri Dictate (2.0.0), and the one of the Swift Dictate before it.
 #[cfg(any(test, target_os = "macos"))]
 const OLD_APP_IDS: [&str; 2] = ["io.github.henryonai.dictate", "local.dictate"];
 
+/// Whether this is the first start: Loah has no settings file, and Dictate's settings are not being read in its place
+/// (that is the case when they could not be copied).
+pub fn is_first_launch(settings_path: &std::path::Path, fallbacks: &Fallbacks) -> bool {
+    !settings_path.exists() && fallbacks.settings.is_none()
+}
+
+/// What the migration did at this start, and what follows from it.
+#[derive(Debug)]
+pub struct Carried {
+    pub report: MigrationReport,
+    /// Where each item that could not be copied is still read from: Dictate's own copy, read only.
+    pub fallbacks: Fallbacks,
+    /// Loah's folders, which hold the flag of the login item.
+    new: Option<LegacyDirs>,
+}
+
+/// What `Carried::settle_login_item` did.
+#[derive(Debug, PartialEq, Eq)]
+pub enum LoginItem {
+    /// The migration did not leave it to be done at this start, or has been done since.
+    NotPending,
+    /// The settings that came over do not ask for it.
+    NotWanted,
+    Registered,
+    /// It could not be done; it is tried again at the next start.
+    Failed(String),
+}
+
 /// Carries Dictate's settings, models and dictations over to Loah when that is due (see `loah_services::migrate`), and
 /// logs each step. Before anything reads the settings: a person whose settings came over is not at a first launch.
-pub fn carry_over_from_dictate() -> MigrationReport {
+pub fn carry_over_from_dictate() -> Carried {
     carry_over(LegacyDirs::dictate(), LegacyDirs::loah())
 }
 
-fn carry_over(old: Option<LegacyDirs>, new: Option<LegacyDirs>) -> MigrationReport {
+fn carry_over(old: Option<LegacyDirs>, new: Option<LegacyDirs>) -> Carried {
     let (Some(old), Some(new)) = (old, new) else {
-        return MigrationReport::default();
+        return Carried {
+            report: MigrationReport::default(),
+            fallbacks: Fallbacks::default(),
+            new: None,
+        };
     };
     let report = migrate::migrate_from_dictate(&old, &new);
     for item in &report.copied {
         log::info!("{}", migrate::step_message(item));
     }
     if let Some(failed) = report.failure_list() {
-        log::warn!("Could not copy all of Dictate's files to Loah: {failed}");
+        log::warn!("Could not copy all of Dictate's files to Loah, reading Dictate's own meanwhile: {failed}");
     }
-    report
+    let fallbacks = report.fallbacks(&old);
+    Carried {
+        report,
+        fallbacks,
+        new: Some(new),
+    }
 }
 
-/// Whether Loah registers itself as a login item at this start: the migration finished in this very run with something
-/// copied (so, once), and the settings that came over have launch at login on. The setting is otherwise applied only when it
-/// changes, and Loah has no login item of its own before this.
-pub fn registers_login_item(report: &MigrationReport, launch_at_login: bool) -> bool {
-    report.finished_now() && launch_at_login
+impl Carried {
+    /// Registers Loah as a login item when the run that finished the migration left that to be done and the settings that
+    /// came over (`launch_at_login`) ask for it. The setting is otherwise applied only when it changes, and Loah has no login
+    /// item of its own before this. `register` does it. Once it is done, or not wanted, the flag is removed; a registration
+    /// that failed leaves it, and the next start tries again.
+    pub fn settle_login_item(
+        &self,
+        launch_at_login: bool,
+        register: impl FnOnce() -> Result<(), String>,
+    ) -> LoginItem {
+        let Some(new) = self
+            .new
+            .as_ref()
+            .filter(|new| migrate::login_item_pending(new))
+        else {
+            return LoginItem::NotPending;
+        };
+        let settled = || {
+            if let Err(e) = migrate::clear_login_item_pending(new) {
+                log::warn!("Could not remove the mark of the login item: {e}");
+            }
+        };
+        if !launch_at_login {
+            settled();
+            return LoginItem::NotWanted;
+        }
+        match register() {
+            Ok(()) => {
+                settled();
+                LoginItem::Registered
+            }
+            Err(e) => LoginItem::Failed(e),
+        }
+    }
 }
 
 /// Whether Dictate, the Tauri app or the Swift one, is still on this machine in a way that matters: running, or registered
@@ -127,6 +193,26 @@ fn run_entry_starts_old_app(output: &str, exists: impl Fn(&std::path::Path) -> b
     })
 }
 
+/// Whether the output of `reg query HKCU\...\Explorer\StartupApproved\Run /v Dictate` says that the entry was turned off (in
+/// Task Manager's Startup tab or in Settings). The value has twelve bytes, the last eight of which are zero while the entry is
+/// on and a time once it is off (what the autostart plugin itself reads); no value, or one too short to tell, leaves the
+/// entry as it is.
+#[cfg(any(test, windows))]
+fn startup_is_turned_off(output: &str) -> bool {
+    output.lines().any(|line| {
+        let Some((name, data)) = line.split_once("REG_BINARY") else {
+            return false;
+        };
+        let hex = data.trim();
+        if name.trim() != "Dictate" || hex.len() < 16 || hex.len() % 2 != 0 {
+            return false;
+        }
+        // The last eight bytes, as sixteen hex digits.
+        let last_eight = &hex[hex.len() - 16..];
+        last_eight.chars().any(|digit| digit != '0')
+    })
+}
+
 // ---- Linux: the autostart entry of Dictate and the processes that run its program.
 
 /// Whether the autostart entry `desktop` (`~/.config/autostart/Dictate.desktop`) starts a program that is the old
@@ -137,11 +223,30 @@ fn autostart_entry_starts_old_app(
     desktop: &str,
     is_program: impl Fn(&std::path::Path) -> bool,
 ) -> bool {
+    // The desktop's own switches for an entry: it is in the folder and nothing starts.
+    let value = |key: &str| {
+        desktop.lines().find_map(|line| {
+            let (name, value) = line.split_once('=')?;
+            (name.trim() == key).then(|| value.trim().to_ascii_lowercase())
+        })
+    };
+    if value("Hidden").as_deref() == Some("true")
+        || value("X-GNOME-Autostart-enabled").as_deref() == Some("false")
+    {
+        return false;
+    }
+    value_of_exec(desktop)
+        .and_then(|command| command.split_whitespace().next().map(str::to_owned))
+        .is_some_and(|program| is_program(std::path::Path::new(&program)))
+}
+
+/// The command of a desktop entry (`Exec=`).
+#[cfg(any(test, target_os = "linux"))]
+fn value_of_exec(desktop: &str) -> Option<String> {
     desktop
         .lines()
         .find_map(|line| line.trim().strip_prefix("Exec="))
-        .and_then(|command| command.split_whitespace().next())
-        .is_some_and(|program| is_program(std::path::Path::new(program)))
+        .map(str::to_owned)
 }
 
 /// Whether a file is a program and not a script (`#!`): the wrapper of the package is one.
@@ -219,21 +324,20 @@ fn windows_present() -> bool {
     let reg = std::path::Path::new(&system)
         .join("System32")
         .join("reg.exe");
-    let output = Command::new(reg)
-        .args([
-            "query",
-            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
-            "/v",
-            "Dictate",
-        ])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output();
-    output.is_ok_and(|output| {
-        output.status.success()
-            && run_entry_starts_old_app(&String::from_utf8_lossy(&output.stdout), |path| {
-                path.is_file()
-            })
-    })
+    let ask = |key: &str| {
+        Command::new(&reg)
+            .args(["query", key, "/v", "Dictate"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+    };
+    let starts = ask(r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run")
+        .is_some_and(|output| run_entry_starts_old_app(&output, |path| path.is_file()));
+    starts
+        && !ask(r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run")
+            .is_some_and(|output| startup_is_turned_off(&output))
 }
 
 #[cfg(target_os = "linux")]
@@ -253,20 +357,23 @@ mod tests {
 
     #[test]
     fn without_the_folders_of_the_system_nothing_is_carried_over() {
-        assert_eq!(carry_over(None, None), MigrationReport::default());
+        assert_eq!(carry_over(None, None).report, MigrationReport::default());
         let dirs = LegacyDirs {
             config: "c".into(),
             data: "d".into(),
         };
         assert_eq!(
-            carry_over(Some(dirs.clone()), None),
+            carry_over(Some(dirs.clone()), None).report,
             MigrationReport::default()
         );
-        assert_eq!(carry_over(None, Some(dirs)), MigrationReport::default());
+        assert_eq!(
+            carry_over(None, Some(dirs)).report,
+            MigrationReport::default()
+        );
     }
 
-    #[test]
-    fn the_carry_over_hands_back_what_the_migration_did() {
+    /// Dictate's folders and Loah's, in a temporary folder, with Dictate's settings in place.
+    fn folders(settings: &str) -> (tempfile::TempDir, LegacyDirs, LegacyDirs) {
         let root = tempfile::tempdir().unwrap();
         let old = LegacyDirs {
             config: root.path().join("old-config"),
@@ -277,40 +384,143 @@ mod tests {
             data: root.path().join("new-data"),
         };
         fs::create_dir_all(&old.config).unwrap();
-        fs::write(old.config.join("settings.json"), "{}").unwrap();
+        fs::write(old.config.join("settings.json"), settings).unwrap();
+        (root, old, new)
+    }
 
-        let report = carry_over(Some(old), Some(new.clone()));
+    #[test]
+    fn the_carry_over_hands_back_what_the_migration_did() {
+        let (_root, old, new) = folders("{}");
 
-        assert_eq!(report.copied, ["settings.json"]);
-        assert!(report.done && report.finished_now());
+        let carried = carry_over(Some(old), Some(new.clone()));
+
+        assert_eq!(carried.report.copied, ["settings.json"]);
+        assert!(carried.report.done);
+        assert_eq!(carried.fallbacks, Fallbacks::default());
         assert!(new.config.join("settings.json").is_file());
     }
 
     #[test]
-    fn the_login_item_is_registered_once_when_the_migration_finishes_and_the_settings_ask_for_it() {
-        let finished = MigrationReport {
-            copied: vec!["settings.json".into()],
-            failed: vec![],
-            done: true,
+    fn a_start_without_settings_is_a_first_launch_unless_dictates_settings_are_being_read() {
+        let (_root, old, new) = folders("{}");
+        let settings = new.config.join("settings.json");
+        let none = Fallbacks::default();
+        let reading = Fallbacks {
+            settings: Some(old.config.join("settings.json")),
+            ..Fallbacks::default()
         };
-        assert!(registers_login_item(&finished, true));
-        // The copied settings don't ask for it.
-        assert!(!registers_login_item(&finished, false));
-        // A start that has nothing to do with a migration (it is done, or there was none): the setting is applied only
-        // when it changes, as always.
-        let done_before = MigrationReport {
-            done: true,
-            ..MigrationReport::default()
+
+        assert!(is_first_launch(&settings, &none));
+        // Settings that could not be copied are settings all the same.
+        assert!(!is_first_launch(&settings, &reading));
+        // Loah's own file, copied or saved since.
+        fs::create_dir_all(&new.config).unwrap();
+        fs::write(&settings, "{}").unwrap();
+        assert!(!is_first_launch(&settings, &none));
+    }
+
+    #[test]
+    fn an_item_that_could_not_be_copied_is_handed_back_as_a_fallback() {
+        let (_root, old, new) = folders("{}");
+        fs::create_dir_all(old.data.join("Dictations")).unwrap();
+        fs::write(old.data.join("Dictations").join("a.txt"), "hello").unwrap();
+        // A file where Loah's folder has to be.
+        fs::create_dir_all(&new.data).unwrap();
+        fs::write(new.data.join("Dictations"), "in the way").unwrap();
+
+        let carried = carry_over(Some(old.clone()), Some(new));
+
+        assert!(!carried.report.done);
+        assert_eq!(
+            carried.fallbacks,
+            Fallbacks {
+                dictations: Some(old.data.join("Dictations")),
+                ..Fallbacks::default()
+            }
+        );
+    }
+
+    #[test]
+    fn the_login_item_is_registered_at_the_start_that_wrote_the_marker_when_the_settings_ask_for_it(
+    ) {
+        let (_root, old, new) = folders(r#"{"launch_at_login": true}"#);
+        let carried = carry_over(Some(old.clone()), Some(new.clone()));
+        assert!(migrate::login_item_pending(&new));
+
+        let calls = std::cell::Cell::new(0);
+        let outcome = carried.settle_login_item(true, || {
+            calls.set(calls.get() + 1);
+            Ok(())
+        });
+
+        assert_eq!(outcome, LoginItem::Registered);
+        assert_eq!(calls.get(), 1);
+        assert!(
+            !migrate::login_item_pending(&new),
+            "done: not again at the next start"
+        );
+        // The next start: nothing is pending, the setting is applied only when it changes, as always.
+        let again = carry_over(Some(old), Some(new)).settle_login_item(true, || {
+            calls.set(calls.get() + 1);
+            Ok(())
+        });
+        assert_eq!(again, LoginItem::NotPending);
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn a_registration_that_failed_is_tried_again_at_the_next_start() {
+        let (_root, old, new) = folders(r#"{"launch_at_login": true}"#);
+        let first = carry_over(Some(old.clone()), Some(new.clone()));
+
+        let outcome = first.settle_login_item(true, || Err("no permission".to_string()));
+
+        assert_eq!(outcome, LoginItem::Failed("no permission".to_string()));
+        assert!(migrate::login_item_pending(&new), "kept for the next start");
+
+        // The next start has no migration to do (the marker is there) and still has the flag.
+        let second = carry_over(Some(old), Some(new.clone()));
+        assert!(second.report.done && second.report.copied.is_empty());
+        assert_eq!(
+            second.settle_login_item(true, || Ok(())),
+            LoginItem::Registered
+        );
+        assert!(!migrate::login_item_pending(&new));
+    }
+
+    #[test]
+    fn a_login_item_that_the_settings_do_not_ask_for_is_not_registered_and_is_forgotten() {
+        let (_root, old, new) = folders(r#"{"launch_at_login": false}"#);
+        let carried = carry_over(Some(old), Some(new.clone()));
+
+        let outcome = carried.settle_login_item(false, || panic!("registered"));
+
+        assert_eq!(outcome, LoginItem::NotWanted);
+        assert!(!migrate::login_item_pending(&new));
+    }
+
+    #[test]
+    fn a_start_that_is_not_after_a_migration_registers_nothing() {
+        // No Dictate on this machine: no marker, no flag.
+        let root = tempfile::tempdir().unwrap();
+        let none = LegacyDirs {
+            config: root.path().join("nowhere-config"),
+            data: root.path().join("nowhere-data"),
         };
-        assert!(!registers_login_item(&done_before, true));
-        assert!(!registers_login_item(&MigrationReport::default(), true));
-        // A migration that is not finished is not the one that registers: the next start, which finishes it, is.
-        let unfinished = MigrationReport {
-            copied: vec!["settings.json".into()],
-            failed: vec![("Dictations".into(), "x".into())],
-            done: false,
+        let new = LegacyDirs {
+            config: root.path().join("new-config"),
+            data: root.path().join("new-data"),
         };
-        assert!(!registers_login_item(&unfinished, true));
+        let carried = carry_over(Some(none), Some(new));
+        assert_eq!(
+            carried.settle_login_item(true, || panic!("registered")),
+            LoginItem::NotPending
+        );
+        // Nor without the folders of the system.
+        assert_eq!(
+            carry_over(None, None).settle_login_item(true, || panic!("registered")),
+            LoginItem::NotPending
+        );
     }
 
     // ---- macOS
@@ -460,6 +670,33 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn a_run_entry_that_task_manager_has_turned_off_is_not_started() {
+        // StartupApproved\Run: twelve bytes; the last eight are zero while the entry is on, and a time once it is turned off.
+        let approved = |hex: &str| {
+            format!(
+                "\r\nHKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run\r\n    Dictate    REG_BINARY    {hex}\r\n\r\n"
+            )
+        };
+        assert!(!startup_is_turned_off(&approved(
+            "020000000000000000000000"
+        )));
+        assert!(!startup_is_turned_off(&approved(
+            "060000000000000000000000"
+        )));
+        assert!(startup_is_turned_off(&approved("03000000A1B2C3D4E5F60718")));
+        // No value, nothing readable, or too short to tell: the entry stands.
+        assert!(!startup_is_turned_off(""));
+        assert!(!startup_is_turned_off(
+            "ERROR: The system was unable to find the specified registry key or value."
+        ));
+        assert!(!startup_is_turned_off(&approved("0300")));
+        // A value of another name is not Dictate's.
+        assert!(!startup_is_turned_off(
+            &approved("03000000A1B2C3D4E5F60718").replace("Dictate", "Other")
+        ));
+    }
+
     // ---- Linux
 
     const WRAPPER: &str = "#!/bin/sh\nexec /usr/bin/loah \"$@\"\n";
@@ -482,6 +719,23 @@ mod tests {
         assert!(autostart_entry_starts_old_app(entry, |path| path == Path::new("/usr/bin/dictate")));
         // After the upgrade that same entry starts the wrapper, which starts Loah: nothing of the old app is left.
         assert!(!autostart_entry_starts_old_app(entry, |_| false));
+    }
+
+    #[test]
+    fn an_autostart_entry_that_is_turned_off_is_not_the_old_app() {
+        // The desktop's own switches for a startup entry: the entry is there and nothing starts.
+        for off in [
+            "Hidden=true",
+            "X-GNOME-Autostart-enabled=false",
+            "Hidden = true",
+        ] {
+            let entry = format!("[Desktop Entry]\nName=Dictate\nExec=/usr/bin/dictate\n{off}\n");
+            assert!(!autostart_entry_starts_old_app(&entry, |_| true), "{off}");
+        }
+        for on in ["Hidden=false", "X-GNOME-Autostart-enabled=true"] {
+            let entry = format!("[Desktop Entry]\nName=Dictate\nExec=/usr/bin/dictate\n{on}\n");
+            assert!(autostart_entry_starts_old_app(&entry, |_| true), "{on}");
+        }
     }
 
     #[test]

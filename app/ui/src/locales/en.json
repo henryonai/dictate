@@ -9,7 +9,7 @@
   "settings.save_failed": "Could not save: {error}",
   "settings.warning_lead": "The settings file had a problem.",
   "settings.migration_lead": "Not everything was copied.",
-  "settings.migration_failed": "These could not be copied from Dictate: {items}. Dictate's own files were not changed, and Loah tries again at the next start.",
+  "settings.migration_failed": "Loah could not copy {items} from Dictate, so it is still using Dictate's copy of them (read only: Dictate's files are not changed) and tries again at the next start.",
   "settings.dismiss": "Dismiss",
   "settings.retry": "Retry",
   "common.cancel": "Cancel",

@@ -95,7 +95,8 @@ test("says what could not be copied from Dictate, in the language of the interfa
 
   const note = await screen.findByRole("alert");
   expect(note).toHaveTextContent("Not everything was copied.");
-  expect(note).toHaveTextContent("These could not be copied from Dictate: Dictations (Permission denied).");
+  expect(note).toHaveTextContent("Loah could not copy Dictations (Permission denied) from Dictate");
+  expect(note).toHaveTextContent("still using Dictate's copy of them");
   expect(note).toHaveTextContent("tries again at the next start");
 
   await user.click(screen.getByRole("checkbox", { name: "Save recordings + transcripts" }));
@@ -104,6 +105,17 @@ test("says what could not be copied from Dictate, in the language of the interfa
 
   await user.click(screen.getByRole("button", { name: "Dismiss" }));
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
+test("the note about the copy is in Vietnamese in the Vietnamese interface", async () => {
+  vi.mocked(api.getSettings).mockResolvedValue(
+    fakeView({ ui_language: "vi", migration_note: "Dictations (Permission denied)" }),
+  );
+  render(Settings);
+
+  const note = await screen.findByRole("alert");
+  expect(note).toHaveTextContent("Chưa chép được hết dữ liệu.");
+  expect(note).toHaveTextContent("Loah chưa chép được Dictations (Permission denied) từ Dictate nên tạm dùng bản của Dictate");
 });
 
 test("the note about the copy from Dictate and the warning about the file are two banners", async () => {

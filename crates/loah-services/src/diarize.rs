@@ -12,7 +12,7 @@ use std::any::Any;
 use std::ffi::{c_void, CString};
 use std::fmt;
 use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
 use loah_core::text::whisper::Turn;
@@ -66,6 +66,29 @@ impl std::error::Error for DiarizeError {}
 /// downloading it again puts the right one in its place. This reads both files, 46 MB.
 pub fn missing_models(dir: &Path) -> Vec<&'static RemoteFile> {
     missing_in(dir, &DIARIZE_MODELS)
+}
+
+/// Where the speaker separation models are used from, and what is missing there. Loah's own folder `dir`, unless it lacks
+/// them and `fallback` (Dictate's models folder, when Loah could not copy it, which is only read) has them all: then that
+/// one, with nothing missing. A download always goes to `dir`, which is the folder returned whenever something is missing.
+pub fn models_folder(dir: &Path, fallback: Option<&Path>) -> (PathBuf, Vec<&'static RemoteFile>) {
+    models_folder_in(dir, fallback, &DIARIZE_MODELS)
+}
+
+/// `models_folder` for any list of files.
+fn models_folder_in<'a>(
+    dir: &Path,
+    fallback: Option<&Path>,
+    models: &'a [RemoteFile],
+) -> (PathBuf, Vec<&'a RemoteFile>) {
+    let missing = missing_in(dir, models);
+    if !missing.is_empty() {
+        if let Some(fallback) = fallback.filter(|fallback| missing_in(fallback, models).is_empty())
+        {
+            return (fallback.to_path_buf(), Vec::new());
+        }
+    }
+    (dir.to_path_buf(), missing)
 }
 
 /// `missing_models` for any list of files.
@@ -448,6 +471,59 @@ mod tests {
 
         // A folder that is not there holds nothing.
         assert_eq!(missing(&dir.join("nowhere")).len(), 2);
+    }
+
+    #[test]
+    fn the_models_are_used_from_dictates_folder_when_loah_has_none_and_dictate_has_them_whole() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (loah, dictate) = (tmp.path().join("loah"), tmp.path().join("dictate"));
+        fs::create_dir_all(&loah).unwrap();
+        fs::create_dir_all(&dictate).unwrap();
+        let models = stand_ins();
+        let files = |found: &(PathBuf, Vec<&RemoteFile>)| {
+            found.1.iter().map(|m| m.file).collect::<Vec<_>>()
+        };
+
+        // Nothing anywhere: Loah's folder, and both are to be downloaded into it.
+        let found = models_folder_in(&loah, Some(&dictate), &models);
+        assert_eq!(found.0, loah);
+        assert_eq!(files(&found), ["first.onnx", "second.onnx"]);
+
+        // Dictate has them whole: they are used there, and nothing is to be downloaded.
+        fs::write(dictate.join("first.onnx"), body(1000)).unwrap();
+        fs::write(dictate.join("second.onnx"), body(2000)).unwrap();
+        let found = models_folder_in(&loah, Some(&dictate), &models);
+        assert_eq!(found.0, dictate);
+        assert!(found.1.is_empty());
+
+        // Loah's whole set is used before Dictate's.
+        fs::write(loah.join("first.onnx"), body(1000)).unwrap();
+        fs::write(loah.join("second.onnx"), body(2000)).unwrap();
+        assert_eq!(models_folder_in(&loah, Some(&dictate), &models).0, loah);
+    }
+
+    #[test]
+    fn the_models_come_from_one_folder_and_a_download_goes_to_loahs() {
+        // One in each folder is not a set: the folder that is read has both, or Loah's is filled in.
+        let tmp = tempfile::tempdir().unwrap();
+        let (loah, dictate) = (tmp.path().join("loah"), tmp.path().join("dictate"));
+        fs::create_dir_all(&loah).unwrap();
+        fs::create_dir_all(&dictate).unwrap();
+        let models = stand_ins();
+        fs::write(loah.join("first.onnx"), body(1000)).unwrap();
+        fs::write(dictate.join("second.onnx"), body(2000)).unwrap();
+
+        let found = models_folder_in(&loah, Some(&dictate), &models);
+
+        assert_eq!(found.0, loah);
+        assert_eq!(
+            found.1.iter().map(|m| m.file).collect::<Vec<_>>(),
+            ["second.onnx"]
+        );
+        // Without a fallback it is as it always was.
+        let alone = models_folder_in(&loah, None, &models);
+        assert_eq!(alone.0, loah);
+        assert_eq!(alone.1.len(), 1);
     }
 
     #[test]

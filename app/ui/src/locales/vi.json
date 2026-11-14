@@ -9,7 +9,7 @@
   "settings.save_failed": "Không lưu được: {error}",
   "settings.warning_lead": "File cài đặt có vấn đề.",
   "settings.migration_lead": "Chưa chép được hết dữ liệu.",
-  "settings.migration_failed": "Chưa chép được từ Dictate: {items}. File của Dictate vẫn nguyên vẹn, Loah sẽ thử lại ở lần mở sau.",
+  "settings.migration_failed": "Loah chưa chép được {items} từ Dictate nên tạm dùng bản của Dictate (chỉ đọc, không sửa file của Dictate) và sẽ thử lại ở lần mở sau.",
   "settings.dismiss": "Đóng",
   "settings.retry": "Thử lại",
   "common.cancel": "Huỷ",

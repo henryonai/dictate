@@ -1,7 +1,8 @@
 //! Carrying what Dictate 2.0.0 saved over to Loah, once, when Loah starts.
 //!
-//! Only the five things that Dictate 2.0.0 wrote are taken: `settings.json` and `permission-guide-shown` from its config
-//! folder, `whisper-models/`, `diarization-models/` and `Dictations/` from its data folder. Not the folders as a whole:
+//! Only the four things that Dictate 2.0.0 wrote are taken: `settings.json` from its config folder, `whisper-models/`,
+//! `diarization-models/` and `Dictations/` from its data folder. Not `permission-guide-shown`: Loah has a bundle id of its
+//! own and no permission yet, so its guide has to show again. Not the folders as a whole:
 //! on macOS `~/Library/Application Support/Dictate` is both of them and also holds the Swift app's `Models/` and
 //! `Recordings/` (many gigabytes), and on Windows `%LOCALAPPDATA%\Dictate` is the install folder of the old program.
 //!
@@ -11,10 +12,18 @@
 //! What makes it safe to stop at any moment is the order of the work, not the speed of it:
 //!  - a file is written under a temporary name and renamed into place, so a file that has its final name is whole (a
 //!    model file that is there with the wrong size is a leftover, and is replaced);
-//!  - a single file that is there already (`settings.json`) is Loah's own from then on and is never replaced: a copy
-//!    that is tried again after a failure must not undo what the person has changed in Loah since;
+//!  - a single file that is there already (`settings.json`), and a file of `Dictations/` that is there with something in
+//!    it, are Loah's own from then on and are never replaced: a copy that is tried again after a failure must not undo
+//!    what the person has changed in Loah since;
+//!  - a download that is not finished (`*.part`, which the downloader resumes by appending to it) is never linked or
+//!    copied: a hard link would make Loah write into Dictate's file;
+//!  - what a copy writes is on the disk (`sync_all`) before it has its name, and a file that changed while it was being
+//!    copied is a failure of its item and not a copy;
 //!  - the marker `migrated-from-dictate` is written last, and only when every item went well. Without it the next start
 //!    does the work again, and finds the finished items already complete.
+//!
+//! An item that fails is not lost and not reset: Loah goes on reading Dictate's own copy of it, read only (`Fallbacks`),
+//! and writes only in its own folders.
 
 use std::fs;
 use std::io;
@@ -23,8 +32,16 @@ use std::path::{Path, PathBuf};
 /// The file in Loah's config folder that says the migration is finished.
 pub const MARKER: &str = "migrated-from-dictate";
 
+/// The file that is written together with the marker, by the run that writes it, and that says Loah has yet to register
+/// itself as a login item (when the settings that came over ask for it). The app removes it once that is done, so that a
+/// registration that failed is tried again at the next start.
+pub const LOGIN_ITEM_PENDING: &str = "login-item-pending";
+
 /// What a file that is being copied is called until it is whole.
 const TEMPORARY_SUFFIX: &str = ".migrating";
+
+/// What a download that is not finished is called (`whisper::models`): it is not a file to carry over.
+const PART_SUFFIX: &str = ".part";
 
 /// How an item is carried over.
 #[derive(Clone, Copy)]
@@ -44,11 +61,10 @@ enum Place {
     Data,
 }
 
-/// The five items, in the order they are carried over: the settings first, so that they are there whatever happens to the
+/// The four items, in the order they are carried over: the settings first, so that they are there whatever happens to the
 /// long part.
-const ITEMS: [(&str, Place, How); 5] = [
+const ITEMS: [(&str, Place, How); 4] = [
     ("settings.json", Place::Config, How::File),
-    ("permission-guide-shown", Place::Config, How::File),
     ("whisper-models", Place::Data, How::LinkedFolder),
     ("diarization-models", Place::Data, How::LinkedFolder),
     ("Dictations", Place::Data, How::CopiedFolder),
@@ -104,10 +120,25 @@ pub struct MigrationReport {
 }
 
 impl MigrationReport {
-    /// Whether this run is the one that finished the migration with something carried over: what happens once, such as
-    /// registering Loah to start at login when the copied settings ask for it, is done now.
-    pub fn finished_now(&self) -> bool {
-        self.done && !self.copied.is_empty()
+    /// Where each item that failed is still read from: Dictate's own copy, when it is there.
+    pub fn fallbacks(&self, old: &LegacyDirs) -> Fallbacks {
+        let mut fallbacks = Fallbacks::default();
+        for (item, _) in &self.failed {
+            let Some((_, place, _)) = ITEMS.iter().find(|(name, _, _)| name == item) else {
+                continue;
+            };
+            let there = old.place(*place).join(item);
+            // Only an item that is in Dictate's folder has anything to be read.
+            let there = there.exists().then_some(there);
+            match item.as_str() {
+                "settings.json" => fallbacks.settings = there,
+                "whisper-models" => fallbacks.whisper_models = there,
+                "diarization-models" => fallbacks.diarization_models = there,
+                "Dictations" => fallbacks.dictations = there,
+                _ => {}
+            }
+        }
+        fallbacks
     }
 
     /// What could not be carried over, as one line ("settings.json (Permission denied); Dictations (...)"), or `None`.
@@ -121,6 +152,33 @@ impl MigrationReport {
             .map(|(item, why)| format!("{item} ({why})"))
             .collect();
         Some(items.join("; "))
+    }
+}
+
+/// Where an item that could not be carried over is still read from. Dictate's folder is only ever read: what Loah writes
+/// (a save of the settings, a model that is downloaded) goes to its own folders.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Fallbacks {
+    /// `settings.json` of Dictate: read when Loah has none.
+    pub settings: Option<PathBuf>,
+    /// `whisper-models/`: the models that are there are used, and a download goes to Loah's folder.
+    pub whisper_models: Option<PathBuf>,
+    /// `diarization-models/`: the same.
+    pub diarization_models: Option<PathBuf>,
+    /// `Dictations/`: where Open folder opens, as that is where the saved dictations are.
+    pub dictations: Option<PathBuf>,
+}
+
+/// Whether the run that wrote the marker has left the login item to be registered (see `LOGIN_ITEM_PENDING`).
+pub fn login_item_pending(new: &LegacyDirs) -> bool {
+    new.config.join(LOGIN_ITEM_PENDING).exists()
+}
+
+/// Says that the login item is settled (registered, or not wanted). Settling it twice is fine.
+pub fn clear_login_item_pending(new: &LegacyDirs) -> io::Result<()> {
+    match fs::remove_file(new.config.join(LOGIN_ITEM_PENDING)) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
     }
 }
 
@@ -158,7 +216,10 @@ pub fn migrate_from_dictate(old: &LegacyDirs, new: &LegacyDirs) -> MigrationRepo
         }
     }
     if report.failed.is_empty() {
-        match write_marker(&marker) {
+        // The flag first: a stop between the two leaves no marker, and the next run writes both.
+        let finished =
+            write_flag(&new.config.join(LOGIN_ITEM_PENDING)).and_then(|()| write_marker(&marker));
+        match finished {
             Ok(()) => report.done = true,
             Err(e) => report.failed.push((MARKER.to_string(), e.to_string())),
         }
@@ -169,10 +230,19 @@ pub fn migrate_from_dictate(old: &LegacyDirs, new: &LegacyDirs) -> MigrationRepo
 /// Carries one item over. `Ok(true)` when something was written, `Ok(false)` when there was nothing to do: Dictate has
 /// no such item, or Loah has it whole.
 fn carry_over(from: &Path, to: &Path, how: How) -> io::Result<bool> {
+    // Only an item that is not there is "nothing to carry over": one that is there and can't be looked at (no permission,
+    // a link that leads nowhere) is a failure, which keeps the marker away and has Loah use Dictate's copy meanwhile.
+    let source = match fs::symlink_metadata(from) {
+        Ok(source) => source,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e),
+    };
     // A symbolic link at the top is followed (someone may keep their models on another disk, and link the folder): the
     // ones inside a folder are not.
-    let Ok(source) = fs::metadata(from) else {
-        return Ok(false);
+    let source = if source.file_type().is_symlink() {
+        fs::metadata(from)?
+    } else {
+        source
     };
     match how {
         How::File if source.is_file() => copy_whole_file(from, to),
@@ -189,31 +259,50 @@ fn copy_whole_file(from: &Path, to: &Path) -> io::Result<bool> {
         return Ok(false);
     }
     place(from, to, false)?;
+    sync_dir(to.parent());
     Ok(true)
 }
 
-/// The files of a folder, and of the folders in it, that Loah does not have whole yet. A file counts as whole when it is
-/// there with the same size.
+/// The files of a folder, and of the folders in it, that Loah does not have whole yet (see `is_whole`).
 fn carry_folder(from: &Path, to: &Path, link: bool) -> io::Result<bool> {
     let mut written = false;
     for entry in fs::read_dir(from)? {
         let entry = entry?;
         let kind = entry.file_type()?;
-        let (source, target) = (entry.path(), to.join(entry.file_name()));
+        let name = entry.file_name();
+        // A download that is not finished, or a copy of ours that is: neither is a file to carry over.
+        let name_text = name.to_string_lossy();
+        if name_text.ends_with(PART_SUFFIX) || name_text.ends_with(TEMPORARY_SUFFIX) {
+            continue;
+        }
+        let (source, target) = (entry.path(), to.join(&name));
         if kind.is_dir() {
             written |= carry_folder(&source, &target, link)?;
-        } else if kind.is_file() && !is_whole(&source, &target) {
+        } else if kind.is_file() && !is_whole(&source, &target, link) {
             place(&source, &target, link)?;
             written = true;
         }
         // A link, a socket: not a file of Dictate's to bring along.
     }
+    if written {
+        sync_dir(Some(to));
+    }
     Ok(written)
 }
 
-fn is_whole(source: &Path, target: &Path) -> bool {
+/// Whether Loah has the file `source` as `target`. A model (`linked`) never changes, so it is whole when it is there with the
+/// same size, and a file of another size is a leftover that is replaced. A file of the person's (a dictation) is whole when it
+/// is there with something in it, whatever its size, so that a retry never replaces what the person has changed in Loah; an
+/// empty one is a leftover too, unless Dictate's is empty as well.
+fn is_whole(source: &Path, target: &Path, linked: bool) -> bool {
     match (fs::metadata(source), fs::metadata(target)) {
-        (Ok(source), Ok(target)) => target.is_file() && target.len() == source.len(),
+        (Ok(source), Ok(target)) if target.is_file() => {
+            if linked {
+                target.len() == source.len()
+            } else {
+                target.len() > 0 || source.len() == 0
+            }
+        }
         _ => false,
     }
 }
@@ -232,7 +321,7 @@ fn place(from: &Path, to: &Path, link: bool) -> io::Result<()> {
     let put = if link && fs::hard_link(from, &temporary).is_ok() {
         Ok(())
     } else {
-        fs::copy(from, &temporary).map(|_| ())
+        copy_checked(from, &temporary, || {})
     };
     let done = put.and_then(|()| fs::rename(&temporary, to));
     if done.is_err() {
@@ -241,14 +330,64 @@ fn place(from: &Path, to: &Path, link: bool) -> io::Result<()> {
     done
 }
 
-fn write_marker(marker: &Path) -> io::Result<()> {
-    if let Some(folder) = marker.parent() {
-        fs::create_dir_all(folder)?;
+/// Copies `from` to `to` and has the bytes on the disk. A source that is not the length it was before, or is not the
+/// length of what was copied, changed while it was being read (Dictate is still running and writes): that is an error, and
+/// what was written is not a copy of anything. `between` runs after the copy and before the source is looked at again, for
+/// the test.
+fn copy_checked(from: &Path, to: &Path, between: impl FnOnce()) -> io::Result<()> {
+    let before = fs::metadata(from)?.len();
+    let copied = fs::copy(from, to)?;
+    between();
+    let after = fs::metadata(from)?.len();
+    if before != after || copied != after {
+        let name = from.file_name().unwrap_or_default().to_string_lossy();
+        return Err(io::Error::other(format!(
+            "{name} changed while it was copied"
+        )));
     }
-    fs::write(
+    // Write access, which Windows asks for to flush a file. A copy of a read-only file is read-only too, and is left as it is
+    // (the system has it on the disk in its own time).
+    if let Ok(file) = fs::OpenOptions::new().write(true).open(to) {
+        file.sync_all()?;
+    }
+    Ok(())
+}
+
+/// Has the folder's own entries (the names of what was put in it) on the disk, where the system lets a folder be flushed.
+fn sync_dir(folder: Option<&Path>) {
+    #[cfg(unix)]
+    if let Some(Ok(folder)) = folder.map(fs::File::open) {
+        let _ = folder.sync_all();
+    }
+    #[cfg(not(unix))]
+    let _ = folder;
+}
+
+fn write_flag(flag: &Path) -> io::Result<()> {
+    write_durably(
+        flag,
+        "Loah is to register itself as a login item, if the settings that came over from Dictate ask for it. It removes this file when that is done.\n",
+    )
+}
+
+fn write_marker(marker: &Path) -> io::Result<()> {
+    write_durably(
         marker,
         "Loah copied its settings, models and dictations from Dictate once. Delete this file to have it done again.\n",
     )
+}
+
+/// Writes a small file whole and has it on the disk, with its folder's entry.
+fn write_durably(path: &Path, text: &str) -> io::Result<()> {
+    use std::io::Write;
+    if let Some(folder) = path.parent() {
+        fs::create_dir_all(folder)?;
+    }
+    let mut file = fs::File::create(path)?;
+    file.write_all(text.as_bytes())?;
+    file.sync_all()?;
+    sync_dir(path.parent());
+    Ok(())
 }
 
 #[cfg(test)]
@@ -388,8 +527,8 @@ mod tests {
             [
                 "Dictations",
                 "diarization-models",
+                "login-item-pending",
                 "migrated-from-dictate",
-                "permission-guide-shown",
                 "settings.json",
                 "whisper-models",
             ]
@@ -399,7 +538,6 @@ mod tests {
             MigrationReport {
                 copied: vec![
                     "settings.json".into(),
-                    "permission-guide-shown".into(),
                     "whisper-models".into(),
                     "diarization-models".into(),
                     "Dictations".into(),
@@ -439,8 +577,8 @@ mod tests {
         assert_eq!(
             names(&world.new.config),
             [
+                "login-item-pending",
                 "migrated-from-dictate",
-                "permission-guide-shown",
                 "settings.json"
             ]
         );
@@ -478,8 +616,10 @@ mod tests {
         let report = world.migrate();
 
         assert!(report.done && report.copied.is_empty() && report.failed.is_empty());
-        assert!(!report.finished_now());
-        assert_eq!(names(&world.new.config), ["migrated-from-dictate"]);
+        assert_eq!(
+            names(&world.new.config),
+            ["login-item-pending", "migrated-from-dictate"]
+        );
         assert_eq!(snapshot(&world.old.config), before);
     }
 
@@ -509,7 +649,6 @@ mod tests {
                 ..MigrationReport::default()
             }
         );
-        assert!(!report.finished_now());
         assert_eq!(
             (snapshot(&world.new.config), snapshot(&world.new.data)),
             loah_before
@@ -567,14 +706,8 @@ mod tests {
         );
         assert_eq!(
             report.copied,
-            [
-                "permission-guide-shown",
-                "whisper-models",
-                "diarization-models",
-                "Dictations"
-            ]
+            ["whisper-models", "diarization-models", "Dictations"]
         );
-        assert!(report.finished_now());
         assert!(world.new.config.join(MARKER).is_file());
     }
 
@@ -605,14 +738,12 @@ mod tests {
             .data
             .join("diarization-models/segmentation.onnx")
             .is_file());
-        assert!(!report.finished_now());
 
         // Next start, with the way cleared.
         fs::remove_file(world.new.data.join("Dictations")).unwrap();
         let report = world.migrate();
         assert!(report.done && report.failed.is_empty());
         assert_eq!(report.copied, ["Dictations"]);
-        assert!(report.finished_now());
     }
 
     #[test]
@@ -683,6 +814,274 @@ mod tests {
 
         assert_eq!(report.copied, ["settings.json"]);
         assert!(!world.new.data.join("whisper-models").exists());
+    }
+
+    #[test]
+    fn the_permission_guide_mark_is_not_carried_over() {
+        // Loah has a bundle id of its own and no permission yet: the guide has to show again.
+        let world = World::split();
+        put_dictate_2_in(&world.old);
+        assert!(world.old.config.join("permission-guide-shown").is_file());
+
+        world.migrate();
+
+        assert!(!world.new.config.join("permission-guide-shown").exists());
+    }
+
+    #[test]
+    fn a_download_that_is_not_finished_is_not_carried_over() {
+        // A `.part` is resumed by appending to it: a hard link to Dictate's would make Loah write into Dictate's file.
+        let world = World::split();
+        put_dictate_2_in(&world.old);
+        write(
+            &world.old.data.join("whisper-models/ggml-tiny.bin.part"),
+            &[7; 300],
+        );
+        write(
+            &world.old.data.join("diarization-models/model.onnx.part"),
+            &[8; 300],
+        );
+        write(
+            &world
+                .old
+                .data
+                .join("whisper-models/ggml-base.bin.migrating"),
+            &[9; 5],
+        );
+        write(
+            &world.old.data.join("Dictations/20261109-101600.wav.part"),
+            &[1; 5],
+        );
+        let before = (snapshot(&world.old.config), snapshot(&world.old.data));
+
+        let report = world.migrate();
+
+        assert!(report.done && report.failed.is_empty());
+        let data = snapshot(&world.new.data);
+        assert!(
+            data.keys()
+                .all(|name| !name.ends_with(".part") && !name.ends_with(".migrating")),
+            "nothing in progress arrives: {:?}",
+            data.keys().collect::<Vec<_>>()
+        );
+        // The finished files do.
+        assert!(data.contains_key("whisper-models/ggml-base.bin"));
+        assert!(data.contains_key("diarization-models/segmentation.onnx"));
+        assert_eq!(
+            (snapshot(&world.old.config), snapshot(&world.old.data)),
+            before
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_link_at_the_top_is_a_failure_and_not_an_absent_item() {
+        let world = World::split();
+        put_dictate_2_in(&world.old);
+        fs::remove_dir_all(world.old.data.join("whisper-models")).unwrap();
+        std::os::unix::fs::symlink(
+            world.old.data.join("nowhere"),
+            world.old.data.join("whisper-models"),
+        )
+        .unwrap();
+
+        let report = world.migrate();
+
+        assert!(
+            !report.done,
+            "the models are there in name only: that is not nothing to copy"
+        );
+        assert_eq!(report.failed.len(), 1);
+        assert_eq!(report.failed[0].0, "whisper-models");
+        assert!(!world.new.config.join(MARKER).exists());
+        // The others arrived.
+        assert!(world.new.data.join("Dictations").is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_that_cannot_be_looked_into_is_a_failure_and_not_an_absent_item() {
+        use std::os::unix::fs::PermissionsExt;
+        let world = World::split();
+        put_dictate_2_in(&world.old);
+        fs::set_permissions(&world.old.data, fs::Permissions::from_mode(0o000)).unwrap();
+        // A superuser looks into it anyway, and then there is nothing to test.
+        if fs::read_dir(&world.old.data).is_ok() {
+            fs::set_permissions(&world.old.data, fs::Permissions::from_mode(0o755)).unwrap();
+            return;
+        }
+
+        let report = world.migrate();
+        fs::set_permissions(&world.old.data, fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(!report.done);
+        let failed: Vec<&str> = report
+            .failed
+            .iter()
+            .map(|(item, _)| item.as_str())
+            .collect();
+        assert_eq!(
+            failed,
+            ["whisper-models", "diarization-models", "Dictations"]
+        );
+        // The settings are in the other folder and came over.
+        assert_eq!(report.copied, ["settings.json"]);
+        assert!(!world.new.config.join(MARKER).exists());
+    }
+
+    #[test]
+    fn a_dictation_that_is_in_loah_already_is_never_replaced() {
+        // Loah's own file wins, whatever its size: a person may have edited the text, and a retry must not undo it.
+        let world = World::split();
+        put_dictate_2_in(&world.old);
+        write(
+            &world.new.data.join("Dictations/20261109-101530.txt"),
+            b"hello world, as edited in Loah",
+        );
+
+        world.migrate();
+
+        assert_eq!(
+            fs::read(world.new.data.join("Dictations/20261109-101530.txt")).unwrap(),
+            b"hello world, as edited in Loah"
+        );
+        // The rest of the folder came.
+        assert!(world
+            .new
+            .data
+            .join("Dictations/20261109-101530.wav")
+            .is_file());
+    }
+
+    #[test]
+    fn an_empty_dictation_file_in_loah_is_filled_from_dictates() {
+        // A file with nothing in it is a leftover of a cut copy, and is not "there".
+        let world = World::split();
+        put_dictate_2_in(&world.old);
+        write(&world.new.data.join("Dictations/20261109-101530.txt"), b"");
+
+        world.migrate();
+
+        assert_eq!(
+            fs::read(world.new.data.join("Dictations/20261109-101530.txt")).unwrap(),
+            b"hello world"
+        );
+    }
+
+    #[test]
+    fn a_file_that_changes_while_it_is_copied_is_not_taken_for_a_copy() {
+        // Dictate is still running and writes a dictation while it is copied: what arrived is not that file, and the item
+        // fails (and is tried again at the next start) instead of keeping half of it.
+        let dir = tempfile::tempdir().unwrap();
+        let (source, target) = (dir.path().join("a.wav"), dir.path().join("b.wav"));
+        fs::write(&source, vec![1u8; 1000]).unwrap();
+
+        let append = || {
+            use std::io::Write;
+            let mut file = fs::OpenOptions::new().append(true).open(&source).unwrap();
+            file.write_all(&[2u8; 10]).unwrap();
+        };
+        let err = copy_checked(&source, &target, append).unwrap_err();
+        assert!(
+            err.to_string().contains("changed while it was copied"),
+            "{err}"
+        );
+
+        // A file that stays as it is is copied whole.
+        fs::write(&source, vec![3u8; 1000]).unwrap();
+        copy_checked(&source, &target, || {}).unwrap();
+        assert_eq!(fs::read(&target).unwrap(), vec![3u8; 1000]);
+    }
+
+    #[test]
+    fn the_login_item_flag_is_written_with_the_marker_and_only_then() {
+        let world = World::split();
+        put_dictate_2_in(&world.old);
+        // A failure in the way: no marker, and no flag either.
+        write(&world.new.data.join("Dictations"), b"in the way");
+        assert!(!world.migrate().done);
+        assert!(!login_item_pending(&world.new));
+
+        fs::remove_file(world.new.data.join("Dictations")).unwrap();
+        assert!(world.migrate().done);
+        assert!(login_item_pending(&world.new), "this run wrote the marker");
+        assert!(world.new.config.join(MARKER).is_file());
+    }
+
+    #[test]
+    fn the_flag_is_written_even_when_nothing_was_copied_and_is_not_written_again() {
+        let world = World::shared();
+        write(&world.old.data.join("Models/WhisperKit/big.bin"), &[5; 64]);
+        assert!(world.migrate().done);
+        assert!(login_item_pending(&world.new));
+
+        clear_login_item_pending(&world.new).unwrap();
+        // Clearing what is not there is fine.
+        clear_login_item_pending(&world.new).unwrap();
+        assert!(!login_item_pending(&world.new));
+
+        // The marker is there: a later start does not bring it back.
+        assert!(world.migrate().done);
+        assert!(!login_item_pending(&world.new));
+    }
+
+    #[test]
+    fn a_failed_item_is_still_read_from_dictates_own_folder() {
+        let world = World::split();
+        put_dictate_2_in(&world.old);
+        write(&world.new.data.join("Dictations"), b"in the way");
+
+        let report = world.migrate();
+
+        assert_eq!(
+            report.fallbacks(&world.old),
+            Fallbacks {
+                dictations: Some(world.old.data.join("Dictations")),
+                ..Fallbacks::default()
+            }
+        );
+        // The ones that went well have none.
+        assert_eq!(report.failed.len(), 1);
+    }
+
+    #[test]
+    fn every_item_that_failed_has_its_place_in_dictate_and_nothing_else_has_one() {
+        let world = World::split();
+        put_dictate_2_in(&world.old);
+        let failed = |items: &[&str]| MigrationReport {
+            failed: items
+                .iter()
+                .map(|item| (item.to_string(), "x".to_string()))
+                .collect(),
+            ..MigrationReport::default()
+        };
+
+        let all = failed(&[
+            "settings.json",
+            "whisper-models",
+            "diarization-models",
+            "Dictations",
+        ]);
+        assert_eq!(
+            all.fallbacks(&world.old),
+            Fallbacks {
+                settings: Some(world.old.config.join("settings.json")),
+                whisper_models: Some(world.old.data.join("whisper-models")),
+                diarization_models: Some(world.old.data.join("diarization-models")),
+                dictations: Some(world.old.data.join("Dictations")),
+            }
+        );
+        // A marker that could not be written says nothing of what is used; an item that is not in Dictate has nothing to read.
+        assert_eq!(
+            failed(&[MARKER]).fallbacks(&world.old),
+            Fallbacks::default()
+        );
+        let nothing_there = World::split();
+        assert_eq!(all.fallbacks(&nothing_there.old), Fallbacks::default());
+        assert_eq!(
+            MigrationReport::default().fallbacks(&world.old),
+            Fallbacks::default()
+        );
     }
 
     #[cfg(unix)]
@@ -794,19 +1193,5 @@ mod tests {
             step_message("whisper-models"),
             "Copied whisper-models from Dictate"
         );
-    }
-
-    #[test]
-    fn a_migration_that_copied_nothing_has_not_finished_now() {
-        let nothing_new = MigrationReport {
-            done: true,
-            ..MigrationReport::default()
-        };
-        assert!(!nothing_new.finished_now());
-        let unfinished = MigrationReport {
-            copied: vec!["settings.json".into()],
-            ..MigrationReport::default()
-        };
-        assert!(!unfinished.finished_now());
     }
 }

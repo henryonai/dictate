@@ -263,7 +263,23 @@ impl SettingsStore {
     /// with a warning. In both cases the file is first copied to `<name>.bak` so nothing the user
     /// typed is lost. Unknown fields are ignored.
     pub fn open(path: PathBuf) -> (SettingsStore, Option<LoadWarning>) {
-        let (settings, warning) = match fs::read(&path) {
+        SettingsStore::open_with_fallback(path, None)
+    }
+
+    /// `open`, for settings that could not be copied to `path`: when there is no file at `path`, the file `read_from` (the
+    /// old app's own) is read in its place, as it is. Only `read_from` is ever read: a save, the backup of a file that can't
+    /// be read and everything else is written at `path`, never in the folder of the old app.
+    pub fn open_with_fallback(
+        path: PathBuf,
+        read_from: Option<&Path>,
+    ) -> (SettingsStore, Option<LoadWarning>) {
+        let (read_path, read) = match (fs::read(&path), read_from) {
+            (Err(e), Some(from)) if e.kind() == io::ErrorKind::NotFound => {
+                (from.to_path_buf(), fs::read(from))
+            }
+            (read, _) => (path.clone(), read),
+        };
+        let (settings, warning) = match read {
             Ok(bytes) => match parse(&bytes) {
                 Ok((settings, dropped)) if dropped.is_empty() => (settings, None),
                 Ok((settings, dropped)) => {
@@ -271,11 +287,14 @@ impl SettingsStore {
                         "These settings couldn't be read and were reset to their defaults: {}",
                         dropped.join(", ")
                     );
-                    (settings, Some(keep_backup(&path, &lead)))
+                    (settings, Some(keep_backup(&read_path, &path, &lead)))
                 }
                 Err(why) => {
                     let lead = format!("The settings file was reset to defaults because {why}");
-                    (Settings::default(), Some(keep_backup(&path, &lead)))
+                    (
+                        Settings::default(),
+                        Some(keep_backup(&read_path, &path, &lead)),
+                    )
                 }
             },
             Err(e) if e.kind() == io::ErrorKind::NotFound => (Settings::default(), None),
@@ -372,10 +391,15 @@ fn parse(bytes: &[u8]) -> Result<(Settings, Vec<String>), String> {
     Ok((settings, dropped))
 }
 
-/// Copy the unusable file to `<name>.bak`; `lead` says what went wrong, without a final period.
-fn keep_backup(path: &Path, lead: &str) -> LoadWarning {
+/// Copy the unusable file `read_path` to `<name>.bak` beside `path` (the same file, unless it was read from the old app's
+/// folder, where nothing is written); `lead` says what went wrong, without a final period.
+fn keep_backup(read_path: &Path, path: &Path, lead: &str) -> LoadWarning {
     let backup = with_suffix(path, ".bak");
-    match fs::copy(path, &backup) {
+    if let Some(folder) = backup.parent().filter(|d| !d.as_os_str().is_empty()) {
+        // Loah's folder may not be there yet; if it can't be made the copy says why.
+        let _ = fs::create_dir_all(folder);
+    }
+    match fs::copy(read_path, &backup) {
         Ok(_) => LoadWarning {
             message: format!("{lead}. The old file was kept as {}.", backup.display()),
             backup: Some(backup),
@@ -1212,6 +1236,97 @@ mod tests {
         let saved = fs::read_to_string(dir.path().join("settings.json")).unwrap();
         assert!(!saved.contains("sk-secret-123"));
         assert!(!saved.contains("api_key"));
+    }
+
+    /// Dictate's folder and Loah's, side by side: the file of Dictate that Loah could not copy, and the file it would write.
+    fn old_and_new(old_text: Option<&str>) -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let (old, new) = (
+            dir.path().join("Dictate").join("settings.json"),
+            dir.path().join("Loah").join("settings.json"),
+        );
+        if let Some(text) = old_text {
+            fs::create_dir_all(old.parent().unwrap()).unwrap();
+            fs::write(&old, text).unwrap();
+        }
+        (dir, old, new)
+    }
+
+    #[test]
+    fn a_missing_settings_file_is_read_from_the_fallback() {
+        let (_dir, old, new) = old_and_new(Some(r#"{"hotkey": "F9", "auto_write": false}"#));
+
+        let (store, warning) = SettingsStore::open_with_fallback(new.clone(), Some(&old));
+
+        assert!(warning.is_none());
+        assert_eq!(store.get().hotkey, "F9");
+        assert!(!store.get().auto_write);
+        // Reading is all that was done.
+        assert!(!new.exists());
+    }
+
+    #[test]
+    fn a_save_after_a_failed_settings_copy_writes_only_loahs_file() {
+        let text = r#"{"hotkey": "F9", "auto_write": false}"#;
+        let (_dir, old, new) = old_and_new(Some(text));
+        let (store, _) = SettingsStore::open_with_fallback(new.clone(), Some(&old));
+
+        store.update(|s| s.push_to_talk = true).unwrap();
+
+        let saved = fs::read_to_string(&new).unwrap();
+        assert!(saved.contains("\"hotkey\": \"F9\"") && saved.contains("\"push_to_talk\": true"));
+        // Dictate's folder is as it was: its file byte for byte, and nothing else in it (no temporary file, no backup).
+        assert_eq!(fs::read_to_string(&old).unwrap(), text);
+        let in_dictates_folder: Vec<_> = fs::read_dir(old.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(in_dictates_folder, ["settings.json"]);
+        // From now on Loah has a file, and it is the one that is read.
+        let (again, _) = SettingsStore::open_with_fallback(new, Some(&old));
+        assert!(again.get().push_to_talk);
+    }
+
+    #[test]
+    fn loahs_own_settings_file_wins_over_the_fallback() {
+        let (_dir, old, new) = old_and_new(Some(r#"{"hotkey": "F9"}"#));
+        fs::create_dir_all(new.parent().unwrap()).unwrap();
+        fs::write(&new, r#"{"hotkey": "F6"}"#).unwrap();
+
+        let (store, warning) = SettingsStore::open_with_fallback(new, Some(&old));
+
+        assert!(warning.is_none());
+        assert_eq!(store.get().hotkey, "F6");
+    }
+
+    #[test]
+    fn a_fallback_that_is_broken_is_kept_beside_loahs_file_and_never_beside_dictates() {
+        let (_dir, old, new) = old_and_new(Some("{ not json"));
+
+        let (store, warning) = SettingsStore::open_with_fallback(new.clone(), Some(&old));
+
+        assert_eq!(store.get(), Settings::default());
+        let warning = warning.expect("a warning");
+        let backup = new.with_file_name("settings.json.bak");
+        assert_eq!(warning.backup.as_deref(), Some(backup.as_path()));
+        assert_eq!(fs::read_to_string(&backup).unwrap(), "{ not json");
+        assert_eq!(fs::read_to_string(&old).unwrap(), "{ not json");
+        assert!(!old.with_file_name("settings.json.bak").exists());
+    }
+
+    #[test]
+    fn a_fallback_that_is_not_there_is_no_file_at_all() {
+        let (_dir, old, new) = old_and_new(None);
+
+        let (store, warning) = SettingsStore::open_with_fallback(new, Some(&old));
+        assert!(warning.is_none());
+        assert_eq!(store.get(), Settings::default());
+
+        // And without a fallback, `open` is the same.
+        let (dir, _, new) = old_and_new(None);
+        let (store, warning) = SettingsStore::open_with_fallback(new, None);
+        assert!(warning.is_none() && store.get() == Settings::default());
+        drop(dir);
     }
 
     #[test]

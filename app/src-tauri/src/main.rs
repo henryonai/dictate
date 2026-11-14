@@ -230,26 +230,33 @@ fn setup(
     // What Dictate 2.0.0 saved (the settings, the models, the dictations) comes over before anything looks at these folders,
     // and so before the first start is told by the missing settings file: a person whose settings came over is not new here.
     let carried = legacy::carry_over_from_dictate();
-    // Without a settings file this is the first start: Settings opens so that a new user sees where to begin.
-    let first_launch = !settings_path.exists();
+    // What could not be copied is not reset: Loah reads Dictate's own copy of it (and writes only its own folders).
+    let fallbacks = carried.fallbacks.clone();
+    // Without a settings file this is the first start: Settings opens so that a new user sees where to begin. Dictate's
+    // settings that could not be copied are settings all the same.
+    let first_launch = legacy::is_first_launch(&settings_path, &fallbacks);
     let guide_mark = commands::GuideMark::beside(&settings_path);
-    let (store, warning) = SettingsStore::open(settings_path);
+    let (store, warning) =
+        SettingsStore::open_with_fallback(settings_path, fallbacks.settings.as_deref());
     if let Some(warning) = &warning {
         log::warn!("{warning}");
     }
-    // The setting is otherwise applied only when it changes, and Loah has no login item of its own yet: once, when the
-    // migration is done, the settings that came over decide.
-    if legacy::registers_login_item(&carried, store.get().launch_at_login) {
-        match commands::set_launch_at_login(app.handle(), true) {
-            Ok(()) => {
-                log::info!("Registered Loah to start at login, as the settings from Dictate say")
-            }
-            Err(e) => log::warn!("Could not register Loah to start at login: {e}"),
+    // The setting is otherwise applied only when it changes, and Loah has no login item of its own yet: at the start after the
+    // migration was done, the settings that came over decide (and a registration that failed is tried again at the next).
+    match carried.settle_login_item(store.get().launch_at_login, || {
+        commands::set_launch_at_login(app.handle(), true)
+    }) {
+        legacy::LoginItem::Registered => {
+            log::info!("Registered Loah to start at login, as the settings from Dictate say");
         }
+        legacy::LoginItem::Failed(e) => log::warn!(
+            "Could not register Loah to start at login (it is tried again at the next start): {e}"
+        ),
+        legacy::LoginItem::NotPending | legacy::LoginItem::NotWanted => {}
     }
     let models_base =
         state::models_base_dir().ok_or("the system has no folder for the app's data")?;
-    let models = state::open_model_dir(&models_base)?;
+    let models = state::open_model_dir(&models_base, fallbacks.whisper_models.clone())?;
     let initial = store.get();
     let auto_write = initial.auto_write;
     let lang = tray::language_for(&initial);
@@ -257,8 +264,9 @@ fn setup(
     let accel = initial.hotkey;
 
     let diarize_dir = state::open_diarize_dir(&models_base)?;
-    let state = AppState::new(store, warning, Arc::new(KeyringStore::new()), models);
-    state.set_migration_note(carried.failure_list());
+    let state = AppState::new(store, warning, Arc::new(KeyringStore::new()), models)
+        .with_fallbacks(fallbacks);
+    state.set_migration_note(carried.report.failure_list());
     let startup = state.clone();
     app.manage(state);
     // One platform layer for the whole app. What the system says about the permissions is read now, to know whether

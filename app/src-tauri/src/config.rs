@@ -162,7 +162,7 @@ pub fn local_model(
             "The {id} model isn't downloaded yet. Download it in Settings first."
         ));
     }
-    let path = models.path(&id);
+    let path = models.existing_path(&id);
     Ok((id, path))
 }
 
@@ -575,6 +575,25 @@ mod tests {
         let (id, path) = local_model(&settings, &models, 32).unwrap();
         assert_eq!(id, "tiny");
         assert_eq!(path, models.path("tiny"));
+    }
+
+    #[test]
+    fn a_model_that_only_dictate_has_is_loaded_from_dictates_folder() {
+        // The copy of Dictate's models failed: the model is used where it is, and the settings are told it is there.
+        let dir = tempfile::tempdir().unwrap();
+        let dictates = dir.path().join("dictate-models");
+        std::fs::create_dir_all(&dictates).unwrap();
+        std::fs::write(dictates.join("ggml-tiny.bin"), b"not a real model").unwrap();
+        let models = ModelDir::new(dir.path().join("models")).with_fallback(dictates.clone());
+        let settings = Settings {
+            whisper_model: Some("tiny".into()),
+            ..Settings::default()
+        };
+
+        let (id, path) = local_model(&settings, &models, 32).unwrap();
+
+        assert_eq!(id, "tiny");
+        assert_eq!(path, dictates.join("ggml-tiny.bin"));
     }
 
     #[test]

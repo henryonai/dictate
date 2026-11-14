@@ -20,7 +20,7 @@ use loah_services::settings::{self, Settings, SettingsStore};
 use loah_services::transcribe_api::{self, TranscribeError};
 use loah_services::whisper::models::{self, DownloadError, ModelStatus, HUGGING_FACE_BASE_URL};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager as _, State};
 use tauri_plugin_autostart::ManagerExt as _;
 use tauri_plugin_opener::OpenerExt as _;
 
@@ -540,10 +540,14 @@ pub fn open_meetings_folder_now(app: &AppHandle) -> Result<(), String> {
     open_folder(app, &MeetingLibrary::default_directory())
 }
 
-/// Opens the folder of the saved dictations (`Loah/Dictations`), creating it first if needed.
+/// Opens the folder of the saved dictations (`Loah/Dictations`), creating it first if needed. When the copy of Dictate's
+/// dictations failed it is Dictate's folder, where they still are (it is only opened, which writes nothing there).
 pub fn open_dictations_folder_now(app: &AppHandle) -> Result<(), String> {
     let paths = SavePaths::system().ok_or("The system has no folder for the app's data.")?;
-    open_folder(app, &paths.dir)
+    let dictates = app
+        .try_state::<AppState>()
+        .and_then(|state| state.fallbacks.dictations.clone());
+    open_folder(app, paths.folder_to_open(dictates.as_deref()))
 }
 
 // ---- the commands
