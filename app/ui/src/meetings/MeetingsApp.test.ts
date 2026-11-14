@@ -399,7 +399,10 @@ test("a recording that failed shows the error card, and View log opens the log",
   });
   await open([failed]);
   vi.mocked(api.meetingLog).mockResolvedValue("a line of the log");
-  await user.click(await screen.findByRole("button", { name: /Weekly planning/ }));
+  // The row of the list says that it failed, and what a click does.
+  const failedRow = await screen.findByRole("button", { name: /Weekly planning/ });
+  expect(within(failedRow).getByText("failed").closest(".badge")).toHaveAttribute("title", "Click for how to fix");
+  await user.click(failedRow);
 
   expect(await screen.findByRole("heading", { name: "Something went wrong" })).toBeInTheDocument();
   expect(screen.getByText("Not finished processing")).toBeInTheDocument();
@@ -633,7 +636,7 @@ test("a job event moves the row of the list without asking for the list", async 
 
   events.emitJob(fakeJob({ id: ID, step: "transcript", progress: 0.3 }));
 
-  expect(await screen.findByText("Transcribing · 30%")).toBeInTheDocument();
+  expect(await screen.findByText("processing 30%")).toBeInTheDocument();
   expect(api.meetingsList).not.toHaveBeenCalled();
 });
 
