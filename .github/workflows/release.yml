@@ -45,7 +45,8 @@ env:
   # scripts/fetch-sherpa-onnx-no-tts.sh. A test (release-workflow.test.ts) keeps the pins here the same as in ci.yml.
   SHERPA_ONNX_MD_SHA256: 542348e56e827b59c6d249fd0dfd38dc34b7bd0c521a1ebe9eb6e2db154fa15d
   # The version of ffmpeg that scripts/build-ffmpeg.sh builds, as in ci.yml: part of the key of the cache of the build, which is the key that
-  # ci.yml uses, so that a release finds the builds that the pull requests made.
+  # ci.yml uses. A cache saved on a pull request is not visible from main, so a release on main uses the builds that ci.yml
+  # saves on pushes to main.
   FFMPEG_VERSION: 9.0.2
 
 jobs:

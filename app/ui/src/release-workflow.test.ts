@@ -260,7 +260,11 @@ describe("the ffmpeg of each installer", () => {
     expect(build).toContain("runner.os != 'Windows'");
   });
 
-  test("the_build_is_cached_under_the_key_of_ci_yml_so_that_a_release_finds_what_the_pull_requests_built", () => {
+  test("the_build_is_cached_under_the_key_of_ci_yml_so_that_a_release_on_main_uses_what_ci_saved_on_pushes_to_main", () => {
+    // A cache saved on a pull request is only visible to that pull request, not to main: the comment must not say that a release
+    // finds what the pull requests built.
+    expect(workflow).not.toMatch(/pull requests made/);
+    expect(workflow).toMatch(/saves on pushes to main/);
     const key = /key: (ffmpeg-\$\{\{ env\.FFMPEG_VERSION \}\}-\$\{\{ [a-z.]+ \}\}-\$\{\{ hashFiles\('scripts\/build-ffmpeg\.sh'\) \}\})/;
     const ciKey = key.exec(ci)?.[1];
     expect(ciKey, "the key in ci.yml").toBeDefined();
