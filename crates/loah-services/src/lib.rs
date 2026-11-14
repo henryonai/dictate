@@ -7,6 +7,7 @@ pub mod dictation;
 pub mod http;
 pub mod media;
 pub mod meetings;
+pub mod migrate;
 pub mod presets;
 pub mod record;
 pub mod secrets;

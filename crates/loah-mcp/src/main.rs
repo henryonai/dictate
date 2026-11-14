@@ -1,5 +1,6 @@
 //! loah-mcp: lets Claude (Code or Desktop) read the Loah library over MCP on stdio.
-//! `DICTATE_MEETINGS_DIR` points it at another library (see `MeetingLibrary::default_directory`).
+//! `LOAH_MEETINGS_DIR` points it at another library, and so does `DICTATE_MEETINGS_DIR`, the name Dictate gave it (see
+//! `MeetingLibrary::default_directory`).
 
 use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;

@@ -47,7 +47,8 @@ fn read(file: &str) -> String {
 fn serve_file(library: &Path, input: &Path) -> String {
     let input = File::open(input).expect("open the requests");
     let output = Command::new(env!("CARGO_BIN_EXE_loah-mcp"))
-        .env("DICTATE_MEETINGS_DIR", library)
+        .env_remove("DICTATE_MEETINGS_DIR")
+        .env("LOAH_MEETINGS_DIR", library)
         .env("TZ", ZONE)
         .stdin(Stdio::from(input))
         .stdout(Stdio::piped())

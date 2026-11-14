@@ -50,6 +50,7 @@ describe("each wrapper calls its command with the argument names the Rust side e
     ["transcribePresets", "transcribe_presets", undefined, () => api.transcribePresets()],
     ["openMeetingsFolder", "open_meetings_folder", undefined, () => api.openMeetingsFolder()],
     ["mediaTools", "media_tools", undefined, () => api.mediaTools()],
+    ["dictateStillPresent", "dictate_still_present", undefined, () => api.dictateStillPresent()],
     ["dictationLanguages", "dictation_languages", undefined, () => api.dictationLanguages()],
     ["dictationStop", "dictation_stop", undefined, () => api.dictationStop()],
     ["dictationCancel", "dictation_cancel", undefined, () => api.dictationCancel()],

@@ -11,6 +11,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
+use loah_core::env::first_set;
 #[cfg(unix)]
 use process_wrap::tokio::ProcessGroup;
 #[cfg(windows)]
@@ -134,7 +135,17 @@ fn search_path_from(
 /// of one in the search path. The ffmpeg of the installers is under the LGPL, which lets anyone replace it with their own
 /// build; this is how it is done without touching the installed files (on a Mac a changed file in a signed app breaks its
 /// signature).
-pub const FFMPEG_VARIABLE: &str = "DICTATE_FFMPEG";
+pub const FFMPEG_VARIABLE: &str = "LOAH_FFMPEG";
+
+/// What the variable was called in Dictate: still read when `FFMPEG_VARIABLE` is not set, so that an ffmpeg someone put in
+/// place of the shipped one is still used after the rename.
+pub const LEGACY_FFMPEG_VARIABLE: &str = "DICTATE_FFMPEG";
+
+/// The program that the environment names in place of the ffmpeg that ships: `LOAH_FFMPEG`, else `DICTATE_FFMPEG`. An
+/// empty variable counts as unset. `lookup` reads a variable (`std::env::var_os` in the program).
+pub fn ffmpeg_from_environment(lookup: impl Fn(&str) -> Option<OsString>) -> Option<OsString> {
+    first_set(lookup, &[FFMPEG_VARIABLE, LEGACY_FFMPEG_VARIABLE])
+}
 
 /// An external program the app can use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,23 +185,23 @@ impl Tools {
     /// Looks for the tools where the app is told to look, then next to the program (the installers put the ffmpeg
     /// of the app there, as `loah-ffmpeg`), and then in `search_path()`.
     ///
-    /// For ffmpeg: the program that `DICTATE_FFMPEG` names, then `loah-ffmpeg` next to the executable, then `ffmpeg` in
-    /// the search path. For yt-dlp: next to the executable, then the search path.
+    /// For ffmpeg: the program that `LOAH_FFMPEG` (or the old `DICTATE_FFMPEG`) names, then `loah-ffmpeg` next to the
+    /// executable, then `ffmpeg` in the search path. For yt-dlp: next to the executable, then the search path.
     pub fn find() -> Tools {
         let path = search_path();
         let exe_dir = std::env::current_exe()
             .ok()
             .and_then(|exe| exe.parent().map(Path::to_path_buf));
         Tools::find_with(
-            std::env::var_os(FFMPEG_VARIABLE).as_deref(),
+            ffmpeg_from_environment(|name| std::env::var_os(name)).as_deref(),
             exe_dir.as_deref(),
             &path,
         )
     }
 
-    /// `find` for a given value of `DICTATE_FFMPEG`, folder of the executable and search path.
+    /// `find` for a given value of `LOAH_FFMPEG`, folder of the executable and search path.
     ///
-    /// A `DICTATE_FFMPEG` that is empty, or names no program that can be run, is left out: the app still has the ffmpeg
+    /// A `LOAH_FFMPEG` that is empty, or names no program that can be run, is left out: the app still has the ffmpeg
     /// that ships with it.
     fn find_with(
         ffmpeg_variable: Option<&OsStr>,
@@ -781,12 +792,70 @@ mod tests {
         );
     }
 
+    /// The environment of a test: only the variables it names are set.
+    fn env_of(pairs: Vec<(&'static str, OsString)>) -> impl Fn(&str) -> Option<OsString> {
+        move |name| {
+            pairs
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| value.clone())
+        }
+    }
+
     #[test]
-    fn with_dictate_ffmpeg_set_in_the_environment_find_gives_that_program() {
-        // CI sets DICTATE_FFMPEG to the ffmpeg that it built, to run the tests with it: a `find` that does not give that program
+    fn the_variables_are_loah_ffmpeg_and_the_old_dictate_ffmpeg() {
+        assert_eq!(FFMPEG_VARIABLE, "LOAH_FFMPEG");
+        assert_eq!(LEGACY_FFMPEG_VARIABLE, "DICTATE_FFMPEG");
+    }
+
+    #[test]
+    fn the_old_ffmpeg_variable_still_works() {
+        // Someone who replaced the ffmpeg of Dictate with DICTATE_FFMPEG keeps their own after the rename, with nothing
+        // set that Loah has heard of.
+        let exe_dir = tempfile::tempdir().unwrap();
+        let path_dir = tempfile::tempdir().unwrap();
+        let theirs_dir = tempfile::tempdir().unwrap();
+        program(exe_dir.path(), "loah-ffmpeg");
+        let theirs = program(theirs_dir.path(), "my-own-ffmpeg");
+
+        let named = ffmpeg_from_environment(env_of(vec![(
+            LEGACY_FFMPEG_VARIABLE,
+            theirs.clone().into_os_string(),
+        )]));
+        let found = Tools::find_with(
+            named.as_deref(),
+            Some(exe_dir.path()),
+            path_dir.path().as_os_str(),
+        );
+
+        assert_eq!(found.ffmpeg.as_deref().map(lower), Some(lower(&theirs)));
+    }
+
+    #[test]
+    fn the_new_ffmpeg_variable_wins_over_the_old_one() {
+        let named = ffmpeg_from_environment(env_of(vec![
+            (LEGACY_FFMPEG_VARIABLE, OsString::from("old-ffmpeg")),
+            (FFMPEG_VARIABLE, OsString::from("new-ffmpeg")),
+        ]));
+        assert_eq!(named, Some(OsString::from("new-ffmpeg")));
+    }
+
+    #[test]
+    fn an_empty_new_variable_leaves_the_old_one_and_none_set_leaves_the_bundled_ffmpeg() {
+        let named = ffmpeg_from_environment(env_of(vec![
+            (FFMPEG_VARIABLE, OsString::new()),
+            (LEGACY_FFMPEG_VARIABLE, OsString::from("old-ffmpeg")),
+        ]));
+        assert_eq!(named, Some(OsString::from("old-ffmpeg")));
+        assert_eq!(ffmpeg_from_environment(env_of(vec![])), None);
+    }
+
+    #[test]
+    fn with_loah_ffmpeg_set_in_the_environment_find_gives_that_program() {
+        // CI sets LOAH_FFMPEG to the ffmpeg that it built, to run the tests with it: a `find` that does not give that program
         // (it is not a file, it is not run, the lookup went on to the path) would run them with the ffmpeg of the runner instead,
         // and nothing else would say so.
-        let Some(set) = std::env::var_os(FFMPEG_VARIABLE).filter(|value| !value.is_empty()) else {
+        let Some(set) = ffmpeg_from_environment(|name| std::env::var_os(name)) else {
             return;
         };
         let canonical =
@@ -794,11 +863,11 @@ mod tests {
 
         let found = Tools::find().ffmpeg;
 
-        let found = found.expect("DICTATE_FFMPEG is set, and find gives no ffmpeg");
+        let found = found.expect("LOAH_FFMPEG is set, and find gives no ffmpeg");
         assert_eq!(
             canonical(&found),
             canonical(Path::new(&set)),
-            "DICTATE_FFMPEG is {set:?}"
+            "LOAH_FFMPEG is {set:?}"
         );
     }
 

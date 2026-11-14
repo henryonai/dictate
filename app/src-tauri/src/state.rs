@@ -252,6 +252,7 @@ pub struct AppState {
     pub whisper: Arc<WhisperCache>,
     pub jobs: Arc<Jobs>,
     load_warning: Arc<Mutex<Option<String>>>,
+    migration_note: Arc<Mutex<Option<String>>>,
 }
 
 impl AppState {
@@ -270,12 +271,24 @@ impl AppState {
             whisper: Arc::default(),
             jobs: Arc::new(Jobs::default()),
             load_warning: Arc::new(Mutex::new(load_warning.map(|warning| warning.message))),
+            migration_note: Arc::default(),
         }
     }
 
     /// Why the settings file wasn't used as it was, once: the first call gets it, later ones nothing.
     pub fn take_load_warning(&self) -> Option<String> {
         lock(&self.load_warning).take()
+    }
+
+    /// What could not be carried over from Dictate at this start (the files, with what the system said), for the
+    /// Settings window to show. Set once, before the window can ask.
+    pub fn set_migration_note(&self, note: Option<String>) {
+        *lock(&self.migration_note) = note;
+    }
+
+    /// The same as the load warning: the first call gets it, later ones nothing.
+    pub fn take_migration_note(&self) -> Option<String> {
+        lock(&self.migration_note).take()
     }
 
     /// The key flags, after the key store was asked once which keys it holds. The first caller asks, which may
@@ -302,10 +315,11 @@ pub fn models_base_dir() -> Option<PathBuf> {
 
 /// The folder of the Whisper models below `base_dir` (see `models_base_dir`), created when it is missing.
 ///
-/// It is `whisper-models` and not `models`: on macOS `Dictate/models` is the same folder as the Swift app's
-/// `Dictate/Models`, and that one holds the Swift app's files.
+/// It is `whisper-models` and not `models`: on macOS names are compared without regard to case, and `Dictate/models` was
+/// the same folder as the Swift app's `Dictate/Models`, which holds that app's files. (Dictate 2.0.0 kept them in
+/// `Dictate/whisper-models`; `loah_services::migrate` links them into this one.)
 pub fn open_model_dir(base_dir: &Path) -> io::Result<ModelDir> {
-    let root = base_dir.join("Dictate").join("whisper-models");
+    let root = base_dir.join("Loah").join("whisper-models");
     fs::create_dir_all(&root)?;
     Ok(ModelDir::new(root))
 }
@@ -314,7 +328,7 @@ pub fn open_model_dir(base_dir: &Path) -> io::Result<ModelDir> {
 /// when it is missing. It is a folder of its own, not the Whisper models': neither list of files may take the other's
 /// for its own.
 pub fn open_diarize_dir(base_dir: &Path) -> io::Result<PathBuf> {
-    let root = base_dir.join("Dictate").join("diarization-models");
+    let root = base_dir.join("Loah").join("diarization-models");
     fs::create_dir_all(&root)?;
     Ok(root)
 }
@@ -448,6 +462,28 @@ mod tests {
         assert_eq!(state.take_load_warning(), None);
     }
 
+    #[test]
+    fn the_migration_note_is_handed_out_once_like_the_load_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state_with(&dir, Arc::new(MemoryStore::default()));
+        // Nothing to tell, unless the migration said so.
+        assert_eq!(state.take_migration_note(), None);
+
+        state.set_migration_note(Some("Dictations (Permission denied)".into()));
+
+        assert_eq!(
+            state.take_migration_note().as_deref(),
+            Some("Dictations (Permission denied)")
+        );
+        assert_eq!(state.take_migration_note(), None);
+        // A clone is the same state: the one that was managed is the one the commands ask.
+        state.set_migration_note(Some("settings.json (x)".into()));
+        assert_eq!(
+            state.clone().take_migration_note().as_deref(),
+            Some("settings.json (x)")
+        );
+    }
+
     /// The state with the given key store, in a folder of its own.
     fn state_with(dir: &tempfile::TempDir, secrets: Arc<dyn SecretStore>) -> AppState {
         let (store, warning) = SettingsStore::open(dir.path().join("settings.json"));
@@ -546,14 +582,14 @@ mod tests {
     }
 
     #[test]
-    fn the_model_folder_is_dictate_whisper_models_below_the_base_dir_and_is_created() {
+    fn the_model_folder_is_loah_whisper_models_below_the_base_dir_and_is_created() {
         let dir = tempfile::tempdir().unwrap();
         let models = open_model_dir(dir.path()).unwrap();
-        // Not `Dictate/models`: macOS compares names without regard to case, so that would be the folder
-        // `Dictate/Models` of the Swift app, which keeps its own files there.
+        // Not `Loah/models`: macOS compares names without regard to case, and the folder was `Dictate/Models` for the Swift
+        // app, which keeps its own files there.
         assert_eq!(
             models.root(),
-            dir.path().join("Dictate").join("whisper-models")
+            dir.path().join("Loah").join("whisper-models")
         );
         assert!(models.root().is_dir());
         // A second start finds it there.
@@ -561,14 +597,10 @@ mod tests {
     }
 
     #[test]
-    fn the_diarization_model_folder_is_dictate_diarization_models_below_the_base_dir_and_is_created(
-    ) {
+    fn the_diarization_model_folder_is_loah_diarization_models_below_the_base_dir_and_is_created() {
         let dir = tempfile::tempdir().unwrap();
         let models = open_diarize_dir(dir.path()).unwrap();
-        assert_eq!(
-            models,
-            dir.path().join("Dictate").join("diarization-models")
-        );
+        assert_eq!(models, dir.path().join("Loah").join("diarization-models"));
         assert!(models.is_dir());
         // A second start finds it there, and it is not the Whisper models' folder.
         assert_eq!(open_diarize_dir(dir.path()).unwrap(), models);

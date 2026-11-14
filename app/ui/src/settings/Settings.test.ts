@@ -88,6 +88,32 @@ test("the load warning goes away when it is dismissed", async () => {
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 });
 
+test("says what could not be copied from Dictate, in the language of the interface, and keeps saying it until dismissed", async () => {
+  const user = userEvent.setup();
+  vi.mocked(api.getSettings).mockResolvedValue(fakeView({ migration_note: "Dictations (Permission denied)" }));
+  render(Settings);
+
+  const note = await screen.findByRole("alert");
+  expect(note).toHaveTextContent("Not everything was copied.");
+  expect(note).toHaveTextContent("These could not be copied from Dictate: Dictations (Permission denied).");
+  expect(note).toHaveTextContent("tries again at the next start");
+
+  await user.click(screen.getByRole("checkbox", { name: "Save recordings + transcripts" }));
+  await vi.waitFor(() => expect(api.saveSettings).toHaveBeenCalled());
+  expect(screen.getByRole("alert")).toHaveTextContent("Dictations (Permission denied)");
+
+  await user.click(screen.getByRole("button", { name: "Dismiss" }));
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
+test("the note about the copy from Dictate and the warning about the file are two banners", async () => {
+  vi.mocked(api.getSettings).mockResolvedValue(fakeView({ load_warning: "reset", migration_note: "Dictations (x)" }));
+  render(Settings);
+
+  await screen.findAllByRole("tab");
+  expect(screen.getAllByRole("alert")).toHaveLength(2);
+});
+
 test("no banner when the settings loaded cleanly", async () => {
   render(Settings);
   await screen.findAllByRole("tab");

@@ -17,6 +17,68 @@ afterEach(() => {
 
 const lastSaved = () => vi.mocked(api.saveSettings).mock.lastCall?.[0];
 
+test("the_dictate_still_installed_notice_shows_when_reported", async () => {
+  const user = userEvent.setup();
+  vi.mocked(api.dictateStillPresent).mockResolvedValue(true);
+  render(General, { store: await loadedStore() });
+
+  const notice = await screen.findByRole("status");
+  expect(notice).toHaveTextContent(
+    "Dictate is still installed and uses the same shortcut and meetings folder. Quit it and remove it, then re-point your MCP client to Loah.",
+  );
+  // The button opens the section of the README about upgrading, in the browser.
+  await user.click(screen.getByRole("button", { name: "How to switch to Loah" }));
+  expect(api.openUrl).toHaveBeenCalledExactlyOnceWith("https://github.com/henryonai/loah#upgrading-from-dictate");
+});
+
+test("the notice is in Vietnamese when the interface is", async () => {
+  vi.mocked(api.dictateStillPresent).mockResolvedValue(true);
+  render(General, { store: await loadedStore({ ui_language: "vi" }) });
+
+  const notice = await screen.findByRole("status");
+  expect(notice).toHaveTextContent("Dictate vẫn còn được cài trên máy");
+  expect(screen.getByRole("button", { name: "Xem cách chuyển sang Loah" })).toBeInTheDocument();
+});
+
+test("no notice when the old app is not there, or when that can't be told", async () => {
+  render(General, { store: await loadedStore() });
+  await screen.findByLabelText("Shortcut");
+  expect(api.dictateStillPresent).toHaveBeenCalled();
+  expect(screen.queryByRole("status")).not.toBeInTheDocument();
+});
+
+test("a question about the old app that fails says nothing", async () => {
+  vi.mocked(api.dictateStillPresent).mockRejectedValue("not allowed");
+  render(General, { store: await loadedStore() });
+  await screen.findByLabelText("Shortcut");
+  await vi.waitFor(() => expect(api.dictateStillPresent).toHaveBeenCalled());
+  expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
+test("the old app is asked about again when the window gets the focus back, and the notice goes when it is gone", async () => {
+  vi.mocked(api.dictateStillPresent).mockResolvedValue(true);
+  render(General, { store: await loadedStore() });
+  await screen.findByRole("status");
+
+  // The person quits and removes it in another window, and comes back.
+  vi.mocked(api.dictateStillPresent).mockResolvedValue(false);
+  await fireEvent.focus(window);
+
+  await vi.waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
+});
+
+test("a notice whose button can't open the page says so", async () => {
+  const user = userEvent.setup();
+  vi.mocked(api.dictateStillPresent).mockResolvedValue(true);
+  vi.mocked(api.openUrl).mockRejectedValue("no browser");
+  render(General, { store: await loadedStore() });
+
+  await user.click(await screen.findByRole("button", { name: "How to switch to Loah" }));
+
+  expect(await screen.findByRole("alert")).toHaveTextContent("no browser");
+});
+
 test("shows the stored shortcut and doesn't let it be typed over", async () => {
   vi.mocked(api.hotkeyStatus).mockRejectedValue("not asked yet");
   render(General, { store: await loadedStore({ hotkey: "Ctrl+Shift+D" }) });

@@ -409,7 +409,7 @@ jobs:
   # as `loah-ffmpeg` next to the app (the installers are made in the release workflow; this job is where the build and its flags are
   # tried on every change). Each row builds one target, checks that it is a plain LGPL build (scripts/check-ffmpeg-lgpl.sh: no GPL or
   # non-free option or library, only the libraries of the system) and keeps it as an artifact. The rows that can run their own build
-  # then run the tests of the code that runs ffmpeg with it (DICTATE_FFMPEG), so that CI tests the ffmpeg that ships and not the one of
+  # then run the tests of the code that runs ffmpeg with it (LOAH_FFMPEG), so that CI tests the ffmpeg that ships and not the one of
   # brew, apt or choco, as the test job above does for the rest of the tests.
   #  - macOS: both targets are built on the arm64 runner, the Intel one cross-compiled (nasm for its assembly); only the arm64 one is run.
   #  - Linux: fully static, with libvpx, libopus and zlib from the static archives of the Ubuntu packages.
@@ -532,16 +532,16 @@ jobs:
           cmake libclang-dev libasound2-dev libpipewire-0.3-dev libspa-0.2-dev
           libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
       # The tests that run ffmpeg: decoding what symphonia cannot read, writing audio.m4a, the encoders of a recording (picked and probed),
-      # the mux. CI is set by Actions, so a missing ffmpeg fails them instead of skipping them; DICTATE_FFMPEG is what `Tools::find` takes first.
-      # The program is run first: a DICTATE_FFMPEG that does not run fails the step here, and not as a test that was skipped or that ran with
+      # the mux. CI is set by Actions, so a missing ffmpeg fails them instead of skipping them; LOAH_FFMPEG is what `Tools::find` takes first.
+      # The program is run first: a LOAH_FFMPEG that does not run fails the step here, and not as a test that was skipped or that ran with
       # another ffmpeg (a test of tools.rs also checks that `Tools::find` gives this one).
       - name: Test the media and recording code with this ffmpeg
         if: matrix.tests
         shell: bash
         env:
-          DICTATE_FFMPEG: ${{ github.workspace }}/target/ffmpeg/${{ matrix.target }}/loah-ffmpeg${{ matrix.exe }}
+          LOAH_FFMPEG: ${{ github.workspace }}/target/ffmpeg/${{ matrix.target }}/loah-ffmpeg${{ matrix.exe }}
         run: |
-          "$DICTATE_FFMPEG" -version
+          "$LOAH_FFMPEG" -version
           cargo test -p loah-services --lib --locked -- media:: record:: --nocapture
 
   # The Windows ffmpeg of the job above, run for the first time here: it was built on Linux, which cannot run it. It is the program that
@@ -625,8 +625,8 @@ jobs:
       - name: Test the media and recording code with this ffmpeg
         shell: bash
         env:
-          DICTATE_FFMPEG: ${{ github.workspace }}/target/ffmpeg/x86_64-pc-windows-msvc/loah-ffmpeg.exe
+          LOAH_FFMPEG: ${{ github.workspace }}/target/ffmpeg/x86_64-pc-windows-msvc/loah-ffmpeg.exe
           LOAH_EXPECT_ENCODER: h264_mf
         run: |
-          "$DICTATE_FFMPEG" -version
+          "$LOAH_FFMPEG" -version
           cargo test -p loah-services --lib --locked -- media:: record:: --nocapture

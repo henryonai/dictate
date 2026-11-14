@@ -174,9 +174,10 @@ describe("the two READMEs", () => {
       expect(text).toContain("cmdkey /delete:transcribe.Dictate");
       expect(text).toContain("sudo apt remove dictate");
     }
-    // The names of the credentials are the ones of the code (service `Dictate`, accounts `default` and `transcribe`).
+    // The names of the credentials are the ones of the code (service `Loah`, accounts `default` and `transcribe`; the service
+    // `Dictate` of the old app is still read: LEGACY_SERVICE).
     const secrets = read("crates/loah-services/src/secrets.rs");
-    expect(secrets).toContain('pub const SERVICE: &str = "Dictate";');
+    expect(secrets).toContain('pub const SERVICE: &str = "Loah";');
     expect(secrets).toContain('Account::Ai => "default"');
     expect(secrets).toContain('Account::Transcribe => "transcribe"');
   });

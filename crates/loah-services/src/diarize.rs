@@ -698,7 +698,7 @@ mod tests {
 
     /// The models are handed to the library as UTF-8 text, and where a file name is not that (Windows) whether the library
     /// opens it is the library's own matter. A person whose user name is Vietnamese has the models in a folder such as
-    /// `C:\Users\Người dùng\AppData\Local\Dictate\diarization-models`, so the real models are loaded from a folder
+    /// `C:\Users\Người dùng\AppData\Local\Loah\diarization-models`, so the real models are loaded from a folder
     /// that has such a name. It is in the list of the CI step that runs the real models, which is where Windows runs it.
     #[test]
     #[ignore = "needs the two models: set LOAH_TEST_DIARIZE_DIR to the folder that holds them"]
@@ -707,7 +707,7 @@ mod tests {
         let dir = tmp
             .path()
             .join("Người dùng")
-            .join("Dictate")
+            .join("Loah")
             .join("diarization-models");
         fs::create_dir_all(&dir).unwrap();
         for model in &DIARIZE_MODELS {

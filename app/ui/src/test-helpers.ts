@@ -60,6 +60,7 @@ export function fakeView(overrides: Partial<SettingsView> = {}): SettingsView {
     has_transcribe_key: false,
     shares_openrouter_key: false,
     load_warning: null,
+    migration_note: null,
     system_language: "en",
     ...overrides,
   };
@@ -107,6 +108,8 @@ export function stubApi() {
     { id: "custom", models: [], key_url: null },
   ]);
   vi.spyOn(api, "openMeetingsFolder").mockResolvedValue();
+  // The old Dictate is not there.
+  vi.spyOn(api, "dictateStillPresent").mockResolvedValue(false);
   vi.spyOn(api, "mediaTools").mockResolvedValue({
     ffmpeg: null,
     ytDlp: null,

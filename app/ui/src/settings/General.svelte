@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import { api, errorText } from "../lib/api";
   import type { UiLanguage } from "../lib/api";
   import { t } from "../lib/i18n";
@@ -23,11 +24,32 @@
   // THIRD_PARTY_NOTICES.md of the repository: Loah's licenses, and those of what it includes (FFmpeg and the others).
   const NOTICES_URL = "https://github.com/henryonai/loah/blob/main/THIRD_PARTY_NOTICES.md";
 
+  // The section of the README about upgrading: what is copied, what to re-point, and how to remove the old app.
+  const UPGRADE_URL = "https://github.com/henryonai/loah#upgrading-from-dictate";
+
   const UI_LANGUAGES: UiLanguage[] = ["system", "en", "vi"];
   const DICTATION_LANGUAGES = ["en-US", "vi-VN", "ja-JP", "zh-CN", "ko-KR", "fr-FR", "de-DE", "es-ES"];
 
   let folderError = $state("");
   let licensesError = $state("");
+  // The old app is still on this machine (running, or set to start at login). Asked when the page is shown and again when the window
+  // gets the focus back (a person quits it, or removes it, in another window), so it is true to the moment; where the answer can't be
+  // had the notice stays as it was, and nothing else says so.
+  let dictateStillPresent = $state(false);
+  let upgradeError = $state("");
+
+  function lookForDictate() {
+    api
+      .dictateStillPresent()
+      .then((present) => (dictateStillPresent = present))
+      .catch(() => {});
+  }
+
+  onMount(() => {
+    lookForDictate();
+    window.addEventListener("focus", lookForDictate);
+    return () => window.removeEventListener("focus", lookForDictate);
+  });
 
   const dictationLanguages = () => DICTATION_LANGUAGES.map((code) => ({ value: code, label: t(`lang.${code}`) }));
 
@@ -45,6 +67,11 @@
     api.openUrl(NOTICES_URL).catch((e: unknown) => (licensesError = errorText(e)));
   }
 
+  function openUpgradeGuide() {
+    upgradeError = "";
+    api.openUrl(UPGRADE_URL).catch((e: unknown) => (upgradeError = errorText(e)));
+  }
+
   async function openMeetingsFolder() {
     folderError = "";
     try {
@@ -54,6 +81,16 @@
     }
   }
 </script>
+
+{#if dictateStillPresent}
+  <div class="notice">
+    <p role="status">{t("general.dictate_still_installed")}</p>
+    <button type="button" onclick={openUpgradeGuide}>{t("general.dictate_still_installed_button")}</button>
+    {#if upgradeError}
+      <p class="error" role="alert">{upgradeError}</p>
+    {/if}
+  </div>
+{/if}
 
 <section class="group" aria-labelledby="general-interface">
   <h2 id="general-interface">{t("general.interface")}</h2>
@@ -145,3 +182,17 @@
     <p class="error">{licensesError}</p>
   {/if}
 </section>
+
+<style>
+  .notice {
+    margin-bottom: 16px;
+    padding: 10px 14px;
+    color: var(--warn-fg);
+    background: var(--warn-bg);
+    border-radius: 6px;
+  }
+  .notice p {
+    margin: 0 0 8px;
+    overflow-wrap: anywhere;
+  }
+</style>

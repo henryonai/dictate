@@ -38,7 +38,7 @@ describe("the app is called Loah", () => {
   test("no_sentence_of_the_interface_names_the_app_dictate_in_either_language", () => {
     // `dictate --toggle` is a command that is gone from the strings too: the program is `loah`. A text that has to explain the rename (the
     // note about an old Dictate that is still installed) is the one thing that may say the old name: its key goes in this list.
-    const mayNameDictate = new Set<string>();
+    const mayNameDictate = new Set(["general.dictate_still_installed", "settings.migration_failed"]);
     for (const [name, locale] of [["en", en], ["vi", vi]] as [string, Record<string, string>][]) {
       const naming = Object.entries(locale)
         .filter(([key, text]) => /\bDictate\b|\bdictate --/.test(text) && !mayNameDictate.has(key))

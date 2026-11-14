@@ -26,6 +26,7 @@
     "allow-permissions-status",
     "allow-request-permission",
     "allow-open-permission-settings",
+    "allow-dictate-still-present",
     "allow-media-tools",
     {
       "identifier": "opener:allow-open-url",

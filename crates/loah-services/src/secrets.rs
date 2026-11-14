@@ -1,11 +1,19 @@
 //! API keys, kept in the OS credential store and nowhere else.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::{Mutex, PoisonError};
 
 /// Credential store service name.
-pub const SERVICE: &str = "Dictate";
+pub const SERVICE: &str = "Loah";
+
+/// The service name of Dictate 2.0.0, whose keys Loah reads when it has none of its own (the Swift Dictate used another
+/// service, `local.dictate.apikey`, and its keys are not imported).
+pub const LEGACY_SERVICE: &str = "Dictate";
+
+/// What Loah's own entry holds after a key that came from Dictate was removed in Loah: without it the next read would
+/// find Dictate's entry again, and the key the person took out would be back. It is never read as a key.
+const REMOVED: &str = "(removed)";
 
 /// The credentials the app keeps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -59,18 +67,20 @@ pub trait SecretStore: Send + Sync {
     fn delete(&self, a: Account) -> Result<(), SecretError>;
 }
 
-/// The OS credential store: macOS Keychain, Windows Credential Manager, Linux Secret Service.
-#[derive(Debug, Default)]
-pub struct KeyringStore;
-
-impl KeyringStore {
-    pub fn new() -> Self {
-        KeyringStore
-    }
+/// A credential store as `KeyringStore` uses it: entries by service and account. Apart from the OS one a test has its own.
+trait Vault: Send + Sync {
+    /// `Ok(None)` when there is no such entry.
+    fn read(&self, service: &str, account: &str) -> Result<Option<String>, SecretError>;
+    fn write(&self, service: &str, account: &str, value: &str) -> Result<(), SecretError>;
+    /// Removing an entry that isn't there succeeds.
+    fn remove(&self, service: &str, account: &str) -> Result<(), SecretError>;
 }
 
-fn entry(a: Account) -> Result<keyring::Entry, SecretError> {
-    keyring::Entry::new(SERVICE, a.name()).map_err(map_error)
+/// The credential store of the OS: macOS Keychain, Windows Credential Manager, Linux Secret Service.
+struct OsVault;
+
+fn entry(service: &str, account: &str) -> Result<keyring::Entry, SecretError> {
+    keyring::Entry::new(service, account).map_err(map_error)
 }
 
 fn map_error(e: keyring::Error) -> SecretError {
@@ -96,17 +106,99 @@ fn delete_result(r: keyring::Result<()>) -> Result<(), SecretError> {
     }
 }
 
+impl Vault for OsVault {
+    fn read(&self, service: &str, account: &str) -> Result<Option<String>, SecretError> {
+        read_result(entry(service, account)?.get_password())
+    }
+
+    fn write(&self, service: &str, account: &str, value: &str) -> Result<(), SecretError> {
+        entry(service, account)?
+            .set_password(value)
+            .map_err(map_error)
+    }
+
+    fn remove(&self, service: &str, account: &str) -> Result<(), SecretError> {
+        delete_result(entry(service, account)?.delete_credential())
+    }
+}
+
+/// The keys of the app, in the credential store of the OS: under the service `Loah`, and, until there is one there, the
+/// key that Dictate 2.0.0 saved under `Dictate`, which is copied to `Loah` when it is first read and left where it is.
+pub struct KeyringStore {
+    vault: Box<dyn Vault>,
+    /// The accounts for which Dictate's entry was asked in this run and gave no key. Asking again would, on a Mac, show
+    /// the Keychain's prompt again (for an entry another app made) after the person refused it.
+    legacy_asked: Mutex<HashSet<Account>>,
+}
+
+impl fmt::Debug for KeyringStore {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("KeyringStore").finish_non_exhaustive()
+    }
+}
+
+impl Default for KeyringStore {
+    fn default() -> Self {
+        KeyringStore::new()
+    }
+}
+
+impl KeyringStore {
+    /// Building it must not touch the OS keyring: entries are opened per call.
+    pub fn new() -> Self {
+        KeyringStore::with_vault(Box::new(OsVault))
+    }
+
+    fn with_vault(vault: Box<dyn Vault>) -> Self {
+        KeyringStore {
+            vault,
+            legacy_asked: Mutex::new(HashSet::new()),
+        }
+    }
+
+    /// The key that Dictate saved, which is saved under Loah as well. A refusal of the store is the error, once per run.
+    fn key_of_dictate(&self, a: Account) -> Result<Option<String>, SecretError> {
+        let mut asked = self
+            .legacy_asked
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if asked.contains(&a) {
+            return Ok(None);
+        }
+        let found = self.vault.read(LEGACY_SERVICE, a.name());
+        if !matches!(found, Ok(Some(_))) {
+            asked.insert(a);
+        }
+        let Some(key) = found? else {
+            return Ok(None);
+        };
+        // A key that can't be saved under Loah now is still used, and copied the next time.
+        let _ = self.vault.write(SERVICE, a.name(), &key);
+        Ok(Some(key))
+    }
+}
+
 impl SecretStore for KeyringStore {
     fn get(&self, a: Account) -> Result<Option<String>, SecretError> {
-        read_result(entry(a)?.get_password())
+        match self.vault.read(SERVICE, a.name())? {
+            Some(removed) if removed == REMOVED => Ok(None),
+            Some(key) => Ok(Some(key)),
+            None => self.key_of_dictate(a),
+        }
     }
 
     fn set(&self, a: Account, v: &str) -> Result<(), SecretError> {
-        entry(a)?.set_password(v).map_err(map_error)
+        self.vault.write(SERVICE, a.name(), v)
     }
 
     fn delete(&self, a: Account) -> Result<(), SecretError> {
-        delete_result(entry(a)?.delete_credential())
+        self.vault.remove(SERVICE, a.name())?;
+        // Dictate's entry is Dictate's, and stays. But the next read must not find it and bring the key back: where there
+        // is one (or the store can't say), Loah's entry says that the key was removed.
+        if !matches!(self.vault.read(LEGACY_SERVICE, a.name()), Ok(None)) {
+            self.vault.write(SERVICE, a.name(), REMOVED)?;
+        }
+        Ok(())
     }
 }
 
@@ -145,6 +237,7 @@ impl SecretStore for MemoryStore {
 mod tests {
     use super::*;
     use std::io;
+    use std::sync::Arc;
 
     fn platform_error(msg: &str) -> Box<dyn std::error::Error + Send + Sync> {
         Box::new(io::Error::other(msg.to_string()))
@@ -213,8 +306,13 @@ mod tests {
     }
 
     #[test]
-    fn accounts_and_service_match_the_spec() {
-        assert_eq!(SERVICE, "Dictate");
+    fn service_is_loah() {
+        assert_eq!(SERVICE, "Loah");
+        assert_eq!(LEGACY_SERVICE, "Dictate");
+    }
+
+    #[test]
+    fn the_account_names_are_the_ones_dictate_used() {
         assert_eq!(Account::Ai.name(), "default");
         assert_eq!(Account::Transcribe.name(), "transcribe");
     }
@@ -224,6 +322,195 @@ mod tests {
         // Building it must not touch the OS keyring: entries are opened per call.
         let store: Box<dyn SecretStore> = Box::new(KeyringStore::new());
         drop(store);
+    }
+
+    /// The credential store as a test sees it: entries by service and account, with the reads that were asked and the
+    /// services that refuse to be read or written.
+    #[derive(Default)]
+    struct MemoryVault {
+        entries: Mutex<HashMap<(String, String), String>>,
+        reads: Mutex<Vec<(String, String)>>,
+        unreadable: Mutex<Vec<String>>,
+        unwritable: Mutex<Vec<String>>,
+    }
+
+    impl MemoryVault {
+        fn with(entries: &[(&str, &str, &str)]) -> Arc<MemoryVault> {
+            let vault = MemoryVault::default();
+            for (service, account, value) in entries {
+                vault.put(service, account, value);
+            }
+            Arc::new(vault)
+        }
+
+        fn put(&self, service: &str, account: &str, value: &str) {
+            let key = (service.to_string(), account.to_string());
+            self.entries.lock().unwrap().insert(key, value.to_string());
+        }
+
+        fn peek(&self, service: &str, account: &str) -> Option<String> {
+            let key = (service.to_string(), account.to_string());
+            self.entries.lock().unwrap().get(&key).cloned()
+        }
+
+        fn reads_of(&self, service: &str) -> usize {
+            let reads = self.reads.lock().unwrap();
+            reads.iter().filter(|(read, _)| read == service).count()
+        }
+    }
+
+    impl Vault for Arc<MemoryVault> {
+        fn read(&self, service: &str, account: &str) -> Result<Option<String>, SecretError> {
+            self.reads
+                .lock()
+                .unwrap()
+                .push((service.to_string(), account.to_string()));
+            if self.unreadable.lock().unwrap().iter().any(|s| s == service) {
+                return Err(SecretError::PlatformFailure("denied".into()));
+            }
+            Ok(self.peek(service, account))
+        }
+
+        fn write(&self, service: &str, account: &str, value: &str) -> Result<(), SecretError> {
+            if self.unwritable.lock().unwrap().iter().any(|s| s == service) {
+                return Err(SecretError::PlatformFailure("read only".into()));
+            }
+            self.put(service, account, value);
+            Ok(())
+        }
+
+        fn remove(&self, service: &str, account: &str) -> Result<(), SecretError> {
+            let key = (service.to_string(), account.to_string());
+            self.entries.lock().unwrap().remove(&key);
+            Ok(())
+        }
+    }
+
+    fn store_on(vault: &Arc<MemoryVault>) -> KeyringStore {
+        KeyringStore::with_vault(Box::new(vault.clone()))
+    }
+
+    #[test]
+    fn a_key_saved_by_dictate_is_found_and_saved_under_loah() {
+        let vault = MemoryVault::with(&[("Dictate", "default", "sk-old")]);
+        let store = store_on(&vault);
+
+        assert_eq!(store.get(Account::Ai), Ok(Some("sk-old".into())));
+
+        // Now it is Loah's own, and Dictate's entry is left where it was: the old app may still be in use.
+        assert_eq!(vault.peek("Loah", "default"), Some("sk-old".into()));
+        assert_eq!(vault.peek("Dictate", "default"), Some("sk-old".into()));
+    }
+
+    #[test]
+    fn the_key_of_each_account_is_found_apart() {
+        let vault = MemoryVault::with(&[("Dictate", "transcribe", "sk-stt")]);
+        let store = store_on(&vault);
+
+        assert_eq!(store.get(Account::Ai), Ok(None));
+        assert_eq!(store.get(Account::Transcribe), Ok(Some("sk-stt".into())));
+        assert_eq!(vault.peek("Loah", "default"), None);
+    }
+
+    #[test]
+    fn a_key_saved_in_loah_wins_over_the_one_of_dictate_and_dictate_is_not_asked() {
+        let vault = MemoryVault::with(&[
+            ("Loah", "default", "sk-new"),
+            ("Dictate", "default", "sk-old"),
+        ]);
+        let store = store_on(&vault);
+
+        assert_eq!(store.get(Account::Ai), Ok(Some("sk-new".into())));
+        assert_eq!(
+            vault.reads_of("Dictate"),
+            0,
+            "the old entry is not even read"
+        );
+    }
+
+    #[test]
+    fn with_no_key_anywhere_nothing_is_found_and_nothing_is_written() {
+        let vault = MemoryVault::with(&[]);
+        let store = store_on(&vault);
+
+        assert_eq!(store.get(Account::Ai), Ok(None));
+        assert!(vault.entries.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn saving_a_key_writes_loah_and_never_dictate() {
+        let vault = MemoryVault::with(&[("Dictate", "default", "sk-old")]);
+        let store = store_on(&vault);
+
+        store.set(Account::Ai, "sk-new").unwrap();
+
+        assert_eq!(store.get(Account::Ai), Ok(Some("sk-new".into())));
+        assert_eq!(vault.peek("Dictate", "default"), Some("sk-old".into()));
+    }
+
+    #[test]
+    fn a_key_removed_in_loah_does_not_come_back_key_of_dictate() {
+        let vault = MemoryVault::with(&[("Dictate", "default", "sk-old")]);
+        let store = store_on(&vault);
+        assert_eq!(store.get(Account::Ai), Ok(Some("sk-old".into())));
+
+        store.delete(Account::Ai).unwrap();
+
+        assert_eq!(store.get(Account::Ai), Ok(None));
+        // Not at the next start either: what says "removed" is in the store, not in this run's memory.
+        assert_eq!(store_on(&vault).get(Account::Ai), Ok(None));
+        // Dictate's own entry is untouched.
+        assert_eq!(vault.peek("Dictate", "default"), Some("sk-old".into()));
+        // And a key saved after that is read as any other.
+        store.set(Account::Ai, "sk-newer").unwrap();
+        assert_eq!(
+            store_on(&vault).get(Account::Ai),
+            Ok(Some("sk-newer".into()))
+        );
+    }
+
+    #[test]
+    fn removing_a_key_that_dictate_never_had_leaves_no_entry_behind() {
+        let vault = MemoryVault::with(&[]);
+        let store = store_on(&vault);
+        store.set(Account::Ai, "sk-1").unwrap();
+
+        store.delete(Account::Ai).unwrap();
+
+        assert!(vault.entries.lock().unwrap().is_empty());
+        assert_eq!(store.get(Account::Ai), Ok(None));
+        // Deleting what isn't there is fine.
+        store.delete(Account::Transcribe).unwrap();
+    }
+
+    #[test]
+    fn an_entry_of_dictate_that_cannot_be_read_is_an_error_and_is_not_asked_again_in_this_run() {
+        // A prompt that the person refused: asking at every dictation would show it at every dictation.
+        let vault = MemoryVault::with(&[("Dictate", "default", "sk-old")]);
+        vault.unreadable.lock().unwrap().push("Dictate".into());
+        let store = store_on(&vault);
+
+        assert_eq!(
+            store.get(Account::Ai),
+            Err(SecretError::PlatformFailure("denied".into()))
+        );
+        assert_eq!(store.get(Account::Ai), Ok(None));
+        assert_eq!(vault.reads_of("Dictate"), 1);
+        // A new start asks again.
+        assert!(store_on(&vault).get(Account::Ai).is_err());
+    }
+
+    #[test]
+    fn a_key_that_could_not_be_saved_under_loah_is_still_used_and_tried_again_next_time() {
+        let vault = MemoryVault::with(&[("Dictate", "default", "sk-old")]);
+        vault.unwritable.lock().unwrap().push("Loah".into());
+
+        assert_eq!(store_on(&vault).get(Account::Ai), Ok(Some("sk-old".into())));
+        assert_eq!(vault.peek("Loah", "default"), None);
+
+        vault.unwritable.lock().unwrap().clear();
+        assert_eq!(store_on(&vault).get(Account::Ai), Ok(Some("sk-old".into())));
+        assert_eq!(vault.peek("Loah", "default"), Some("sk-old".into()));
     }
 
     #[test]

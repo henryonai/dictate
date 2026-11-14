@@ -248,7 +248,7 @@ pub struct SettingsStore {
 }
 
 impl SettingsStore {
-    /// `<config dir>/Dictate/settings.json`; `None` when the system has no config dir. There is no
+    /// `<config dir>/Loah/settings.json`; `None` when the system has no config dir. There is no
     /// fallback to a path in the working directory: settings written there would be lost, or worse,
     /// picked up from wherever the app happens to start.
     pub fn default_path() -> Option<PathBuf> {
@@ -321,7 +321,7 @@ impl SettingsStore {
 
 /// The settings file below `config_dir`; `None` without one.
 fn settings_path_in(config_dir: Option<PathBuf>) -> Option<PathBuf> {
-    config_dir.map(|dir| dir.join("Dictate").join("settings.json"))
+    config_dir.map(|dir| dir.join("Loah").join("settings.json"))
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -840,11 +840,7 @@ mod tests {
     #[test]
     fn save_creates_missing_folders_and_leaves_no_temp_file() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir
-            .path()
-            .join("nested")
-            .join("Dictate")
-            .join("settings.json");
+        let path = dir.path().join("nested").join("Loah").join("settings.json");
         let (store, _) = SettingsStore::open(path.clone());
         store.save(&Settings::default()).unwrap();
         assert!(path.is_file());
@@ -1224,17 +1220,17 @@ mod tests {
         assert_eq!(path, settings_path_in(dirs::config_dir()));
         if let Some(config) = dirs::config_dir() {
             let path = path.expect("there is a config dir");
-            assert!(path.ends_with("Dictate/settings.json"));
+            assert!(path.ends_with("Loah/settings.json"));
             assert!(path.starts_with(config));
         }
     }
 
     #[test]
-    fn the_settings_file_is_dictate_settings_json_in_the_config_dir() {
+    fn the_settings_file_is_loah_settings_json_in_the_config_dir() {
         let config = Path::new("config");
         assert_eq!(
             settings_path_in(Some(config.to_path_buf())),
-            Some(config.join("Dictate").join("settings.json"))
+            Some(config.join("Loah").join("settings.json"))
         );
     }
 

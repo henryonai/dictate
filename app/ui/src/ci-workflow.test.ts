@@ -361,10 +361,10 @@ describe("the ffmpeg that ships with the app (LGPL v2.1 or later, built from sou
   test("the tests are run after the program that they run with is shown to run", () => {
     for (const name of ["ffmpeg", "ffmpeg-windows"]) {
       const tests = step(name, "cargo test -p loah-services");
-      const version = tests.indexOf('"$DICTATE_FFMPEG" -version');
+      const version = tests.indexOf('"$LOAH_FFMPEG" -version');
       expect(version, `${name}: the program is run first`).toBeGreaterThan(-1);
       expect(version).toBeLessThan(tests.indexOf("cargo test -p loah-services"));
-      // Bash on every system: Windows would read `"$DICTATE_FFMPEG"` as text in PowerShell.
+      // Bash on every system: Windows would read `"$LOAH_FFMPEG"` as text in PowerShell.
       expect(tests).toContain("shell: bash");
     }
   });
@@ -428,7 +428,7 @@ describe("the ffmpeg that ships with the app (LGPL v2.1 or later, built from sou
   test("the tests of media and recording run with the ffmpeg that was built, not the one of the package manager, after the check", () => {
     const tests = step("ffmpeg", "cargo test -p loah-services");
     expect(tests).toMatch(/cargo test -p loah-services --lib --locked -- .*media:: .*record::/);
-    expect(tests).toContain("DICTATE_FFMPEG: ${{ github.workspace }}/target/ffmpeg/${{ matrix.target }}/loah-ffmpeg${{ matrix.exe }}");
+    expect(tests).toContain("LOAH_FFMPEG: ${{ github.workspace }}/target/ffmpeg/${{ matrix.target }}/loah-ffmpeg${{ matrix.exe }}");
     // A program that cannot run on the runner (the other Mac, the Windows one) is not run.
     expect(tests).toContain("if: matrix.tests");
     expect(job("ffmpeg").indexOf(tests)).toBeGreaterThan(job("ffmpeg").indexOf(`bash ${CHECK}`));
@@ -456,7 +456,7 @@ describe("the ffmpeg that ships with the app (LGPL v2.1 or later, built from sou
 
     const tests = step("ffmpeg-windows", "cargo test -p loah-services");
     expect(tests).toMatch(/cargo test -p loah-services --lib --locked -- .*media:: .*record::/);
-    expect(tests).toContain("DICTATE_FFMPEG: ${{ github.workspace }}/target/ffmpeg/x86_64-pc-windows-msvc/loah-ffmpeg.exe");
+    expect(tests).toContain("LOAH_FFMPEG: ${{ github.workspace }}/target/ffmpeg/x86_64-pc-windows-msvc/loah-ffmpeg.exe");
     expect(windows.indexOf(download)).toBeLessThan(windows.indexOf(check));
     expect(windows.indexOf(check)).toBeLessThan(windows.indexOf(tests));
   });
@@ -492,7 +492,7 @@ describe("the ffmpeg that ships with the app (LGPL v2.1 or later, built from sou
 
   test("the Rust cache is restored before the ffmpeg is put in target/, or a restore of another key empties target/ffmpeg", () => {
     // Swatinem/rust-cache cleans target/ when what it restores is not an exact match (any change of Cargo.toml or Cargo.lock): the
-    // ffmpeg that the job had built or restored a step before is gone, and `"$DICTATE_FFMPEG" -version` fails with 127.
+    // ffmpeg that the job had built or restored a step before is gone, and `"$LOAH_FFMPEG" -version` fails with 127.
     const ffmpeg = job("ffmpeg");
     expect(ffmpeg.indexOf(step("ffmpeg", "Swatinem/rust-cache@v2"))).toBeLessThan(ffmpeg.indexOf(step("ffmpeg", "id: ffmpeg-build")));
     const windows = job("ffmpeg-windows");

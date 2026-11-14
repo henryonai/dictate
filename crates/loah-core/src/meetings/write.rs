@@ -450,7 +450,7 @@ mod tests {
     #[test]
     fn create_folder_creates_the_library_directory() {
         let f = Fixture::empty();
-        let library = MeetingLibrary::new(f.dir().join("Tài liệu").join("Dictate Meetings"));
+        let library = MeetingLibrary::new(f.dir().join("Tài liệu").join("Loah Meetings"));
         let (id, folder) = library.create_folder(at(2026, 11, 9, 10, 15, 31)).unwrap();
         assert!(folder.is_dir());
         assert_eq!(library.meetings().len(), 1);

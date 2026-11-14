@@ -1,4 +1,4 @@
-//! Where a dictation's audio and text go: the saved ones in `Dictate/Dictations`, and the temporary audio of a
+//! Where a dictation's audio and text go: the saved ones in `Loah/Dictations`, and the temporary audio of a
 //! dictation that isn't saved, which is deleted after use and swept at launch.
 
 use std::fs;
@@ -21,13 +21,21 @@ pub struct SavePaths {
 }
 
 impl SavePaths {
-    /// `Dictate/Dictations` in the local data folder of the system and its temporary folder. `None` when the system has
+    /// `Loah/Dictations` in the local data folder of the system and its temporary folder. `None` when the system has
     /// no data folder.
     pub fn system() -> Option<SavePaths> {
-        Some(SavePaths {
-            dir: dirs::data_local_dir()?.join("Dictate").join("Dictations"),
-            temp: std::env::temp_dir(),
-        })
+        Some(SavePaths::below(
+            &dirs::data_local_dir()?,
+            std::env::temp_dir(),
+        ))
+    }
+
+    /// `Loah/Dictations` below `data_dir`, with `temp` for the audio that isn't saved.
+    fn below(data_dir: &Path, temp: PathBuf) -> SavePaths {
+        SavePaths {
+            dir: data_dir.join("Loah").join("Dictations"),
+            temp,
+        }
     }
 }
 
@@ -192,6 +200,14 @@ mod tests {
     use super::*;
     use chrono::NaiveDate;
     use loah_services::whisper::local::read_wav_16k_mono;
+
+    #[test]
+    fn saved_dictations_go_to_loah_dictations_below_the_data_dir() {
+        let data = Path::new("data");
+        let paths = SavePaths::below(data, PathBuf::from("tmp"));
+        assert_eq!(paths.dir, data.join("Loah").join("Dictations"));
+        assert_eq!(paths.temp, PathBuf::from("tmp"));
+    }
 
     fn at(h: u32, m: u32, s: u32) -> NaiveDateTime {
         NaiveDate::from_ymd_opt(2026, 11, 9)

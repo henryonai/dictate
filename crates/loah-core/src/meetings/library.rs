@@ -1,13 +1,14 @@
 //! The recordings in the Loah library: a folder per recording, written by the app and read by the MCP server.
 
 use std::collections::BTreeSet;
-use std::ffi::OsStr;
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Local, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::env::first_set;
 use crate::text::search::fold;
 
 /// Files inside a recording's folder. The app and the MCP server both depend on these names and formats.
@@ -30,10 +31,17 @@ pub mod files {
 pub const SCREEN_SOURCE: &str = "Quay màn hình";
 
 /// The environment variable that points at another library folder.
-const DIRECTORY_VARIABLE: &str = "DICTATE_MEETINGS_DIR";
+pub const DIRECTORY_VARIABLE: &str = "LOAH_MEETINGS_DIR";
+
+/// What the variable was called in Dictate: still read when `DIRECTORY_VARIABLE` is not set, because an MCP client that
+/// was set up for Dictate has it in its configuration.
+pub const LEGACY_DIRECTORY_VARIABLE: &str = "DICTATE_MEETINGS_DIR";
 
 /// The library's folder inside the Documents folder.
-const LIBRARY_FOLDER: &str = "Dictate Meetings";
+pub const LIBRARY_FOLDER: &str = "Loah Meetings";
+
+/// Where Dictate kept the library. It stays where it is, and is used as long as there is no `LIBRARY_FOLDER` next to it.
+pub const LEGACY_LIBRARY_FOLDER: &str = "Dictate Meetings";
 
 /// `meta.json`: what the app knows about a recording apart from its text.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
@@ -224,11 +232,11 @@ pub struct MeetingLibrary {
 }
 
 impl MeetingLibrary {
-    /// "Dictate Meetings" in the OS Documents folder, or the folder in `DICTATE_MEETINGS_DIR` (another library,
-    /// e.g. for a demo).
+    /// The library folder, which the app and the MCP server both work out here, so that they always see the same one:
+    /// see `resolve_directory`.
     pub fn default_directory() -> PathBuf {
         resolve_directory(
-            std::env::var_os(DIRECTORY_VARIABLE).as_deref(),
+            |name| std::env::var_os(name),
             dirs::home_dir().as_deref(),
             dirs::document_dir().as_deref(),
         )
@@ -274,21 +282,31 @@ impl MeetingLibrary {
     }
 }
 
-/// The library folder: `env` (the `DICTATE_MEETINGS_DIR` value) when set and not empty, with a leading `~`
-/// meaning `home`; else "Dictate Meetings" inside `documents`, or inside `home`/Documents.
+/// The library folder, the first of these that applies:
+///  1. the folder in `LOAH_MEETINGS_DIR` (another library, e.g. for a demo), when set and not empty;
+///  2. the same in `DICTATE_MEETINGS_DIR`, which Dictate's users have in their MCP configuration;
+///  3. "Loah Meetings" inside `documents` (or `home`/Documents) when it exists;
+///  4. "Dictate Meetings" in the same place when it exists: a library that Dictate made is used where it is, never moved;
+///  5. "Loah Meetings" there, which a new install makes.
+///
+/// A leading `~` in a variable means `home`. `env` looks a variable up (`std::env::var_os` in the programs).
 fn resolve_directory(
-    env: Option<&OsStr>,
+    env: impl Fn(&str) -> Option<OsString>,
     home: Option<&Path>,
     documents: Option<&Path>,
 ) -> PathBuf {
-    if let Some(dir) = env.filter(|dir| !dir.is_empty()) {
-        return expand_tilde(Path::new(dir), home);
+    if let Some(dir) = first_set(env, &[DIRECTORY_VARIABLE, LEGACY_DIRECTORY_VARIABLE]) {
+        return expand_tilde(Path::new(&dir), home);
     }
-    documents
+    let documents = documents
         .map(Path::to_path_buf)
         .or_else(|| home.map(|home| home.join("Documents")))
-        .unwrap_or_else(|| PathBuf::from("Documents"))
-        .join(LIBRARY_FOLDER)
+        .unwrap_or_else(|| PathBuf::from("Documents"));
+    let kept = documents.join(LEGACY_LIBRARY_FOLDER);
+    if !documents.join(LIBRARY_FOLDER).is_dir() && kept.is_dir() {
+        return kept;
+    }
+    documents.join(LIBRARY_FOLDER)
 }
 
 /// `~` or `~/…` (any separator the OS accepts) with `home` in place of the `~`. Left as is without a home,
@@ -672,11 +690,33 @@ mod tests {
         assert_eq!(f.library().find(" \"/ ").map(|m| m.id), None);
     }
 
+    /// The environment of a test: only the variables it names are set.
+    fn env_of(pairs: &[(&'static str, &'static str)]) -> impl Fn(&str) -> Option<OsString> {
+        let pairs = pairs.to_vec();
+        move |name| {
+            pairs
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| OsString::from(value))
+        }
+    }
+
+    /// A Documents folder that holds the library folders named, as folders.
+    fn documents_with(folders: &[&str]) -> tempfile::TempDir {
+        let documents = tempfile::tempdir().unwrap();
+        for folder in folders {
+            fs::create_dir(documents.path().join(folder)).unwrap();
+        }
+        documents
+    }
+
     #[test]
     fn the_env_directory_wins_and_a_tilde_means_home() {
         let home = Path::new("/home/henry");
         let docs = Some(Path::new("/home/henry/Docs"));
-        let dir = |env: &str| resolve_directory(Some(OsStr::new(env)), Some(home), docs);
+        let dir = |env: &'static str| {
+            resolve_directory(env_of(&[(DIRECTORY_VARIABLE, env)]), Some(home), docs)
+        };
         assert_eq!(dir("/srv/demo"), Path::new("/srv/demo"));
         assert_eq!(dir("~"), home);
         assert_eq!(dir("~/Demo Library"), home.join("Demo Library"));
@@ -686,43 +726,140 @@ mod tests {
 
     #[test]
     fn a_tilde_stays_as_typed_without_a_home() {
-        let dir = resolve_directory(Some(OsStr::new("~/Demo")), None, None);
+        let dir = resolve_directory(env_of(&[(DIRECTORY_VARIABLE, "~/Demo")]), None, None);
         assert_eq!(dir, Path::new("~/Demo"));
     }
 
     #[test]
-    fn without_env_the_library_is_in_documents() {
+    fn the_variable_names_are_the_loah_one_and_the_dictate_one() {
+        assert_eq!(DIRECTORY_VARIABLE, "LOAH_MEETINGS_DIR");
+        assert_eq!(LEGACY_DIRECTORY_VARIABLE, "DICTATE_MEETINGS_DIR");
+        assert_eq!(LIBRARY_FOLDER, "Loah Meetings");
+        assert_eq!(LEGACY_LIBRARY_FOLDER, "Dictate Meetings");
+    }
+
+    #[test]
+    fn the_old_meetings_variable_still_works() {
+        // A person's MCP config sets DICTATE_MEETINGS_DIR, and nothing sets the new variable: the app and loah-mcp,
+        // which both resolve the folder here, still use it.
+        let home = Path::new("/home/henry");
+        let documents = documents_with(&[]);
+        let dir = resolve_directory(
+            env_of(&[(LEGACY_DIRECTORY_VARIABLE, "~/Demo Library")]),
+            Some(home),
+            Some(documents.path()),
+        );
+        assert_eq!(dir, home.join("Demo Library"));
+    }
+
+    #[test]
+    fn the_new_variable_wins() {
+        let documents = documents_with(&[]);
+        let dir = resolve_directory(
+            env_of(&[
+                (DIRECTORY_VARIABLE, "/srv/new"),
+                (LEGACY_DIRECTORY_VARIABLE, "/srv/old"),
+            ]),
+            None,
+            Some(documents.path()),
+        );
+        assert_eq!(dir, Path::new("/srv/new"));
+    }
+
+    #[test]
+    fn an_empty_new_variable_does_not_hide_the_old_one() {
+        let dir = resolve_directory(
+            env_of(&[
+                (DIRECTORY_VARIABLE, ""),
+                (LEGACY_DIRECTORY_VARIABLE, "/srv/old"),
+            ]),
+            None,
+            None,
+        );
+        assert_eq!(dir, Path::new("/srv/old"));
+    }
+
+    #[test]
+    fn a_new_install_gets_loah_meetings() {
+        let documents = documents_with(&[]);
         let home = Some(Path::new("/home/henry"));
-        let docs = Some(Path::new("/home/henry/Tài liệu"));
-        let expected = Path::new("/home/henry/Tài liệu/Dictate Meetings");
-        assert_eq!(resolve_directory(None, home, docs), expected);
+        assert_eq!(
+            resolve_directory(env_of(&[]), home, Some(documents.path())),
+            documents.path().join("Loah Meetings")
+        );
         // An empty variable counts as unset.
         assert_eq!(
-            resolve_directory(Some(OsStr::new("")), home, docs),
-            expected
+            resolve_directory(
+                env_of(&[(DIRECTORY_VARIABLE, ""), (LEGACY_DIRECTORY_VARIABLE, "")]),
+                home,
+                Some(documents.path())
+            ),
+            documents.path().join("Loah Meetings")
         );
     }
 
     #[test]
-    fn documents_falls_back_to_home() {
-        let home = Some(Path::new("/home/henry"));
+    fn the_old_meetings_folder_is_kept_when_it_is_the_only_one() {
+        // Dictate's library stays where it is, and is neither moved nor copied.
+        let documents = documents_with(&["Dictate Meetings"]);
         assert_eq!(
-            resolve_directory(None, home, None),
-            Path::new("/home/henry/Documents/Dictate Meetings")
-        );
-        assert_eq!(
-            resolve_directory(None, None, None),
-            Path::new("Documents/Dictate Meetings")
+            resolve_directory(env_of(&[]), None, Some(documents.path())),
+            documents.path().join("Dictate Meetings")
         );
     }
 
     #[test]
-    fn the_default_directory_ends_in_dictate_meetings_unless_overridden() {
+    fn loah_meetings_wins_when_both_folders_exist() {
+        let documents = documents_with(&["Dictate Meetings", "Loah Meetings"]);
+        assert_eq!(
+            resolve_directory(env_of(&[]), None, Some(documents.path())),
+            documents.path().join("Loah Meetings")
+        );
+    }
+
+    #[test]
+    fn a_file_named_like_the_old_folder_does_not_keep_it() {
+        let documents = documents_with(&[]);
+        fs::write(documents.path().join("Dictate Meetings"), b"not a folder").unwrap();
+        assert_eq!(
+            resolve_directory(env_of(&[]), None, Some(documents.path())),
+            documents.path().join("Loah Meetings")
+        );
+    }
+
+    #[test]
+    fn the_old_folder_is_found_below_home_documents_too() {
+        let home = tempfile::tempdir().unwrap();
+        fs::create_dir_all(home.path().join("Documents").join("Dictate Meetings")).unwrap();
+        assert_eq!(
+            resolve_directory(env_of(&[]), Some(home.path()), None),
+            home.path().join("Documents").join("Dictate Meetings")
+        );
+    }
+
+    #[test]
+    fn without_a_documents_folder_the_library_is_loah_meetings_below_home() {
+        let home = Some(Path::new("/nonexistent-home"));
+        assert_eq!(
+            resolve_directory(env_of(&[]), home, None),
+            Path::new("/nonexistent-home/Documents/Loah Meetings")
+        );
+        assert_eq!(
+            resolve_directory(env_of(&[]), None, None),
+            Path::new("Documents/Loah Meetings")
+        );
+    }
+
+    #[test]
+    fn the_default_directory_is_one_of_the_two_library_folders_unless_overridden() {
         // Reads the real environment, so it only checks what holds either way.
         let dir = MeetingLibrary::default_directory();
         assert!(!dir.as_os_str().is_empty());
-        if std::env::var_os("DICTATE_MEETINGS_DIR").is_none_or(|v| v.is_empty()) {
-            assert!(dir.ends_with("Dictate Meetings"));
+        let overridden = [DIRECTORY_VARIABLE, LEGACY_DIRECTORY_VARIABLE]
+            .iter()
+            .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()));
+        if !overridden {
+            assert!(dir.ends_with("Loah Meetings") || dir.ends_with("Dictate Meetings"));
         }
     }
 }

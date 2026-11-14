@@ -40,7 +40,7 @@ struct Fixture {
 
 impl Fixture {
     fn folder_in(dir: &Path) -> PathBuf {
-        let folder = dir.join("Dictate Meetings").join("2026-11-10 10-00-00");
+        let folder = dir.join("Loah Meetings").join("2026-11-10 10-00-00");
         fs::create_dir_all(&folder).unwrap();
         folder
     }

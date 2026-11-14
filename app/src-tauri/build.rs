@@ -26,6 +26,8 @@ const COMMANDS: &[&str] = &[
     "permissions_status",
     "request_permission",
     "open_permission_settings",
+    // Whether the old Dictate is still there, which General says.
+    "dictate_still_present",
     // Which tools of the system are installed. Settings asks it too: the one command it shares with the meetings window.
     "media_tools",
     // The meetings window.

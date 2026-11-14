@@ -46,6 +46,15 @@
       <button type="button" onclick={() => store.dismissWarning()}>{t("settings.dismiss")}</button>
     </div>
   {/if}
+  {#if store.migrationNote}
+    <div class="banner warning" role="alert">
+      <span>
+        <strong>{t("settings.migration_lead")}</strong>
+        {t("settings.migration_failed", { items: store.migrationNote })}
+      </span>
+      <button type="button" onclick={() => store.dismissMigrationNote()}>{t("settings.dismiss")}</button>
+    </div>
+  {/if}
   {#if store.error}
     <div class="banner failure" role="alert">
       <span>

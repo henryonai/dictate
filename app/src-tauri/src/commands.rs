@@ -50,6 +50,9 @@ pub struct SettingsView {
     pub shares_openrouter_key: bool,
     /// Why the settings file wasn't used as it was. Only the first view after the start carries it.
     pub load_warning: Option<String>,
+    /// What could not be copied from Dictate at this start ("settings.json (Permission denied); Dictations (...)"), for a
+    /// note that says so. Only the first view after the start carries it, like `load_warning`.
+    pub migration_note: Option<String>,
     /// What the language choice "System" means on this machine: the language of the tray menu. The window
     /// resolves "System" to this one and not by its own guess, so that both always agree.
     pub system_language: tray::Lang,
@@ -229,6 +232,7 @@ fn get_settings_view(store: &SettingsStore, keys: &KeyFlags) -> SettingsView {
         has_transcribe_key,
         shares_openrouter_key: settings::shares_ai_key(&settings, has_ai_key, has_transcribe_key),
         load_warning: None,
+        migration_note: None,
         system_language: tray::system_language(),
         settings,
     }
@@ -507,7 +511,7 @@ pub(crate) async fn blocking<T: Send + 'static>(
 }
 
 /// Turns launch at login on or off in the system, when it isn't already as asked.
-fn set_launch_at_login(app: &AppHandle, enabled: bool) -> Result<(), String> {
+pub(crate) fn set_launch_at_login(app: &AppHandle, enabled: bool) -> Result<(), String> {
     let manager = app.autolaunch();
     let current = manager
         .is_enabled()
@@ -536,7 +540,7 @@ pub fn open_meetings_folder_now(app: &AppHandle) -> Result<(), String> {
     open_folder(app, &MeetingLibrary::default_directory())
 }
 
-/// Opens the folder of the saved dictations (`Dictate/Dictations`), creating it first if needed.
+/// Opens the folder of the saved dictations (`Loah/Dictations`), creating it first if needed.
 pub fn open_dictations_folder_now(app: &AppHandle) -> Result<(), String> {
     let paths = SavePaths::system().ok_or("The system has no folder for the app's data.")?;
     open_folder(app, &paths.dir)
@@ -565,9 +569,17 @@ pub async fn get_settings(state: State<'_, AppState>) -> Result<SettingsView, St
     blocking(move || {
         let mut view = get_settings_view(&state.settings, state.loaded_keys());
         view.load_warning = state.take_load_warning();
+        view.migration_note = state.take_migration_note();
         view
     })
     .await
+}
+
+/// Whether Dictate, the app that Loah replaces, is still installed and running or set to start at login: Settings says
+/// so, because the two share the shortcut and the meetings folder. Asked when the page is opened, and best effort.
+#[tauri::command]
+pub async fn dictate_still_present() -> Result<bool, String> {
+    blocking(crate::legacy::dictate_still_present).await
 }
 
 #[tauri::command]
@@ -901,6 +913,7 @@ mod tests {
         assert_eq!(json["has_transcribe_key"], false);
         assert_eq!(json["shares_openrouter_key"], false);
         assert_eq!(json["load_warning"], serde_json::Value::Null);
+        assert_eq!(json["migration_note"], serde_json::Value::Null);
     }
 
     #[test]
@@ -1707,7 +1720,7 @@ mod tests {
     #[test]
     fn the_meetings_folder_is_created_when_missing() {
         let dir = tempfile::tempdir().unwrap();
-        let folder = dir.path().join("Dictate Meetings");
+        let folder = dir.path().join("Loah Meetings");
         ensure_directory(&folder).unwrap();
         assert!(folder.is_dir());
         // It is fine when it is there already.
@@ -1719,8 +1732,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("in-the-way");
         std::fs::write(&file, b"x").unwrap();
-        let err = ensure_directory(&file.join("Dictate Meetings")).unwrap_err();
-        assert!(err.contains("Dictate Meetings"), "{err}");
+        let err = ensure_directory(&file.join("Loah Meetings")).unwrap_err();
+        assert!(err.contains("Loah Meetings"), "{err}");
     }
 
     // ---- permissions
@@ -1862,7 +1875,7 @@ mod tests {
     fn the_guide_is_remembered_beside_the_settings_and_not_before_it_was_shown() {
         let dir = tempfile::tempdir().unwrap();
         // The folder of the settings is not there at the first start.
-        let settings = dir.path().join("Dictate").join("settings.json");
+        let settings = dir.path().join("Loah").join("settings.json");
         let mark = GuideMark::beside(&settings);
         assert!(!mark.shown());
 

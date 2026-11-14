@@ -56,6 +56,8 @@ export interface SettingsView extends Settings {
   shares_openrouter_key: boolean;
   /** Why the settings file wasn't used as it was. Only the first view after the start carries it. */
   load_warning: string | null;
+  /** What could not be copied from Dictate at this start ("settings.json (Permission denied); Dictations (...)"). Only the first view carries it. */
+  migration_note: string | null;
   /** What the "system" language means on this machine, as the Rust side resolved it: the language of the tray menu. */
   system_language: "en" | "vi";
 }
@@ -439,6 +441,8 @@ export const api = {
   editPresets: () => invoke<EditPresetView[]>("edit_presets"),
   transcribePresets: () => invoke<TranscribePresetView[]>("transcribe_presets"),
   openMeetingsFolder: () => invoke<void>("open_meetings_folder"),
+  /** Whether Dictate, the app that Loah replaces, is still installed and running or set to start at login. Best effort: false when unsure. */
+  dictateStillPresent: () => invoke<boolean>("dictate_still_present"),
   /** ffmpeg and yt-dlp as the system has them (versions as they say them): what a link or a file that symphonia can't read needs. */
   mediaTools: () => invoke<ToolsView>("media_tools"),
   /** The microphone and Accessibility permissions as the system has them now (macOS; elsewhere both are `not_needed`). */

@@ -5,6 +5,7 @@ mod commands;
 mod config;
 mod dictation;
 mod hotkey;
+mod legacy;
 mod meetings;
 mod panel;
 // Fixture states for the panels, to look at them without the controller. A debug build only.
@@ -125,6 +126,7 @@ fn main() {
             commands::permissions_status,
             commands::request_permission,
             commands::open_permission_settings,
+            commands::dictate_still_present,
             meetings::commands::media_tools,
             meetings::commands::meetings_list,
             meetings::commands::meeting_detail,
@@ -225,12 +227,25 @@ fn setup(
 
     let settings_path =
         SettingsStore::default_path().ok_or("the system has no folder for the app's settings")?;
+    // What Dictate 2.0.0 saved (the settings, the models, the dictations) comes over before anything looks at these folders,
+    // and so before the first start is told by the missing settings file: a person whose settings came over is not new here.
+    let carried = legacy::carry_over_from_dictate();
     // Without a settings file this is the first start: Settings opens so that a new user sees where to begin.
     let first_launch = !settings_path.exists();
     let guide_mark = commands::GuideMark::beside(&settings_path);
     let (store, warning) = SettingsStore::open(settings_path);
     if let Some(warning) = &warning {
         log::warn!("{warning}");
+    }
+    // The setting is otherwise applied only when it changes, and Loah has no login item of its own yet: once, when the
+    // migration is done, the settings that came over decide.
+    if legacy::registers_login_item(&carried, store.get().launch_at_login) {
+        match commands::set_launch_at_login(app.handle(), true) {
+            Ok(()) => {
+                log::info!("Registered Loah to start at login, as the settings from Dictate say")
+            }
+            Err(e) => log::warn!("Could not register Loah to start at login: {e}"),
+        }
     }
     let models_base =
         state::models_base_dir().ok_or("the system has no folder for the app's data")?;
@@ -243,6 +258,7 @@ fn setup(
 
     let diarize_dir = state::open_diarize_dir(&models_base)?;
     let state = AppState::new(store, warning, Arc::new(KeyringStore::new()), models);
+    state.set_migration_note(carried.failure_list());
     let startup = state.clone();
     app.manage(state);
     // One platform layer for the whole app. What the system says about the permissions is read now, to know whether
@@ -307,7 +323,7 @@ mod tests {
     use tauri::{App, WebviewUrl, WebviewWindowBuilder};
 
     /// The commands of the Settings window.
-    const SETTINGS_COMMANDS: [&str; 22] = [
+    const SETTINGS_COMMANDS: [&str; 23] = [
         "get_settings",
         "save_settings",
         "set_ai_provider",
@@ -329,6 +345,8 @@ mod tests {
         "permissions_status",
         "request_permission",
         "open_permission_settings",
+        // Whether the old Dictate is still there: General says so.
+        "dictate_still_present",
         // Which tools of the system are installed: the one command the meetings window shares with Settings.
         "media_tools",
     ];
