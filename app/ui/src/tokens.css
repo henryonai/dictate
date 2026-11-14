@@ -1,0 +1,127 @@
+/* The Graphite theme: the colors, the fonts and the shadows that every window draws with, and nothing else. No rule of an element is
+   here, so a window that has its own look (the floating dictation windows and the recording bar) can load this file and use the
+   tokens without taking the rules of app.css. The table is in docs/specs/2026-11-14-loah-redesign-design.md, "The Graphite theme".
+
+   Which theme a window is in:
+     - the system's: light, or dark when the system is dark (the media query below);
+     - the one that the Theme setting forces: `data-theme="light"` or `data-theme="dark"` on <html>. A forced theme wins over the system
+       in both directions, so the dark block of the system leaves out a page that is forced to light.
+   The dark values are written twice, for the system and for the forced theme: theme.test.ts holds the two to the table. */
+
+/* The font: Be Vietnam Pro, regular, medium and semibold, from the files of the app (SIL OFL 1.1; the license is in fonts/OFL.txt). The
+   window never reaches for the network, and the CSP of the app would not let it. */
+@font-face {
+  font-family: "Be Vietnam Pro";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("./fonts/BeVietnamPro-Regular.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Be Vietnam Pro";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("./fonts/BeVietnamPro-Medium.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Be Vietnam Pro";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("./fonts/BeVietnamPro-SemiBold.woff2") format("woff2");
+}
+
+/* What does not change with the theme. */
+:root {
+  --font: "Be Vietnam Pro", system-ui, -apple-system, "Segoe UI", sans-serif;
+  /* Timestamps: a monospaced face, with tabular digits where it is used. */
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  /* Record is red in both themes: red means live. */
+  --record: #d92d20;
+  --on-record: #ffffff;
+  --scrim: rgb(0 0 0 / 0.4);
+  --shadow-pop: 0 6px 16px rgb(0 0 0 / 0.25);
+  --shadow-dialog: 0 10px 30px rgb(0 0 0 / 0.35);
+  /* The ground of a video: black, as the picture of a screen is. */
+  --video-bg: #000000;
+
+  /* The names that the components had before the palette had names of its own: aliases, so they follow every theme. */
+  --surface: var(--panel);
+  --border: var(--line);
+  --fg: var(--ink);
+  --accent-soft: var(--selected);
+  --accent-fg: var(--on-accent);
+}
+
+/* Light: the default, and a page that is forced to light. */
+:root,
+:root[data-theme="light"] {
+  --bg: #f5f5f7;
+  --panel: #eeeef1;
+  --line: #d9d9de;
+  --ink: #1d1d1f;
+  /* The table has #6e6e73, 4.38:1 on the panel: tuned to 4.65 for the text of the sidebar (WCAG AA, as the table allows). */
+  --muted: #6a6a6f;
+  --accent: #0a64d6;
+  --on-accent: #ffffff;
+  --selected: #e3eefc;
+  /* The paragraph that is being said: its tint, and (with a 2 px bar of the accent) its mark. */
+  --hl: #eaf2fd;
+  --ts: #0a64d6;
+  --ok: #187a35;
+  --danger: #c4261d;
+  --warn-bg: #fff4d6;
+  --warn-fg: #6b4a00;
+}
+
+:root {
+  color-scheme: light dark;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+/* Dark, when the system is dark and the page is not forced to light. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #1c1c1f;
+    --panel: #212124;
+    --line: #36363c;
+    --ink: #ececef;
+    --muted: #9a9aa3;
+    --accent: #4c9aff;
+    --on-accent: #0b1626;
+    --selected: #232f42;
+    /* The accent at 13 %. */
+    --hl: rgb(76 154 255 / 0.13);
+    --ts: #8cbcff;
+    --ok: #4cc26b;
+    --danger: #ff7b72;
+    --warn-bg: #3d3112;
+    --warn-fg: #f1d68a;
+  }
+}
+
+/* Dark, forced: the same values as above. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #1c1c1f;
+  --panel: #212124;
+  --line: #36363c;
+  --ink: #ececef;
+  --muted: #9a9aa3;
+  --accent: #4c9aff;
+  --on-accent: #0b1626;
+  --selected: #232f42;
+  --hl: rgb(76 154 255 / 0.13);
+  --ts: #8cbcff;
+  --ok: #4cc26b;
+  --danger: #ff7b72;
+  --warn-bg: #3d3112;
+  --warn-fg: #f1d68a;
+}

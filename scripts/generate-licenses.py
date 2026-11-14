@@ -7,7 +7,7 @@ Usage (from anywhere; it needs `cargo`, and `pnpm install` run for the interface
 
 What is in the file:
   1. The native components that the installers carry (FFmpeg and what is linked into it, whisper.cpp, the models, sherpa-onnx, ONNX
-     Runtime): the texts in licenses/native, which are copied from the releases that Loah is built with.
+     Runtime, the Be Vietnam Pro font): the texts in licenses/native, which are copied from the releases that Loah is built with.
   2. Every Rust crate that the program of an installer is linked with, with the license files that the crate ships (LICENSE*, COPYING*,
      NOTICE*, so the copyright lines and the NOTICE of an Apache crate are there). `cargo tree -e normal` for each of the four systems of the
      installers says which crates those are (build scripts and tests are not shipped). A crate that ships no license file gets the standard
@@ -56,6 +56,7 @@ NATIVE = [
     ("pyannote segmentation 3.0 (the model that is downloaded)", "MIT.", ["pyannote-segmentation-3.0-LICENSE.txt"]),
     ("sherpa-onnx 1.13.8 (linked into the program, or libsherpa-onnx-c-api.so)", "Apache-2.0. The project has no NOTICE file.", ["sherpa-onnx-LICENSE.txt"]),
     ("ONNX Runtime 1.28.2 (inside the sherpa-onnx libraries, or libonnxruntime.so)", "MIT, and the notices of the third-party code that ONNX Runtime contains. The project has no NOTICE file.", ["onnxruntime-LICENSE.txt", "onnxruntime-ThirdPartyNotices.txt"]),
+    ("Be Vietnam Pro 1.002 (the font of the windows, bundled in the interface as WOFF2 files)", "SIL Open Font License 1.1: the font files are used as they are, and are bundled with this license.", ["be-vietnam-pro-OFL.txt"]),
 ]
 
 RULE = "=" * 100

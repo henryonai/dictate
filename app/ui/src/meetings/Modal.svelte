@@ -54,7 +54,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background: rgb(0 0 0 / 0.4);
+    background: var(--scrim);
   }
   .dialog {
     display: flex;
@@ -65,6 +65,6 @@
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 12px;
-    box-shadow: 0 10px 30px rgb(0 0 0 / 0.35);
+    box-shadow: var(--shadow-dialog);
   }
 </style>

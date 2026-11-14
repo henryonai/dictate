@@ -8,6 +8,7 @@
     text,
     label,
     glyph = false,
+    plain = false,
     disabled = false,
     children,
   }: {
@@ -17,6 +18,8 @@
     label: string;
     /** The button shows a symbol: its label is the name of it. */
     glyph?: boolean;
+    /** The button is the plain weight (text, no outline), for what is not a common action; else it is outlined. */
+    plain?: boolean;
     disabled?: boolean;
     /** The choices. `pick` takes what a choice does: it closes the list first. */
     children: Snippet<[pick: (action: () => unknown) => Promise<void>]>;
@@ -58,6 +61,7 @@
 <div class="menu" bind:this={root}>
   <button
     type="button"
+    class:plain
     bind:this={trigger}
     {disabled}
     aria-label={glyph ? label : undefined}
@@ -91,7 +95,7 @@
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 8px;
-    box-shadow: 0 6px 16px rgb(0 0 0 / 0.25);
+    box-shadow: var(--shadow-pop);
   }
   .choices :global(button) {
     padding: 6px 10px;

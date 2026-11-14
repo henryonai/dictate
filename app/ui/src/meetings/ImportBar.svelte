@@ -124,15 +124,15 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    color: #fff;
-    background: #d92d20;
-    border-color: #d92d20;
+    color: var(--on-record);
+    background: var(--record);
+    border-color: var(--record);
     font-variant-numeric: tabular-nums;
   }
   .mark {
     width: 9px;
     height: 9px;
-    background: #fff;
+    background: var(--on-record);
     border-radius: 50%;
   }
   .mark.square {
@@ -153,7 +153,7 @@
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 8px;
-    box-shadow: 0 6px 16px rgb(0 0 0 / 0.25);
+    box-shadow: var(--shadow-pop);
   }
   .choices button {
     padding: 6px 10px;

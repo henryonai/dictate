@@ -75,7 +75,7 @@
       aria-label={t("meetings.ask.label")}
       autocomplete="off"
     />
-    <button type="submit" disabled={asking || needsApi || question.trim() === ""}>{t("meetings.ask.submit")}</button>
+    <button type="submit" class="primary" disabled={asking || needsApi || question.trim() === ""}>{t("meetings.ask.submit")}</button>
   </form>
 </section>
 

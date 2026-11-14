@@ -196,6 +196,8 @@
   }
   .stamp {
     margin-right: 6px;
+    font-family: var(--mono);
+    font-size: 0.92em;
     font-variant-numeric: tabular-nums;
     color: var(--muted);
   }

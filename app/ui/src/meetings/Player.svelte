@@ -44,7 +44,7 @@
     width: 100%;
     max-height: 360px;
     aspect-ratio: 16 / 10;
-    background: #000;
+    background: var(--video-bg);
     border-radius: 8px;
   }
   audio {

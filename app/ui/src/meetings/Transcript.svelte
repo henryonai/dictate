@@ -132,15 +132,12 @@
     padding: 2px 8px;
     font-size: 12px;
   }
+  /* No frame: the paragraphs sit on the page, and the column scrolls. A short transcript leaves the page empty under it, not a box. */
   .list {
     position: relative;
     flex: 1;
     min-height: 0;
-    padding: 6px 4px;
     overflow-y: auto;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 10px;
   }
   .empty {
     margin: 0;
@@ -150,11 +147,13 @@
   .line {
     margin: 0;
     padding: 4px 8px;
-    border-radius: 6px;
+    border-radius: 0 6px 6px 0;
     overflow-wrap: anywhere;
   }
+  /* The paragraph that is being said: a 2 px bar of the accent on its left and a faint tint. */
   .line.current {
-    background: color-mix(in srgb, #ffd60a 22%, transparent);
+    background: var(--hl);
+    box-shadow: inset 2px 0 0 var(--accent);
   }
   .stamp,
   .speaker {
@@ -166,8 +165,10 @@
   }
   .stamp {
     margin-right: 6px;
+    font-family: var(--mono);
+    font-size: 0.92em;
     font-variant-numeric: tabular-nums;
-    color: var(--accent);
+    color: var(--ts);
     text-decoration: underline;
   }
   .stamp:disabled {

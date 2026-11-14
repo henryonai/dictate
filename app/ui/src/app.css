@@ -1,37 +1,6 @@
-/* The look of the Settings window: plain CSS, light and dark by the system's choice. */
-
-:root {
-  color-scheme: light dark;
-  --bg: #f5f5f7;
-  --surface: #ffffff;
-  --fg: #1d1d1f;
-  --muted: #6e6e73;
-  --border: #d2d2d7;
-  --accent: #0a64d6;
-  --accent-fg: #ffffff;
-  --accent-soft: #e3eefc;
-  --ok: #1a7f37;
-  --danger: #c4261d;
-  --warn-bg: #fff4d6;
-  --warn-fg: #6b4a00;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #1e1e20;
-    --surface: #2a2a2d;
-    --fg: #f2f2f4;
-    --muted: #a0a0a8;
-    --border: #44444a;
-    --accent: #4c9aff;
-    --accent-fg: #0b1626;
-    --accent-soft: #1d3150;
-    --ok: #4cc26b;
-    --danger: #ff7b72;
-    --warn-bg: #3d3112;
-    --warn-fg: #f1d68a;
-  }
-}
+/* The look of the Settings and the meetings windows: plain CSS. The colors, the fonts and the shadows are the tokens of tokens.css (the
+   Graphite theme, light and dark); this file has the rules of the elements. */
+@import "./tokens.css";
 
 * {
   box-sizing: border-box;
@@ -49,8 +18,8 @@ body {
 body {
   margin: 0;
   background: var(--bg);
-  color: var(--fg);
-  font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: var(--ink);
+  font: 13px/1.4 var(--font);
 }
 
 h2 {
@@ -71,8 +40,8 @@ h3 {
 section.group {
   margin: 0 0 16px;
   padding: 10px 14px;
-  background: var(--surface);
-  border: 1px solid var(--border);
+  background: var(--panel);
+  border: 1px solid var(--line);
   border-radius: 10px;
 }
 
@@ -101,7 +70,7 @@ textarea {
   font: inherit;
   color: inherit;
   background: var(--bg);
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
   border-radius: 6px;
 }
 
@@ -125,14 +94,21 @@ a:focus-visible {
   outline-offset: 1px;
 }
 
+/* Three weights of a button: outlined (the default, for the common actions), filled (`primary`: the one main action in a place) and
+   plain (`plain`: the rest, text only). The tint under the pointer has no specificity of its own, so a filled button, or one that a
+   component draws in another color (Record), keeps its color. */
 button {
   padding: 4px 12px;
   font: inherit;
-  color: inherit;
-  background: var(--surface);
-  border: 1px solid var(--border);
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid var(--line);
   border-radius: 6px;
   cursor: pointer;
+}
+
+button:where(:hover:not(:disabled)) {
+  background: var(--selected);
 }
 
 button:disabled {
@@ -141,9 +117,24 @@ button:disabled {
 }
 
 button.primary {
-  color: var(--accent-fg);
+  color: var(--on-accent);
   background: var(--accent);
   border-color: var(--accent);
+}
+
+button.primary:where(:hover:not(:disabled)) {
+  filter: brightness(1.1);
+}
+
+button.plain {
+  color: var(--muted);
+  background: transparent;
+  border-color: transparent;
+}
+
+button.plain:where(:hover:not(:disabled)) {
+  color: var(--ink);
+  background: var(--selected);
 }
 
 a {
@@ -184,7 +175,7 @@ a {
   font-size: 11px;
   font-weight: 600;
   color: var(--accent);
-  background: var(--accent-soft);
+  background: var(--selected);
   border-radius: 999px;
 }
 

@@ -14,7 +14,7 @@ What is in this file:
 
 1. [FFmpeg](#1-ffmpeg-lgpl-21-or-later): the license, the written offer of its source, how it is built and how to replace it.
 2. [What is linked into the FFmpeg that ships](#2-what-is-linked-into-the-ffmpeg-that-ships): glibc, libgcc, libvpx, libopus, zlib, mingw-w64, winpthreads and the encoder headers.
-3. [The other components of the app](#3-the-other-components-of-the-app): whisper.cpp, the models, sherpa-onnx, ONNX Runtime, Tauri and the rest.
+3. [The other components of the app](#3-the-other-components-of-the-app): whisper.cpp, the models, sherpa-onnx, ONNX Runtime, the Be Vietnam Pro font, Tauri and the rest.
 4. [Rust crates](#4-rust-crates) and [npm packages](#5-npm-packages): the licenses of the libraries that the program is built from, and how this list was made.
 
 ## 1. FFmpeg (LGPL 2.1 or later)
@@ -101,10 +101,13 @@ The FFmpeg of each installer is made from the source above together with the lib
 | NVIDIA NeMo TitaNet-small, © NVIDIA, converted to ONNX by the sherpa-onnx project ([download](https://github.com/k2-fsa/sherpa-onnx/releases/tag/speaker-recongition-models)) | [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/) | Tells voices apart. Downloaded with the model above; not in the installers. Its attribution is below |
 | [Tauri](https://tauri.app) 2, with wry, tao and its plugins, © the Tauri Programme within The Commons Conservancy | Apache-2.0 or MIT (tao: Apache-2.0) | The application framework: windows, tray, the bundler that makes the installers |
 | [Svelte](https://svelte.dev) 5 and its runtime packages (clsx, esm-env), `@tauri-apps/api`, `@tauri-apps/plugin-opener` | MIT; the two Tauri packages Apache-2.0 or MIT | The interface of the windows |
+| [Be Vietnam Pro](https://github.com/bettergui/BeVietnamPro) 1.002 (regular, medium and semibold), Copyright 2021 The Be Vietnam Pro Project Authors | SIL Open Font License 1.1 (OFL-1.1) | The typeface of the Settings and meetings windows. The three WOFF2 files are bundled in the interface (`app/ui/src/fonts/`, with their `OFL.txt`), so no window loads a font from the network; the system font is the fallback. See the note below |
 | [Symphonia](https://github.com/pdeljanov/Symphonia) | **MPL-2.0** | Decodes MP3, AAC, FLAC, Vorbis and the other audio formats that Loah reads itself. Linked into the program; see section 4 |
 | Microsoft Visual C++ runtime (`vcruntime140.dll`, `vcruntime140_1.dll`, `msvcp140.dll`, `msvcp140_1.dll`) | The Microsoft license terms for the Visual C++ Redistributable, which allow deployment next to the program | Windows only, next to `loah.exe`, so that a Windows without the runtime starts the app |
 
 **Attribution for NVIDIA NeMo TitaNet-small (CC BY 4.0).** The speaker model "TitaNet-small" (`titanet_small` of [NVIDIA NeMo](https://github.com/NVIDIA/NeMo)) is © NVIDIA and is licensed under the [Creative Commons Attribution 4.0 International license](https://creativecommons.org/licenses/by/4.0/). The change that was made to it: it was converted to the ONNX format by the sherpa-onnx project, and Loah downloads that file (`nemo_en_titanet_small.onnx`, from <https://github.com/k2-fsa/sherpa-onnx/releases/tag/speaker-recongition-models>) and uses it as it is. NVIDIA does not endorse Loah.
+
+**Be Vietnam Pro (SIL OFL 1.1).** The font files are the ones of the project's repository ([github.com/bettergui/BeVietnamPro](https://github.com/bettergui/BeVietnamPro), `fonts/webfonts/`), used as they are, with the license that goes with them (Copyright 2021 The Be Vietnam Pro Project Authors). The OFL lets a font be bundled and redistributed with software as long as it is not sold by itself and its copyright notice and license stay with it: the license is in `app/ui/src/fonts/OFL.txt`, and its text is in `THIRD_PARTY_LICENSES.txt` (part 1).
 
 **Copyright lines of the MIT components** (their full texts are in `THIRD_PARTY_LICENSES.txt`): whisper.cpp and ggml, "Copyright (c) 2023-2024 The ggml authors"; the Whisper models and code, "Copyright (c) 2022 OpenAI"; pyannote segmentation 3.0, "Copyright (c) 2022 CNRS"; ONNX Runtime, "Copyright (c) Microsoft Corporation". The Apache-2.0 sherpa-onnx has no `NOTICE` file and neither does ONNX Runtime; where a Rust crate ships one, it is in `THIRD_PARTY_LICENSES.txt` under that crate.
 

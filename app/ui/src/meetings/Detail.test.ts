@@ -244,6 +244,16 @@ test("Copy summary copies the Markdown that the model wrote", async () => {
   expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument();
 });
 
+test("the_header_has_three_weights_Copy_summary_and_Export_are_outlined_and_the_more_menu_is_plain", async () => {
+  await opened();
+
+  for (const name of ["Copy summary", "Export"]) {
+    expect(button(name), name).not.toHaveClass("primary");
+    expect(button(name), name).not.toHaveClass("plain");
+  }
+  expect(button(MORE)).toHaveClass("plain");
+});
+
 test("a recording with no summary has no Copy summary", async () => {
   await opened(whole({ summary: null }));
   expect(screen.queryByRole("button", { name: "Copy summary" })).not.toBeInTheDocument();

@@ -168,7 +168,8 @@
     flex-direction: column;
     min-height: 0;
   }
-  /* The parts of the summary scroll; the questions under them do not. */
+  /* The parts of the summary scroll; the questions under them do not. The text is for reading: 14 px, a line height of 1.55 (room for
+     the marks of Vietnamese), and no line wider than 75 characters. */
   .sections {
     display: flex;
     flex: 1 1 auto;
@@ -177,6 +178,11 @@
     min-height: 0;
     padding-bottom: 8px;
     overflow-y: auto;
+    font-size: 14px;
+    line-height: 1.55;
+  }
+  .sections section {
+    max-width: 75ch;
   }
   section h2 {
     margin-bottom: 4px;
@@ -191,6 +197,9 @@
   .bullets {
     margin: 0;
     padding-left: 18px;
+  }
+  .bullets li + li {
+    margin-top: 4px;
   }
   .head {
     display: flex;
@@ -258,8 +267,10 @@
   }
   .stamp {
     margin-right: 6px;
+    font-family: var(--mono);
+    font-size: 0.92em;
     font-variant-numeric: tabular-nums;
-    color: var(--accent);
+    color: var(--ts);
   }
   .chip:disabled .stamp {
     color: inherit;

@@ -26,7 +26,7 @@
   const missing = $derived(detail?.mediaMissing === true);
 </script>
 
-<Menu text="⋯" label={t("meetings.more")} glyph>
+<Menu text="⋯" label={t("meetings.more")} glyph plain>
   {#snippet children(pick)}
     {#if !busy}
       <button type="button" disabled={!hasTranscript} onclick={() => pick(() => store.resummarize(row.id))}>{t("meetings.menu.resummarize")}</button>
