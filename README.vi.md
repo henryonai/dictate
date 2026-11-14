@@ -81,7 +81,7 @@ Dictate chưa có chứng chỉ ký, nên bộ cài macOS và Windows chưa đư
   xattr -dr com.apple.quarantine /Applications/Dictate.app
   ```
 
-- **Windows:** SmartScreen hiện "Windows protected your PC". Bấm **More info**, rồi **Run anyway**.
+- **Windows:** SmartScreen hiện "Windows protected your PC". Bấm **More info**, rồi **Run anyway**. Trên Windows 11 đang bật **Smart App Control** (bản Windows 11 mới cài có thể đã bật sẵn; xem ở Settings → Privacy & security → Windows Security → App & browser control → Smart App Control settings) thì không có nút đó: nó chặn thẳng bộ cài chưa ký. Tắt nó đi thì bộ cài chạy được, nhưng Microsoft không cho bật lại nếu không đặt lại (reset) hoặc cài lại Windows, nên hãy cân nhắc trước khi tắt trên máy quan trọng.
 - **Linux:** không cần cho phép gì.
 
 ### Kiểm tra bản tải về
@@ -109,6 +109,25 @@ Checksum lấy từ cùng một trang chỉ cho biết file tải về còn nguy
 ### Cập nhật
 
 Chưa có cập nhật tự động: hãy tải bộ cài mới rồi cài đè lên bản cũ (trên Mac, thoát Dictate rồi kéo app mới đè lên app cũ; trên Linux, `sudo apt install` file `.deb` mới). Cài đặt, model và thư viện cuộc họp của bạn vẫn nằm nguyên chỗ cũ. Các bản build chưa ký, nên sau khi cập nhật macOS có thể xem app là một app khác và hỏi lại các quyền: xem [Lần chạy đầu tiên](#lần-chạy-đầu-tiên).
+
+### Gỡ cài đặt
+
+Hãy thoát Dictate trước (biểu tượng trên khay hoặc thanh menu, **Quit**). Các bản ghi của bạn, trong thư mục `Dictate Meetings` của Documents, không bao giờ bị xóa.
+
+- **macOS:** kéo `Dictate.app` từ Applications vào Thùng rác. Cài đặt, model và các đoạn đọc đã lưu vẫn nằm trong `~/Library/Application Support/Dictate`, còn khóa API nằm trong Keychain Access (các mục có service là `Dictate`).
+- **Windows:** Settings → Apps → Installed apps → Dictate → Uninstall. Trình gỡ chỉ gỡ chương trình (file và lối tắt), không đụng đến dữ liệu của bạn, **và ô "Delete the application data" cũng không đổi điều đó:** nó chỉ xóa các thư mục đặt theo mã định danh của app (`io.github.henryonai.dictate`). Các model giọng nói đã tải và các đoạn đọc đã lưu vẫn nằm trong `%LOCALAPPDATA%\Dictate`, cài đặt trong `%APPDATA%\Dictate`, còn khóa API trong Credential Manager (`default.Dictate` và `transcribe.Dictate`). Muốn xóa luôn, sau khi gỡ, chạy trong PowerShell:
+
+  ```powershell
+  Remove-Item -Recurse -Force "$env:LOCALAPPDATA\Dictate", "$env:APPDATA\Dictate"
+  cmdkey /delete:default.Dictate
+  cmdkey /delete:transcribe.Dictate
+  ```
+
+- **Linux:** `sudo apt remove dictate` gỡ chương trình. Cài đặt (`~/.config/Dictate`), model và các đoạn đọc đã lưu (`~/.local/share/Dictate`) vẫn còn, khóa API trong Secret Service (ứng dụng Passwords and Keys) cũng vậy. Muốn xóa luôn các file:
+
+  ```sh
+  rm -rf ~/.config/Dictate ~/.local/share/Dictate
+  ```
 
 ### Thay bản Dictate viết bằng Swift trên macOS
 

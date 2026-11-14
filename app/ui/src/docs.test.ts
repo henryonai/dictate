@@ -160,6 +160,34 @@ describe("the two READMEs", () => {
     expect(readmeVi).toMatch(/mất điện/i);
   });
 
+  test("the_readmes_say_that_a_windows_uninstall_leaves_the_models_the_settings_and_the_keys_and_how_to_remove_them", () => {
+    // The uninstaller of the bundler removes the program, and its box "Delete the application data" only the folders named after the identifier
+    // of the app: what Dictate keeps lives elsewhere. The place of each (the folders of the app and the two entries of the credential store) is
+    // what the code uses; the commands are the same in both languages (a test above compares the code blocks).
+    for (const text of [readme, readmeVi]) {
+      expect(text).toContain("Delete the application data");
+      expect(text).toContain("%LOCALAPPDATA%\\Dictate");
+      expect(text).toContain("%APPDATA%\\Dictate");
+      expect(text).toContain("Credential Manager");
+      expect(text).toContain('Remove-Item -Recurse -Force "$env:LOCALAPPDATA\\Dictate", "$env:APPDATA\\Dictate"');
+      expect(text).toContain("cmdkey /delete:default.Dictate");
+      expect(text).toContain("cmdkey /delete:transcribe.Dictate");
+      expect(text).toContain("sudo apt remove dictate");
+    }
+    // The names of the credentials are the ones of the code (service `Dictate`, accounts `default` and `transcribe`).
+    const secrets = read("crates/dictate-services/src/secrets.rs");
+    expect(secrets).toContain('pub const SERVICE: &str = "Dictate";');
+    expect(secrets).toContain('Account::Ai => "default"');
+    expect(secrets).toContain('Account::Transcribe => "transcribe"');
+  });
+
+  test("the_readmes_say_what_smart_app_control_of_windows_11_does_to_an_unsigned_installer", () => {
+    for (const text of [readme, readmeVi]) {
+      expect(text).toContain("Smart App Control");
+    }
+    expect(readme).toMatch(/Smart App Control[^.]*no such button[^.]*blocks an unsigned installer/i);
+  });
+
   test("the_readmes_replace_the_swift_app_and_say_what_has_to_be_done_again", () => {
     expect(readme).toMatch(/Swift/);
     expect(readmeVi).toMatch(/Swift/);

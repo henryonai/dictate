@@ -81,7 +81,7 @@ Dictate has no signing certificate yet, so the macOS and Windows installers are 
   xattr -dr com.apple.quarantine /Applications/Dictate.app
   ```
 
-- **Windows:** SmartScreen shows "Windows protected your PC". Click **More info**, then **Run anyway**.
+- **Windows:** SmartScreen shows "Windows protected your PC". Click **More info**, then **Run anyway**. On Windows 11 with **Smart App Control** turned on (a new install of Windows 11 may have it on; Settings → Privacy & security → Windows Security → App & browser control → Smart App Control settings shows it) there is no such button: it blocks an unsigned installer outright. Turning it off lets the installer run, but Microsoft does not let you turn it back on without resetting or reinstalling Windows, so think before you do it on a computer you care about.
 - **Linux:** nothing to allow.
 
 ### Verify the download
@@ -109,6 +109,25 @@ A checksum from the same page shows that the download is whole, not who made it.
 ### Updating
 
 There are no automatic updates yet: download the new installer and install it over the old one (on a Mac, quit Dictate and drag the new app over the old one; on Linux, `sudo apt install` the new `.deb`). Your settings, models and library stay where they are. The builds are unsigned, so after an update macOS may take the app for a different one and ask for the permissions again: see [First run](#first-run).
+
+### Uninstalling
+
+Quit Dictate first (the tray or menu bar icon, **Quit**). Your recordings, in the `Dictate Meetings` folder of your Documents, are never removed.
+
+- **macOS:** drag `Dictate.app` from Applications to the Trash. The settings, the models and the saved dictations stay in `~/Library/Application Support/Dictate`, and the API keys in Keychain Access (the items whose service is `Dictate`).
+- **Windows:** Settings → Apps → Installed apps → Dictate → Uninstall. The uninstaller removes the program (its files and shortcuts) and none of your data, **and the box "Delete the application data" does not change that:** it removes only the folders that are named after the identifier of the app (`io.github.henryonai.dictate`). The downloaded speech models and the saved dictations stay in `%LOCALAPPDATA%\Dictate`, the settings in `%APPDATA%\Dictate`, and the API keys in Credential Manager (`default.Dictate` and `transcribe.Dictate`). To remove them too, after the uninstall, in PowerShell:
+
+  ```powershell
+  Remove-Item -Recurse -Force "$env:LOCALAPPDATA\Dictate", "$env:APPDATA\Dictate"
+  cmdkey /delete:default.Dictate
+  cmdkey /delete:transcribe.Dictate
+  ```
+
+- **Linux:** `sudo apt remove dictate` removes the program. The settings (`~/.config/Dictate`), the models and the saved dictations (`~/.local/share/Dictate`) stay, and so do the API keys in the Secret Service (the Passwords and Keys app). To remove the files too:
+
+  ```sh
+  rm -rf ~/.config/Dictate ~/.local/share/Dictate
+  ```
 
 ### Replacing the Swift Dictate on macOS
 
