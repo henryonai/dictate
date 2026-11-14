@@ -121,6 +121,20 @@ describe("the config of release-please", () => {
     // The successor of Swift Dictate 1.3.0. The task that cuts the release removes this line, so that the next one follows the commits.
     expect(config()["release-as"]).toBe("2.0.0");
   });
+
+  test("the_readme_says_to_remove_this_test_with_the_release_as_line_in_the_same_commit", () => {
+    // Removing the line alone turns the test above red, and so CI: the step of the README that tells the maintainer to remove the line
+    // must tell them to remove that test too, with the name of the test and the file it is in.
+    const step = read("app/README.md")
+      .split("\n")
+      .find((line) => line.includes("`release-as`"));
+    expect(step, "the step of app/README.md that has the release-as line").toBeDefined();
+    expect(step).toContain("the_first_release_is_2_0_0");
+    expect(step).toContain("app/ui/src/release-config.test.ts");
+    expect(step).toMatch(/same commit/);
+    // And the test it names is still there.
+    expect(read("app/ui/src/release-config.test.ts")).toContain('test("the_first_release_is_2_0_0"');
+  });
 });
 
 describe("the workflow of release-please", () => {
