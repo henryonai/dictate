@@ -25,8 +25,10 @@
 #     is how the program finds them, and no other entry in its RPATH or RUNPATH (the ones of a build in the source tree would make it look in
 #     /usr and in /);
 #   - a dependency on libpipewire in `Depends` (the program does not start without it).
-# The installer for Windows: the three DLLs of the runtime of Visual C++ (vcruntime140.dll, vcruntime140_1.dll, msvcp140.dll) next to the
-# program: a Windows that has no runtime would not start it.
+# The installer for Windows: the four DLLs of the runtime of Visual C++ (vcruntime140.dll, vcruntime140_1.dll, msvcp140.dll, msvcp140_1.dll)
+# next to the program: a Windows that has no runtime would not start it. And every DLL of that family that a program or a DLL of the
+# installer asks for by name (read from its bytes: msvcp, vcruntime, concrt, vcomp or vccorlib and a number, such as MSVCP140_1.dll) is
+# beside it too, so that the next import that a new dependency brings in is found here and not on a clean Windows.
 # The disk image for macOS: Info.plist has NSMicrophoneUsageDescription, NSScreenCaptureUsageDescription and LSMinimumSystemVersion 13.0,
 # `codesign --verify --strict` passes on the app and on both sidecars (the signature of a sidecar that was written over is broken, and
 # macOS kills the program), and each of the three programs is of the architecture that the name of the image says (`lipo -archs`;
@@ -326,9 +328,19 @@ check_deb() {
 }
 
 check_windows() {
-  local dll
-  for dll in vcruntime140.dll vcruntime140_1.dll msvcp140.dll; do
+  local dll file name
+  for dll in vcruntime140.dll vcruntime140_1.dll msvcp140.dll msvcp140_1.dll; do
     [ -f "$root/$dll" ] || problem "$dll is not next to dictate.exe: a Windows without the runtime of Visual C++ would not start it"
+  done
+  # What the programs and the DLLs ask for: the names are in the import table as plain text, in the capitals of the linker, and the files
+  # of the installer are in small letters. (find -iname: a file system that tells the two apart is the one of the Linux that unpacks it.)
+  for file in "$root"/*.exe "$root"/*.dll; do
+    [ -f "$file" ] || continue
+    for name in $(grep -a -o -i -E '(msvcp|vcruntime|concrt|vcomp|vccorlib)[0-9]+[a-z0-9_]*\.dll' "$file" | tr 'A-Z' 'a-z' | sort -u); do
+      if [ -z "$(find "$root" -maxdepth 1 -iname "$name" -print -quit)" ]; then
+        problem "$(basename "$file") asks for $name, which is not next to it: a Windows without the runtime of Visual C++ would not start it"
+      fi
+    done
   done
 }
 

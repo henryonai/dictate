@@ -689,7 +689,12 @@ fn stage_sidecars_puts_the_sherpa_libraries_of_linux_in_the_libs_folder_and_only
 #[test]
 fn stage_sidecars_puts_the_runtime_of_visual_c_for_windows_in_the_libs_folder_and_only_there() {
     let windows = destinations(&stage(&["--dry-run", "x86_64-pc-windows-msvc"]));
-    for dll in ["vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"] {
+    for dll in [
+        "vcruntime140.dll",
+        "vcruntime140_1.dll",
+        "msvcp140.dll",
+        "msvcp140_1.dll",
+    ] {
         assert!(
             windows.contains(&format!("app/src-tauri/libs/{dll}")),
             "{dll} in {windows:?}"

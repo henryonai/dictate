@@ -12,8 +12,8 @@
 #   - the ffmpeg: app/src-tauri/binaries/dictate-ffmpeg-TARGET[.exe]
 #   - Linux: the two libraries of sherpa-onnx (libsherpa-onnx-c-api.so, libonnxruntime.so) in app/src-tauri/libs/, from
 #     SHERPA_ONNX_LIB_DIR (scripts/fetch-sherpa-onnx-no-tts.sh prints it; target/sherpa-onnx-no-tts/lib unless it is set)
-#   - Windows: the runtime of Visual C++ (vcruntime140.dll, vcruntime140_1.dll, msvcp140.dll) in app/src-tauri/libs/, from the
-#     redistributable folder of the Visual Studio of the machine (VC_REDIST_DIR, when it is set, names the folder of the three)
+#   - Windows: the runtime of Visual C++ (vcruntime140.dll, vcruntime140_1.dll, msvcp140.dll, msvcp140_1.dll) in app/src-tauri/libs/,
+#     from the redistributable folder of the Visual Studio of the machine (VC_REDIST_DIR, when it is set, names the folder of the four)
 #   - every system: the license files in app/src-tauri/licenses/ (LICENSE, THIRD_PARTY_NOTICES.md, THIRD_PARTY_LICENSES.txt, COPYING.LGPLv2.1,
 #     from the root of the repository), which the release overlays put in the installer: the licenses of what is inside ask that their texts
 #     go with it. THIRD_PARTY_LICENSES.txt is written by scripts/generate-licenses.py
@@ -94,7 +94,7 @@ case "$target" in
       fi
       [ -n "$redist" ] || fail "the redistributable folder of Visual C++ was not found: set VC_REDIST_DIR to the folder that has vcruntime140.dll"
     fi
-    for dll in vcruntime140.dll vcruntime140_1.dll msvcp140.dll; do
+    for dll in vcruntime140.dll vcruntime140_1.dll msvcp140.dll msvcp140_1.dll; do
       copies+=("${redist:-<VC_REDIST_DIR>}/$dll -> $lib_dir/$dll")
       needed+=("$redist/$dll")
       hints+=("VC_REDIST_DIR is not the folder of the runtime of Visual C++")

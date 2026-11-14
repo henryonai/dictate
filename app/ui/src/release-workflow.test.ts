@@ -174,7 +174,7 @@ describe("the Tauri build", () => {
   });
 
   test("the_windows_runtime_goes_next_to_the_program_through_a_second_overlay_that_only_the_windows_row_gets", () => {
-    // `bundle.resources` is read on every system, and the three DLLs exist only where stage-sidecars.sh staged them: in the file that
+    // `bundle.resources` is read on every system, and the DLLs exist only where stage-sidecars.sh staged them: in the file that
     // every row gets they would fail the macOS and Linux builds (a missing resource is an error).
     expect(readJson("app/src-tauri/tauri.release.conf.json").bundle).not.toHaveProperty("resources");
     const windows = readJson("app/src-tauri/tauri.release.windows.conf.json");
@@ -182,6 +182,7 @@ describe("the Tauri build", () => {
       "libs/vcruntime140.dll": "vcruntime140.dll",
       "libs/vcruntime140_1.dll": "vcruntime140_1.dll",
       "libs/msvcp140.dll": "msvcp140.dll",
+      "libs/msvcp140_1.dll": "msvcp140_1.dll",
       // The license files go in a `Licenses` folder of the install folder, next to the program.
       ...Object.fromEntries(LICENSE_FILES.map((name) => [`licenses/${name}`, `Licenses/${name}`])),
     });

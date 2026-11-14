@@ -85,7 +85,12 @@ fn licenses(folder: &Path) {
         write(&folder.join(name), "a license text\n");
     }
 }
-const VC_DLLS: [&str; 3] = ["vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"];
+const VC_DLLS: [&str; 4] = [
+    "vcruntime140.dll",
+    "vcruntime140_1.dll",
+    "msvcp140.dll",
+    "msvcp140_1.dll",
+];
 
 /// What an unpacked `.deb` has: `usr/bin/dictate` and its two sidecars, the two libraries, and the `DEBIAN/control` that `dpkg-deb -R` writes.
 fn deb(root: &Path) {
@@ -582,13 +587,68 @@ fn a_windows_tree_without_a_sidecar_fails_and_says_which() {
 
 #[test]
 fn a_windows_tree_without_one_of_the_runtime_dlls_fails_and_says_which() {
-    // A Windows without the runtime of Visual C++ does not start the app: the three DLLs go beside dictate.exe.
+    // A Windows without the runtime of Visual C++ does not start the app: the four DLLs go beside dictate.exe.
     for dll in VC_DLLS {
         let root = tree(windows);
         fs::remove_file(root.path().join(dll)).unwrap();
 
         assert_fails(&Tools::new().run(root.path()), &[dll]);
     }
+}
+
+#[test]
+fn a_windows_program_that_asks_for_a_runtime_dll_that_is_not_beside_it_fails_and_names_both() {
+    // The first dry run's dictate.exe imported msvcp140_1.dll (std::pmr), and the installer had only the three that the list named then: a Windows without
+    // the runtime would not have started it. What a program asks for is read from its bytes, in the capitals of the import table.
+    let root = tree(windows);
+    write_program(
+        &root.path().join("dictate.exe"),
+        "MZ stand-in\0KERNEL32.dll\0MSVCP140.dll\0MSVCP140_1.dll\0VCRUNTIME140.dll\0",
+    );
+    fs::remove_file(root.path().join("msvcp140_1.dll")).unwrap();
+    // A file that needs only what is there passes: the same program, with the DLL beside it.
+    let complete = tree(windows);
+    write_program(
+        &complete.path().join("dictate.exe"),
+        "MZ stand-in\0KERNEL32.dll\0MSVCP140.dll\0MSVCP140_1.dll\0VCRUNTIME140.dll\0",
+    );
+
+    assert_fails(
+        &Tools::new().run(root.path()),
+        &["dictate.exe", "msvcp140_1.dll"],
+    );
+    assert_passes(&Tools::new().run(complete.path()));
+}
+
+#[test]
+fn every_program_and_dll_of_the_installer_is_read_for_the_runtime_it_asks_for() {
+    // The MCP server, and a DLL of the installer that needs one more DLL of the family (the ones of the runtime of Visual C++, whatever their
+    // number: msvcp, vcruntime, concrt, vcomp, vccorlib).
+    for (file, text, missing) in [
+        (
+            "dictate-mcp.exe",
+            "MZ\0VCRUNTIME140_THREADS.dll\0",
+            "vcruntime140_threads.dll",
+        ),
+        ("msvcp140.dll", "MZ\0CONCRT140.dll\0", "concrt140.dll"),
+        ("dictate.exe", "MZ\0vcomp140.dll\0", "vcomp140.dll"),
+    ] {
+        let root = tree(windows);
+        write_program(&root.path().join(file), text);
+
+        assert_fails(&Tools::new().run(root.path()), &[file, missing]);
+    }
+}
+
+#[test]
+fn the_dlls_of_windows_itself_are_not_asked_to_be_in_the_installer() {
+    let root = tree(windows);
+    write_program(
+        &root.path().join("dictate.exe"),
+        "MZ\0KERNEL32.dll\0api-ms-win-crt-runtime-l1-1-0.dll\0USER32.dll\0ucrtbase.dll\0d3d11.dll\0",
+    );
+
+    assert_passes(&Tools::new().run(root.path()));
 }
 
 #[test]
