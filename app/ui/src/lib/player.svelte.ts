@@ -10,6 +10,10 @@
 // An error with the address that is still the right one is a file that the element can't play (a `.mkv`): the player goes to the
 // `audio.m4a` made from it, once, when there is one (the media then has a `fallbackUrl`), and says so when there is none or when that
 // can't be played either.
+//
+// It also knows how the recording is shown, because the element is the one that can tell: a file that has a picture is a video in a box
+// (small, large, or hidden by choice: the same element goes on playing, only not drawn), and one that has none (an audio file with a
+// video extension, or a video whose picture the system can't decode: `videoWidth` is 0 once its metadata has loaded) is the slim bar.
 import { api } from "./api";
 import type { MediaView } from "./api";
 import { onLinux } from "../panel/state";
@@ -20,6 +24,30 @@ export const TICK_MS = 500;
 export const STALL_MS = 8000;
 /** How many new addresses in a row may fail before the file is given up. */
 const MAX_RECOVERIES = 3;
+
+/** How the picture of a video is shown: in a small box, in a large one, or not at all (the slim bar plays the sound). */
+export type PlayerSize = "small" | "large" | "hidden";
+/** Where the choice is kept, across recordings and launches. */
+export const SIZE_KEY = "loah.player.size";
+
+/** The size that was chosen last time; small when none was, or when the store can't be read (it may be off). */
+function storedSize(): PlayerSize {
+  try {
+    const stored = localStorage.getItem(SIZE_KEY);
+    if (stored === "small" || stored === "large" || stored === "hidden") return stored;
+  } catch {
+    // A store that is not there or refuses: the choice holds for this window only.
+  }
+  return "small";
+}
+
+function storeSize(size: PlayerSize): void {
+  try {
+    localStorage.setItem(SIZE_KEY, size);
+  } catch {
+    // As above.
+  }
+}
 
 /** The media of a recording as the Rust side has it now: another address than before when the server was built again. */
 export type FetchMedia = (id: string) => Promise<MediaView | null>;
@@ -40,10 +68,28 @@ export class PlayerController {
   video = $state(false);
   /** Where the recording plays from: empty when it has no media, or when the player let go of it. */
   url = $state("");
+  /** How long it plays, in seconds; 0 until the element knows. */
+  duration = $state(0);
+  /** How fast it plays (the slim bar's 1×, 1.5× and 2×): kept from one recording to the next. */
+  rate = $state(1);
+  /** The size that the person chose for the picture of a video: kept in the store, and read again at the next launch. */
+  size = $state<PlayerSize>(storedSize());
+  /** The element has loaded and the "video" has no picture: it is an audio file, whatever its extension says. */
+  noPicture = $state(false);
 
   /** There is something to play and nothing has failed: the element is shown, and a seek is heard. */
   get available(): boolean {
     return this.url !== "" && !this.failed;
+  }
+
+  /** The recording has a picture that can be shown: a video, until the element says that it has none. */
+  get hasPicture(): boolean {
+    return this.video && !this.noPicture;
+  }
+
+  /** The picture is on screen: there is one, and it was not hidden. Otherwise the slim bar is. */
+  get showsPicture(): boolean {
+    return this.hasPicture && this.size !== "hidden";
   }
 
   private readonly fetchMedia: FetchMedia;
@@ -66,6 +112,8 @@ export class PlayerController {
   private released = false;
   /** How many times `pause()` was called: a seek that was waiting when it grew was paused, and does not play. */
   private pauses = 0;
+  /** The size that the picture comes back to when it is shown again after it was hidden. */
+  private visibleSize: "small" | "large" = this.size === "large" ? "large" : "small";
 
   constructor(fetchMedia: FetchMedia = fromServer) {
     this.fetchMedia = fetchMedia;
@@ -110,6 +158,7 @@ export class PlayerController {
       canplay: () => this.clearBackstop(),
       emptied: () => this.clearBackstop(),
       loadedmetadata: () => this.onLoaded(),
+      durationchange: () => this.readDuration(),
       waiting: () => this.startBackstop(),
       stalled: () => this.startBackstop(),
       error: () => {
@@ -118,8 +167,57 @@ export class PlayerController {
     };
     for (const [type, handler] of Object.entries(this.handlers)) element.addEventListener(type, handler);
     this.ticker = setInterval(() => this.tick(), TICK_MS);
+    this.applyRate(element);
     if (this.url) element.src = this.url;
     return () => this.detach(element);
+  }
+
+  /** Plays, or pauses when it plays: the button of the slim bar. Heard only when there is a player. */
+  toggle(): void {
+    const element = this.element;
+    if (!element || this.released || !this.available) return;
+    if (element.paused) this.play(element);
+    else this.pause();
+  }
+
+  /**
+   * Goes to the second and leaves it as it was, playing or paused: the slider of the slim bar. (`seek` goes there to play.) A new address
+   * that has not loaded is told to go there when it has. Heard only when there is a player.
+   */
+  scrub(seconds: number): void {
+    const element = this.element;
+    if (!element || this.released || !this.available) return;
+    this.currentTime = seconds;
+    if (this.pending) this.pending = { ...this.pending, at: seconds };
+    else element.currentTime = seconds;
+  }
+
+  /** How fast it plays: it is kept for the recordings that follow. */
+  setRate(rate: number): void {
+    this.rate = rate;
+    if (this.element) this.applyRate(this.element);
+  }
+
+  /** The size of the picture: kept for the next recording and the next launch. */
+  setSize(size: PlayerSize): void {
+    this.size = size;
+    if (size !== "hidden") this.visibleSize = size;
+    storeSize(size);
+  }
+
+  /** The picture of a video, from small to large and back. */
+  toggleLarge(): void {
+    this.setSize(this.size === "large" ? "small" : "large");
+  }
+
+  /** The picture goes away and the sound goes on: it is the same element, and it is not told to stop. */
+  hideVideo(): void {
+    this.setSize("hidden");
+  }
+
+  /** The picture comes back, as large as it was before it was hidden. */
+  showVideo(): void {
+    this.setSize(this.visibleSize);
   }
 
   /** Goes to the second, exactly, and plays. Heard only when there is a player. */
@@ -195,6 +293,8 @@ export class PlayerController {
     this.playing = false;
     this.failed = false;
     this.video = false;
+    this.noPicture = false;
+    this.duration = 0;
     this.url = "";
     this.wasPaused = true;
     this.queued = null;
@@ -243,10 +343,27 @@ export class PlayerController {
     const element = this.element;
     const pending = this.pending;
     this.pending = null;
+    if (element) {
+      // A video that has loaded and has no width has no picture. (Another element than a video has no width to tell: not 0.)
+      this.noPicture = this.video && (element as Partial<HTMLVideoElement>).videoWidth === 0;
+      this.readDuration();
+      // Loading an address puts the element back to the normal speed.
+      this.applyRate(element);
+    }
     if (!element || !pending) return;
     element.currentTime = pending.at;
     this.currentTime = pending.at;
     if (pending.resume) this.play(element);
+  }
+
+  private readDuration(): void {
+    const seconds = this.element?.duration;
+    this.duration = seconds !== undefined && Number.isFinite(seconds) ? seconds : 0;
+  }
+
+  private applyRate(element: HTMLMediaElement): void {
+    element.defaultPlaybackRate = this.rate;
+    element.playbackRate = this.rate;
   }
 
   private startBackstop(): void {

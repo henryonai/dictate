@@ -1,13 +1,14 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { MediaView } from "./api";
 import { FakeMedia, fakeMedia } from "../test-helpers";
-import { PlayerController, STALL_MS, TICK_MS } from "./player.svelte";
+import { PlayerController, SIZE_KEY, STALL_MS, TICK_MS } from "./player.svelte";
 import type { FetchMedia } from "./player.svelte";
 
 const ID = "2026-03-02 10-00-00";
 /** The address of the server as it was, and as it is after the app started it again: another port and another token. */
 const OLD = fakeMedia({ url: "http://127.0.0.1:41000/tok-a/1" });
 const NEW = fakeMedia({ url: "http://127.0.0.1:52000/tok-b/1" });
+const AUDIO = fakeMedia({ url: "http://127.0.0.1:41000/tok-a/audio", video: false });
 
 let element: FakeMedia;
 let fetchMedia: ReturnType<typeof vi.fn<FetchMedia>>;
@@ -34,6 +35,7 @@ function deferred<T>() {
 
 beforeEach(() => {
   vi.useFakeTimers();
+  localStorage.clear();
 });
 
 afterEach(() => {
@@ -834,5 +836,148 @@ describe("release: what Windows needs before it moves a folder to the Trash", ()
     expect(again.currentTime).toBe(33);
     // It does not start on its own.
     expect(again.play).not.toHaveBeenCalled();
+  });
+});
+
+describe("the controls of the slim bar", () => {
+  test("toggle plays a paused element and pauses a playing one, and does nothing with no media", () => {
+    const { player } = setup();
+
+    player.toggle();
+    expect(element.calls).toEqual(["play"]);
+    player.toggle();
+    expect(element.calls).toEqual(["play", "pause"]);
+
+    player.release();
+    element.calls.length = 0;
+    player.toggle();
+    expect(element.calls).toEqual([]);
+  });
+
+  test("scrub goes to the second and leaves the element as it was: playing stays playing, paused stays paused", () => {
+    const { player } = setup();
+    player.scrub(40);
+    expect(element.currentTime).toBe(40);
+    expect(player.currentTime).toBe(40);
+    expect(element.calls).toEqual([]);
+
+    element.playAt(50);
+    player.scrub(70);
+    expect(element.currentTime).toBe(70);
+    expect(element.paused).toBe(false);
+    expect(element.pause).not.toHaveBeenCalled();
+  });
+
+  test("a scrub while a new address loads is where it goes when it has loaded, and does not move the element", async () => {
+    const { player } = setup(NEW);
+    await player.seek(65);
+    expect(element.src).toBe(NEW.url);
+
+    player.scrub(90);
+    expect(element.currentTime).toBe(0);
+    expect(player.currentTime).toBe(90);
+    element.emit("loadedmetadata");
+    expect(element.currentTime).toBe(90);
+  });
+
+  test("the speed is put on the element when it attaches, when it is chosen, and again when an address has loaded", () => {
+    const { player } = setup();
+    expect((element as unknown as HTMLMediaElement).playbackRate).toBe(1);
+
+    player.setRate(1.5);
+    expect(player.rate).toBe(1.5);
+    expect((element as unknown as HTMLMediaElement).playbackRate).toBe(1.5);
+
+    // A load puts the element back to the normal speed.
+    (element as unknown as HTMLMediaElement).playbackRate = 1;
+    element.emit("loadedmetadata");
+    expect((element as unknown as HTMLMediaElement).playbackRate).toBe(1.5);
+
+    // The next recording and the next element have it too.
+    player.bind("another", fakeMedia({ url: "http://127.0.0.1:41000/tok-a/2" }));
+    const next = new FakeMedia();
+    player.attach(next as unknown as HTMLMediaElement);
+    expect((next as unknown as HTMLMediaElement).playbackRate).toBe(1.5);
+  });
+
+  test("the length is read from the element, and is 0 when it is not a number yet", () => {
+    const { player } = setup();
+    expect(player.duration).toBe(0);
+
+    Object.assign(element, { duration: 754 });
+    element.emit("durationchange");
+    expect(player.duration).toBe(754);
+
+    Object.assign(element, { duration: Number.NaN });
+    element.emit("durationchange");
+    expect(player.duration).toBe(0);
+
+    Object.assign(element, { duration: 90 });
+    element.emit("loadedmetadata");
+    expect(player.duration).toBe(90);
+    player.bind("another", null);
+    expect(player.duration).toBe(0);
+  });
+});
+
+describe("what a video shows", () => {
+  test("a video whose element has no width after its metadata has no picture; one that has a width, or says nothing, has", () => {
+    const { player } = setup();
+    expect(player.hasPicture).toBe(true);
+    expect(player.showsPicture).toBe(true);
+
+    Object.assign(element, { videoWidth: 0 });
+    element.emit("loadedmetadata");
+    expect(player.noPicture).toBe(true);
+    expect(player.hasPicture).toBe(false);
+    expect(player.showsPicture).toBe(false);
+
+    // The same recording at a new address, which has one.
+    Object.assign(element, { videoWidth: 1280 });
+    element.emit("loadedmetadata");
+    expect(player.showsPicture).toBe(true);
+
+    // An element that has no `videoWidth` at all (it is not a video element) is not a video with no picture.
+    Object.assign(element, { videoWidth: undefined });
+    element.emit("loadedmetadata");
+    expect(player.hasPicture).toBe(true);
+  });
+
+  test("audio has no picture to show, whatever the width", () => {
+    const { player } = setup(AUDIO, AUDIO);
+    Object.assign(element, { videoWidth: 1280 });
+    element.emit("loadedmetadata");
+    expect(player.video).toBe(false);
+    expect(player.hasPicture).toBe(false);
+    expect(player.noPicture).toBe(false);
+  });
+
+  test("another recording is looked at again, and the size that was chosen stays", () => {
+    const { player } = setup();
+    player.setSize("large");
+    Object.assign(element, { videoWidth: 0 });
+    element.emit("loadedmetadata");
+    expect(player.noPicture).toBe(true);
+
+    player.bind("another", fakeMedia({ url: "http://127.0.0.1:41000/tok-a/2" }));
+    expect(player.noPicture).toBe(false);
+    expect(player.size).toBe("large");
+  });
+
+  test("showing the video again brings back the size it had; a new player that starts hidden brings back small", () => {
+    const { player } = setup();
+    player.setSize("large");
+    player.hideVideo();
+    expect(player.size).toBe("hidden");
+    expect(localStorage.getItem(SIZE_KEY)).toBe("hidden");
+
+    player.showVideo();
+    expect(player.size).toBe("large");
+
+    player.hideVideo();
+    const next = new PlayerController(fetchMedia);
+    expect(next.size).toBe("hidden");
+    next.showVideo();
+    expect(next.size).toBe("small");
   });
 });

@@ -1,13 +1,15 @@
 //! Summaries of a recording's transcript, and questions about a recording. The prompts and the limits are the Swift
-//! app's (Summarizer.swift and MeetingManager.ask), word for word: the Vietnamese headings are part of the library's
-//! format, and `loah-mcp` and the summary view read them back.
+//! app's (Summarizer.swift and MeetingManager.ask), word for word, except that the summary prompt also asks for the time
+//! of each item: the Vietnamese headings are part of the library's format, and `loah-mcp` and the summary view read them
+//! back.
 
 use std::time::Duration;
 
 use crate::ai::{complete, AiConfig};
 use crate::http::ApiError;
 
-/// The system prompt of a summary: English instructions, Vietnamese headings.
+/// The system prompt of a summary: English instructions, Vietnamese headings. Each item of the key points, decisions, action items
+/// and open questions ends with the `[mm:ss]` of the moment it is based on, so that the window can link it to the recording.
 pub const SUMMARY_SYSTEM: &str = r#"You turn transcripts of recordings (meetings, calls, lectures, videos) into clear summaries.
 The transcript comes from automatic speech recognition: expect misheard words, missing punctuation and mixed Vietnamese/English. Infer the intended words from context, but never invent facts, names, numbers or commitments that are not supported by the transcript.
 Lines look like "[mm:ss] Speaker: text". The speaker is a generic label ("Speaker 1"), a real name the user gave, or missing, and labels may be imperfect. Refer to people by those real names when there are some (e.g. as owners).
@@ -19,15 +21,17 @@ Output GitHub-flavored Markdown with exactly these sections (omit a section only
 ## Tóm tắt
 3–6 sentences: what this was about and the outcome.
 ## Ý chính
-- key points, grouped logically, concrete (numbers, names, examples)
+- key points, grouped logically, concrete (numbers, names, examples) [mm:ss]
 ## Quyết định
-- decisions that were made
+- decisions that were made [mm:ss]
 ## Việc cần làm
-- [ ] **Owner** — task (deadline if mentioned)  ← no owner: "Chưa rõ", or "Unknown" when writing in English
+- [ ] **Owner** — task (deadline if mentioned) [mm:ss]  ← no owner: "Chưa rõ", or "Unknown" when writing in English
 ## Câu hỏi còn mở
-- unresolved questions / risks
+- unresolved questions / risks [mm:ss]
 ## Mốc thời gian
 - [mm:ss] topic — one line per major topic shift
+
+End every item of Ý chính, Quyết định, Việc cần làm and Câu hỏi còn mở with one [mm:ss]: the time of the transcript line the item is based on, copied from that line, after the item's text (and its deadline). Never invent a time. Leave it out only when no line supports the item. The reader follows it to that moment of the recording.
 
 Use the section headings above translated to the output language if it is not Vietnamese. No preamble before the title."#;
 
@@ -188,9 +192,10 @@ mod tests {
     const KEY: &str = "sk-test-key-123";
     const PROVIDERS: [AiProvider; 2] = [AiProvider::Anthropic, AiProvider::OpenAi];
 
-    /// The summary prompt as the reference (R4) and the Swift app have it, a line each, kept apart from the constant so
-    /// that a slip in either one shows. Vietnamese headings, an en dash, an arrow and two spaces before it included.
-    const R4_SYSTEM_LINES: [&str; 22] = [
+    /// The summary prompt as the reference (R4) and the Swift app have it, plus the time asked for on each item, a line
+    /// each, kept apart from the constant so that a slip in either one shows. Vietnamese headings, an en dash, an arrow and
+    /// two spaces before it included.
+    const R4_SYSTEM_LINES: [&str; 24] = [
         r#"You turn transcripts of recordings (meetings, calls, lectures, videos) into clear summaries."#,
         r#"The transcript comes from automatic speech recognition: expect misheard words, missing punctuation and mixed Vietnamese/English. Infer the intended words from context, but never invent facts, names, numbers or commitments that are not supported by the transcript."#,
         r#"Lines look like "[mm:ss] Speaker: text". The speaker is a generic label ("Speaker 1"), a real name the user gave, or missing, and labels may be imperfect. Refer to people by those real names when there are some (e.g. as owners)."#,
@@ -202,15 +207,17 @@ mod tests {
         r#"## Tóm tắt"#,
         r#"3–6 sentences: what this was about and the outcome."#,
         r#"## Ý chính"#,
-        r#"- key points, grouped logically, concrete (numbers, names, examples)"#,
+        r#"- key points, grouped logically, concrete (numbers, names, examples) [mm:ss]"#,
         r#"## Quyết định"#,
-        r#"- decisions that were made"#,
+        r#"- decisions that were made [mm:ss]"#,
         r#"## Việc cần làm"#,
-        r#"- [ ] **Owner** — task (deadline if mentioned)  ← no owner: "Chưa rõ", or "Unknown" when writing in English"#,
+        r#"- [ ] **Owner** — task (deadline if mentioned) [mm:ss]  ← no owner: "Chưa rõ", or "Unknown" when writing in English"#,
         r#"## Câu hỏi còn mở"#,
-        r#"- unresolved questions / risks"#,
+        r#"- unresolved questions / risks [mm:ss]"#,
         r#"## Mốc thời gian"#,
         r#"- [mm:ss] topic — one line per major topic shift"#,
+        "",
+        r#"End every item of Ý chính, Quyết định, Việc cần làm and Câu hỏi còn mở with one [mm:ss]: the time of the transcript line the item is based on, copied from that line, after the item's text (and its deadline). Never invent a time. Leave it out only when no line supports the item. The reader follows it to that moment of the recording."#,
         "",
         r#"Use the section headings above translated to the output language if it is not Vietnamese. No preamble before the title."#,
     ];
@@ -301,6 +308,47 @@ mod tests {
     fn summary_prompt_is_verbatim() {
         assert_eq!(SUMMARY_SYSTEM, R4_SYSTEM_LINES.join("\n"));
         assert_eq!(summary_system(""), SUMMARY_SYSTEM);
+    }
+
+    /// The lines of `SUMMARY_SYSTEM` between the heading `## <name>` and the next one.
+    fn section_lines(name: &str) -> Vec<&'static str> {
+        SUMMARY_SYSTEM
+            .lines()
+            .skip_while(|line| *line != format!("## {name}"))
+            .skip(1)
+            .take_while(|line| !line.starts_with("## ") && !line.is_empty())
+            .collect()
+    }
+
+    #[test]
+    fn the_summary_prompt_asks_for_a_time_on_every_item() {
+        // Each of the four sections of items shows its item ending with the time, and the headings stay as they were: they are the
+        // library's format.
+        for heading in ["Ý chính", "Quyết định", "Việc cần làm", "Câu hỏi còn mở"]
+        {
+            let lines = section_lines(heading);
+            assert_eq!(lines.len(), 1, "{heading}: {lines:?}");
+            assert!(
+                lines[0].starts_with("- ") && lines[0].contains(" [mm:ss]"),
+                "{heading}: {}",
+                lines[0]
+            );
+            let item = lines[0].split("  ←").next().unwrap();
+            assert!(item.ends_with(" [mm:ss]"), "{heading}: {item}");
+        }
+        // The action item keeps its owner first and its deadline before the time.
+        assert_eq!(
+            section_lines("Việc cần làm")[0],
+            r#"- [ ] **Owner** — task (deadline if mentioned) [mm:ss]  ← no owner: "Chưa rõ", or "Unknown" when writing in English"#
+        );
+        // The timeline already begins with its time, and is one line a topic.
+        assert_eq!(
+            section_lines("Mốc thời gian"),
+            ["- [mm:ss] topic — one line per major topic shift"]
+        );
+        // The model is told where the time comes from, and not to make one up.
+        assert!(SUMMARY_SYSTEM.contains("copied from that line"));
+        assert!(SUMMARY_SYSTEM.contains("Never invent a time"));
     }
 
     #[test]

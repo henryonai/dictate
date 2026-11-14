@@ -1,6 +1,10 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { render, screen, within } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { declarationsOf, parseCss, styleOf } from "../css-rules";
 import { api } from "../lib/api";
 import type { MeetingDetail } from "../lib/api";
 import { setLanguage } from "../lib/i18n";
@@ -310,4 +314,86 @@ test("the pane is Vietnamese in Vietnamese", () => {
     "Hỏi đáp",
   ]);
   expect(screen.getByRole("button", { name: "Copy dạng checklist" })).toBeInTheDocument();
+});
+
+// ---- Every line of the summary has its moment
+
+/** The summary of a recording that was made with the prompt that asks for a time on each item: the time ends the text. */
+function timed(): MeetingDetail["summary"] {
+  return fakeSummary({
+    keyPoints: "- Budget is **fixed** [01:05]\n- Hiring starts in May [1:02:03]",
+    decisions: ["Ship in May [02:10]"],
+    actions: [
+      { index: 0, owner: "An", text: "Send the budget (Friday) [03:20]", done: false },
+      { index: 1, owner: null, text: "Book the room [04:30]", done: false },
+    ],
+    questions: ["Who owns the docs? [05:40]"],
+  });
+}
+
+const styles = parseCss(styleOf(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "SummaryPane.svelte"), "utf8")));
+
+test("a_trailing_time_is_a_chip_that_seeks: the time at the end of each kind of item is a link to its moment, and the text keeps it", async () => {
+  const user = userEvent.setup();
+  pane({ summary: timed() });
+
+  // Each kind of item: the part it is in, the time at its end, and the second that it seeks to.
+  const ends: [string, string, number][] = [
+    ["Key points", "[01:05]", 65],
+    ["Key points", "[1:02:03]", 3723],
+    ["Decisions", "[02:10]", 130],
+    ["Action items", "[03:20]", 200],
+    ["Action items", "[04:30]", 270],
+    ["Open questions", "[05:40]", 340],
+  ];
+  for (const [name, stamp, at] of ends) {
+    const link = within(part(name)).getByRole("link", { name: stamp });
+    expect(link, `${stamp} ends its item`).toHaveAttribute("data-seek", String(at));
+    // At the end of the text of its item: nothing follows it on its line.
+    expect((link.nextSibling?.textContent ?? "").split("\n")[0], `${stamp} is last on its line`).toBe("");
+    await user.click(link);
+    expect(onseek).toHaveBeenLastCalledWith(at);
+  }
+  expect(onseek).toHaveBeenCalledTimes(ends.length);
+
+  // The time is in the text of the action, and the owner is the owner's alone; ticking is not seeking.
+  const item = screen.getByRole("checkbox", { name: "Send the budget (Friday) [03:20]" });
+  expect(item).not.toBeChecked();
+  expect(screen.getByText("An")).toHaveClass("owner");
+  expect(screen.getByText("An").textContent).toBe("An");
+  expect(api.meetingSetTask).not.toHaveBeenCalled();
+  // An item with no owner has the time in its text and no owner at all.
+  expect(screen.getByRole("checkbox", { name: "Book the room [04:30]" })).toBeInTheDocument();
+  expect(document.querySelectorAll(".owner")).toHaveLength(1);
+});
+
+test("a_trailing_time_is_a_chip_that_seeks: the link of a time is drawn as a pill in the timestamp color and the monospaced face", () => {
+  const chip = declarationsOf(styles, ".sections :global(a[data-seek])");
+  expect(chip["border-radius"]).toBe("999px");
+  expect(chip.color).toBe("var(--ts)");
+  expect(chip["font-family"]).toBe("var(--mono)");
+  expect(chip["font-variant-numeric"]).toBe("tabular-nums");
+  expect(chip.background).toBe("var(--panel)");
+  expect(chip.border).toBe("1px solid var(--line)");
+  expect(declarationsOf(styles, ".sections :global(a[data-seek]:hover)").background).toBe("var(--hl)");
+});
+
+test("a_trailing_time_is_a_chip_that_seeks: with no player the time is plain text and is not drawn as a pill", () => {
+  pane({ summary: timed() }, false);
+
+  for (const link of document.querySelectorAll(".sections a[data-seek]")) expect(link).toHaveAttribute("data-inert");
+  // The pill is left off an inert one: it is text again, as it was in the summary.
+  const inert = declarationsOf(styles, ".sections :global(a[data-inert])");
+  expect(inert.border).toBe("0");
+  expect(inert.background).toBe("none");
+  expect(inert.color).toBe("inherit");
+});
+
+test("a_trailing_time_is_a_chip_that_seeks: a summary from before the times shows as it was, with no link of its own", () => {
+  pane({
+    summary: fakeSummary({ keyPoints: "- Budget is fixed", decisions: ["Ship in May"], questions: ["Who owns the docs?"], actions: [{ index: 0, owner: null, text: "Book the room", done: false }] }),
+  });
+
+  expect(document.querySelectorAll(".sections a[data-seek]")).toHaveLength(0);
+  expect(screen.getByText("Ship in May")).toBeInTheDocument();
 });

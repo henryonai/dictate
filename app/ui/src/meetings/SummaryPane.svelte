@@ -253,6 +253,28 @@
     background: var(--accent-soft);
     border-radius: 999px;
   }
+  /* The time at the end of an item is a chip: the link that `Inline` makes of a stamp, drawn as a pill so that it reads as a place to go
+     to. Without a player it is plain text again, as in `Inline`. */
+  .sections :global(a[data-seek]) {
+    padding: 0 7px;
+    font-family: var(--mono);
+    font-size: 0.85em;
+    font-variant-numeric: tabular-nums;
+    color: var(--ts);
+    text-decoration: none;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+  }
+  .sections :global(a[data-seek]:hover) {
+    background: var(--hl);
+  }
+  .sections :global(a[data-inert]) {
+    padding: 0;
+    color: inherit;
+    background: none;
+    border: 0;
+  }
   .chapters {
     display: flex;
     flex-direction: column;

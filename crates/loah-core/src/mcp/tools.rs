@@ -1818,6 +1818,68 @@ mod tests {
         );
     }
 
+    /// A summary as the prompt now asks for it: every item ends with the moment it is based on.
+    const TIMED_SUMMARY: &str = r#"# Họp có mốc thời gian
+
+## Tóm tắt
+Nhóm chốt kế hoạch.
+
+## Quyết định
+- Tách repo test riêng [01:05]
+
+## Việc cần làm
+- [ ] **Henry** — Tạo repo test mới (thứ Sáu) [02:10]
+- [ ] **Chưa rõ** — Viết tài liệu hướng dẫn [1:02:03]
+
+## Mốc thời gian
+- [00:00] Mở đầu"#;
+
+    #[test]
+    fn list_action_items_prints_a_trailing_time_unchanged() {
+        let f = Fixture::empty();
+        recording(
+            &f,
+            "2026-10-20 09-00-00",
+            "Họp có mốc thời gian",
+            1_792_500_000.0,
+            &[(files::SUMMARY, TIMED_SUMMARY)],
+        );
+        let c = Client::new(&f);
+
+        // The time stays at the end of the text; an owner nobody is named for is left out, not printed with the time.
+        let open = c.text("list_action_items", json!({}));
+        assert!(
+            open.starts_with("2 open action items in 1 recording:"),
+            "{open}"
+        );
+        assert!(
+            open.ends_with(
+                "\n- [ ] **Henry** — Tạo repo test mới (thứ Sáu) [02:10]\n- [ ] Viết tài liệu hướng dẫn [1:02:03]"
+            ),
+            "{open}"
+        );
+        // Whose it is comes from the owner alone: the time is not searched as a name.
+        let henry = c.text("list_action_items", json!({"owner": "henry"}));
+        assert!(henry.starts_with("1 open action items"), "{henry}");
+        assert_eq!(
+            c.text("list_action_items", json!({"owner": "02:10"})),
+            "No open action items for that owner."
+        );
+
+        // get_meeting gives the summary as it was written, and the items again as ticked off.
+        let meeting = c.text("get_meeting", json!({"id": "2026-10-20 09-00-00"}));
+        assert!(
+            meeting.contains("- Tách repo test riêng [01:05]"),
+            "{meeting}"
+        );
+        assert!(
+            meeting.ends_with(
+                "Action items as ticked off in Loah (0/2 done):\n- [ ] **Henry** — Tạo repo test mới (thứ Sáu) [02:10]\n- [ ] Viết tài liệu hướng dẫn [1:02:03]"
+            ),
+            "{meeting}"
+        );
+    }
+
     #[test]
     fn action_items_say_when_there_are_none() {
         let f = Fixture::new();

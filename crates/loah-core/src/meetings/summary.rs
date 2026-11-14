@@ -312,6 +312,62 @@ mod tests {
     }
 
     #[test]
+    fn an_action_with_a_trailing_time_keeps_the_time_in_the_text() {
+        // The summary prompt asks for the moment each item is based on, at the end: it is part of the text, and never of the owner.
+        let d = doc(
+            "## Việc cần làm\n- [ ] **Henry** — Tạo repo test mới (thứ Sáu) [02:10]\n\
+             - [x] **Lan** – Gửi bản nháp [1:02:03]\n\
+             - [ ] **Nam**: Đặt phòng [00:30]\n\
+             - [ ] Viết tài liệu hướng dẫn [01:05]\n\
+             - [ ] **An** — Không có mốc thời gian",
+        );
+        let items = d.action_items();
+        let got: Vec<_> = items.iter().map(owner_and_text).collect();
+        assert_eq!(
+            got,
+            [
+                (Some("Henry"), "Tạo repo test mới (thứ Sáu) [02:10]"),
+                (Some("Lan"), "Gửi bản nháp [1:02:03]"),
+                (Some("Nam"), "Đặt phòng [00:30]"),
+                (None, "Viết tài liệu hướng dẫn [01:05]"),
+                (Some("An"), "Không có mốc thời gian"),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_unknown_owner_with_a_trailing_time_is_none() {
+        // "Chưa rõ", "Unknown" and "TBD" name nobody: the owner is `None`, and the time still ends the text.
+        let vietnamese =
+            doc("## Việc cần làm\n- [ ] **Chưa rõ** — Viết tài liệu hướng dẫn [01:05]");
+        assert_eq!(
+            owner_and_text(&vietnamese.action_items()[0]),
+            (None, "Viết tài liệu hướng dẫn [01:05]")
+        );
+        let english = doc(
+            "## Action items\n- [ ] **Unknown** — Write the guide [01:05]\n\
+             - [ ] **TBD** — Book the room (Friday) [12:34]",
+        );
+        let items = english.action_items();
+        let got: Vec<_> = items.iter().map(owner_and_text).collect();
+        assert_eq!(
+            got,
+            [
+                (None, "Write the guide [01:05]"),
+                (None, "Book the room (Friday) [12:34]"),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_other_items_keep_a_trailing_time_too() {
+        let d = doc("## Quyết định\n- Tách repo test riêng [01:05]\n\
+             ## Câu hỏi còn mở\n- Ai viết tài liệu? [02:10]");
+        assert_eq!(d.decisions(), ["Tách repo test riêng [01:05]"]);
+        assert_eq!(d.questions(), ["Ai viết tài liệu? [02:10]"]);
+    }
+
+    #[test]
     fn an_unclosed_owner_is_left_in_the_text() {
         let d = doc("## Việc cần làm\n- **Lan — Gửi bản nháp");
         assert_eq!(
