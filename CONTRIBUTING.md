@@ -1,4 +1,4 @@
-# Contributing to Dictate
+# Contributing to Loah
 
 Thanks for helping. Bug reports, ideas and pull requests are all welcome. For a bigger change, open an issue first so we can agree on the approach before you write the code.
 
@@ -6,11 +6,11 @@ Everyone taking part follows the [Code of Conduct](CODE_OF_CONDUCT.md). Security
 
 ## Reporting a bug
 
-Open an [issue](https://github.com/henryonai/dictate/issues/new/choose) with the bug report form. It asks for:
+Open an [issue](https://github.com/henryonai/loah/issues/new/choose) with the bug report form. It asks for:
 
 - what you did, what you expected and what happened;
-- your Dictate version (the number in the name of the installer, or the commit you built), your operating system and how you installed Dictate (`.dmg`, `.exe`, `.deb` or a build from source);
-- for a recording, its log: in the library, ⋯ → **View log** → **Copy** (remove anything private first). For anything else, start Dictate from a terminal with `RUST_LOG=loah=debug` and paste what it prints.
+- your Loah version (the number in the name of the installer, or the commit you built), your operating system and how you installed Loah (`.dmg`, `.exe`, `.deb` or a build from source);
+- for a recording, its log: in the library, ⋯ → **View log** → **Copy** (remove anything private first). For anything else, start Loah from a terminal with `RUST_LOG=loah=debug` and paste what it prints.
 
 ## Building and running
 
@@ -27,7 +27,7 @@ The app is a [Tauri 2](https://tauri.app) program: a Rust shell in `app/src-taur
     libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
   ```
 
-On **Windows and Linux** the speaker separation library (sherpa-onnx) has to be the build without text to speech, because the one that a build would download has espeak-ng (GPL-3.0) in it, and you name it with `SHERPA_ONNX_LIB_DIR`. [app/README.md](app/README.md) has the steps for both systems, the details of each system's prerequisites, and the variables that the tests use (`DICTATE_MEETINGS_DIR`, `DICTATE_FFMPEG`, `LOAH_TEST_SCREEN` and the others). On macOS the build downloads the library by itself.
+On **Windows and Linux** the speaker separation library (sherpa-onnx) has to be the build without text to speech, because the one that a build would download has espeak-ng (GPL-3.0) in it, and you name it with `SHERPA_ONNX_LIB_DIR`. [app/README.md](app/README.md) has the steps for both systems, the details of each system's prerequisites, and the variables that the tests use (`LOAH_MEETINGS_DIR`, `LOAH_FFMPEG`, `LOAH_TEST_SCREEN` and the others). On macOS the build downloads the library by itself.
 
 Then, from the `app` folder:
 

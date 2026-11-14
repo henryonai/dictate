@@ -75,6 +75,15 @@ function codeBlocks(text: string): string[] {
 const headings = (text: string, level: number) =>
   [...withoutCode(text).matchAll(new RegExp(`^${"#".repeat(level)}\\s+(.+)$`, "gm"))].map((match) => match[1]);
 
+/** The text of the `##` section with this heading, up to the next one (its subsections are in it). */
+function sectionOf(text: string, heading: string): string {
+  const start = text.search(new RegExp(`^## ${heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "m"));
+  expect(start, `no section "${heading}"`).toBeGreaterThanOrEqual(0);
+  const rest = text.slice(start + 1);
+  const next = rest.search(/^## /m);
+  return next === -1 ? rest : rest.slice(0, next);
+}
+
 describe("the two READMEs", () => {
   test("readme_links_both_languages_and_the_notices", () => {
     expect(targets(readme)).toContain("README.vi.md");
@@ -90,17 +99,17 @@ describe("the two READMEs", () => {
 
   test("readme_names_the_mcp_path_for_every_system", () => {
     for (const text of [readme, readmeVi]) {
-      expect(text).toContain("/Applications/Dictate.app/Contents/MacOS/dictate-mcp");
-      expect(text).toContain("%LOCALAPPDATA%\\Dictate\\dictate-mcp.exe");
-      expect(text).toContain("/usr/bin/dictate-mcp");
-      // The command that registers it with Claude Code, for the Mac path that the Swift app had (existing registrations keep working).
-      expect(text).toContain("claude mcp add --scope user dictate -- /Applications/Dictate.app/Contents/MacOS/dictate-mcp");
+      expect(text).toContain("/Applications/Loah.app/Contents/MacOS/loah-mcp");
+      expect(text).toContain("%LOCALAPPDATA%\\Loah\\loah-mcp.exe");
+      expect(text).toContain("/usr/bin/loah-mcp");
+      // The command that registers it with Claude Code, under the name `loah`.
+      expect(text).toContain("claude mcp add --scope user loah -- /Applications/Loah.app/Contents/MacOS/loah-mcp");
       // The JSON of Claude Desktop, with the backslashes of a Windows path written twice.
       expect(text).toContain('"mcpServers"');
-      expect(text).toContain("dictate-mcp.exe");
+      expect(text).toContain("loah-mcp.exe");
     }
-    expect(readme).toMatch(/\\\\Dictate\\\\dictate-mcp\.exe/);
-    expect(readmeVi).toMatch(/\\\\Dictate\\\\dictate-mcp\.exe/);
+    expect(readme).toMatch(/\\\\Loah\\\\loah-mcp\.exe/);
+    expect(readmeVi).toMatch(/\\\\Loah\\\\loah-mcp\.exe/);
   });
 
   test("the_vietnamese_readme_has_the_sections_and_the_commands_of_the_english_one", () => {
@@ -115,22 +124,22 @@ describe("the two READMEs", () => {
   test("the_installers_are_named_as_the_release_names_them", () => {
     for (const text of [readme, readmeVi]) {
       for (const name of [
-        "Dictate_<version>_aarch64.dmg",
-        "Dictate_<version>_x64.dmg",
-        "Dictate_<version>_x64-setup.exe",
-        "Dictate_<version>_amd64.deb",
+        "Loah_<version>_aarch64.dmg",
+        "Loah_<version>_x64.dmg",
+        "Loah_<version>_x64-setup.exe",
+        "Loah_<version>_amd64.deb",
       ]) {
         expect(text, name).toContain(name);
         expect(text, `${name}.sha256`).toContain(`${name}.sha256`);
       }
-      expect(text).toContain("sudo apt install ./Dictate_<version>_amd64.deb");
+      expect(text).toContain("sudo apt install ./Loah_<version>_amd64.deb");
       expect(text).not.toMatch(/AppImage/);
     }
   });
 
   test("the_unsigned_builds_say_how_to_open_them_and_how_to_check_them", () => {
     for (const text of [readme, readmeVi]) {
-      expect(text).toContain("xattr -dr com.apple.quarantine /Applications/Dictate.app");
+      expect(text).toContain("xattr -dr com.apple.quarantine /Applications/Loah.app");
       expect(text).toContain("Open Anyway");
       expect(text).toContain("SmartScreen");
       expect(text).toContain("Run anyway");
@@ -145,8 +154,10 @@ describe("the two READMEs", () => {
 
   test("the_readmes_say_how_the_ffmpeg_that_ships_is_replaced_and_that_yt_dlp_is_not_bundled", () => {
     for (const text of [readme, readmeVi]) {
+      expect(text).toContain("LOAH_FFMPEG");
+      expect(text).toContain("launchctl setenv LOAH_FFMPEG");
+      // The name that Dictate used is still read, and the READMEs say so.
       expect(text).toContain("DICTATE_FFMPEG");
-      expect(text).toContain("launchctl setenv DICTATE_FFMPEG");
       expect(text).toContain("yt-dlp");
     }
   });
@@ -166,13 +177,14 @@ describe("the two READMEs", () => {
     // what the code uses; the commands are the same in both languages (a test above compares the code blocks).
     for (const text of [readme, readmeVi]) {
       expect(text).toContain("Delete the application data");
-      expect(text).toContain("%LOCALAPPDATA%\\Dictate");
-      expect(text).toContain("%APPDATA%\\Dictate");
+      expect(text).toContain("%LOCALAPPDATA%\\Loah");
+      expect(text).toContain("%APPDATA%\\Loah");
+      expect(text).toContain("io.github.henryonai.loah");
       expect(text).toContain("Credential Manager");
-      expect(text).toContain('Remove-Item -Recurse -Force "$env:LOCALAPPDATA\\Dictate", "$env:APPDATA\\Dictate"');
-      expect(text).toContain("cmdkey /delete:default.Dictate");
-      expect(text).toContain("cmdkey /delete:transcribe.Dictate");
-      expect(text).toContain("sudo apt remove dictate");
+      expect(text).toContain('Remove-Item -Recurse -Force "$env:LOCALAPPDATA\\Loah", "$env:APPDATA\\Loah"');
+      expect(text).toContain("cmdkey /delete:default.Loah");
+      expect(text).toContain("cmdkey /delete:transcribe.Loah");
+      expect(text).toContain("sudo apt remove loah");
     }
     // The names of the credentials are the ones of the code (service `Loah`, accounts `default` and `transcribe`; the service
     // `Dictate` of the old app is still read: LEGACY_SERVICE).
@@ -193,6 +205,87 @@ describe("the two READMEs", () => {
     expect(readme).toMatch(/Swift/);
     expect(readmeVi).toMatch(/Swift/);
     expect(readme).toMatch(/quit the old one first/i);
+  });
+
+  test("the_readmes_are_headed_loah_and_point_at_its_repository", () => {
+    for (const text of [readme, readmeVi]) {
+      expect(text).toContain('<h1 align="center">Loah</h1>');
+      expect(text).toMatch(/alt="(?:Loah icon|Biểu tượng Loah)"/);
+      expect(text).toContain("https://github.com/henryonai/loah/releases/latest");
+      expect(text).toContain("https://img.shields.io/github/v/release/henryonai/loah");
+    }
+  });
+
+  test("readme_has_the_upgrading_from_dictate_section_in_both_languages", () => {
+    const TITLE = { en: "Upgrading from Dictate", vi: "Nâng cấp từ Dictate" };
+    expect(headings(readme, 2)).toContain(TITLE.en);
+    expect(headings(readmeVi, 2)).toContain(TITLE.vi);
+    // The same place in both, and the same subsections.
+    expect(headings(readmeVi, 2).indexOf(TITLE.vi)).toBe(headings(readme, 2).indexOf(TITLE.en));
+    const sections = { en: sectionOf(readme, TITLE.en), vi: sectionOf(readmeVi, TITLE.vi) };
+    expect(headings(sections.vi, 3)).toHaveLength(headings(sections.en, 3).length);
+    expect(headings(sections.en, 3).length).toBeGreaterThanOrEqual(3);
+
+    // The button of Settings → General opens it, so the anchor has to be there (the English README is the one a repository shows).
+    expect(anchors(readme).has("upgrading-from-dictate")).toBe(true);
+    const button = /const UPGRADE_URL = "([^"]+)";/.exec(read("app/ui/src/settings/General.svelte"))?.[1] ?? "";
+    expect(button).toBe("https://github.com/henryonai/loah#upgrading-from-dictate");
+    expect(anchors(readme).has(button.split("#")[1])).toBe(true);
+
+    for (const [language, text] of Object.entries(sections)) {
+      // What is copied, and where it goes: the four things Dictate 2.0.0 wrote, in the folders of Loah.
+      for (const item of ["settings.json", "whisper-models", "diarization-models", "Dictations"]) {
+        expect(text, `${language}: ${item}`).toContain(item);
+      }
+      // The library stays where it is, new installs get the new name, and the old variables are still read.
+      for (const name of ["Dictate Meetings", "Loah Meetings", "LOAH_MEETINGS_DIR", "DICTATE_MEETINGS_DIR", "LOAH_FFMPEG", "DICTATE_FFMPEG"]) {
+        expect(text, `${language}: ${name}`).toContain(name);
+      }
+      // The keys: copied from Dictate's entry, which stays, so to remove a key for good both entries have to go (a command for each, on
+      // Windows); and the Keychain prompt of a Mac.
+      const commands = codeBlocks(text).join("\n");
+      for (const name of ["cmdkey /delete:default.Loah", "cmdkey /delete:default.Dictate", "cmdkey /delete:transcribe.Loah", "cmdkey /delete:transcribe.Dictate"]) {
+        expect(commands, `${language}: ${name}`).toContain(name);
+      }
+      for (const name of ["Keychain", "Allow"]) {
+        expect(text, `${language}: ${name}`).toContain(name);
+      }
+      // The permissions of a Mac are asked again, as the app has a new identifier.
+      for (const name of ["Microphone", "Accessibility", "Screen Recording"]) {
+        expect(text, `${language}: ${name}`).toContain(name);
+      }
+      // The old and the new path of the MCP server on every system, and the one-line command that keeps the name `dictate` (so
+      // that the tool names in a prompt stay the same).
+      for (const path of [
+        "/Applications/Dictate.app/Contents/MacOS/dictate-mcp",
+        "%LOCALAPPDATA%\\Dictate\\dictate-mcp.exe",
+        "/usr/bin/dictate-mcp",
+        "/Applications/Loah.app/Contents/MacOS/loah-mcp",
+        "%LOCALAPPDATA%\\Loah\\loah-mcp.exe",
+        "/usr/bin/loah-mcp",
+      ]) {
+        expect(text, `${language}: ${path}`).toContain(path);
+      }
+      expect(text, language).toContain("claude mcp add --scope user dictate -- /Applications/Loah.app/Contents/MacOS/loah-mcp");
+      expect(text, language).toContain('claude mcp add --scope user dictate -- "$env:LOCALAPPDATA\\Loah\\loah-mcp.exe"');
+      expect(text, language).toContain("claude mcp add --scope user dictate -- loah-mcp");
+      // Linux: the package replaces the old one, and the two commands keep working.
+      expect(text, language).toContain("`/usr/bin/dictate`");
+      expect(text, language).toContain("`/usr/bin/dictate-mcp`");
+      // The old program is removed at the end, and Settings says so when it is still there.
+      expect(text, language).toContain("Installed apps");
+    }
+    // The permission guide mark is not copied (a new app has no permission yet, so the guide shows again), and Dictate's own folders are
+    // never changed or deleted.
+    for (const text of [readme, readmeVi]) {
+      expect(text).not.toContain("permission-guide-shown");
+    }
+    expect(sections.en).toMatch(/never (?:changes?|changed|touch(?:es|ed)?|delet(?:es?|ed))/i);
+    // A command is the same in both languages.
+    expect(codeBlocks(sections.vi)).toEqual(codeBlocks(sections.en));
+    // The lead of each README links to its own section.
+    expect(targets(readme)).toContain("#upgrading-from-dictate");
+    expect(targets(readmeVi)).toContain("#nâng-cấp-từ-dictate");
   });
 });
 
@@ -240,8 +333,10 @@ describe("the notices of third-party licenses", () => {
     expect(notices).toContain("--disable-gpl");
     expect(notices).toContain("--disable-nonfree");
     expect(notices).toContain("--disable-version3");
-    // The right to replace the library, and how it is used.
+    // The right to replace the library, and how it is used (the sidecar is `loah-ffmpeg`, and the offer names it).
+    expect(notices).toContain("LOAH_FFMPEG");
     expect(notices).toContain("DICTATE_FFMPEG");
+    expect(notices).toContain("loah-ffmpeg");
     // The trademark line that FFmpeg's legal page asks for.
     expect(notices).toMatch(/trademark of Fabrice Bellard/);
   });
@@ -412,14 +507,14 @@ describe("the license texts that every installer carries", () => {
 
   test("the_readmes_and_the_notices_say_where_the_license_files_are_on_every_system", () => {
     for (const text of [readme, readmeVi, notices]) {
-      expect(text).toContain("Dictate.app/Contents/Resources/Licenses");
+      expect(text).toContain("Loah.app/Contents/Resources/Licenses");
       expect(text).toContain("Licenses");
-      expect(text).toContain("/usr/share/doc/dictate");
+      expect(text).toContain("/usr/share/doc/loah");
       expect(text).toContain("COPYING.LGPLv2.1");
       expect(text).toContain("THIRD_PARTY_LICENSES.txt");
     }
     for (const text of [readme, readmeVi]) {
-      expect(text).toMatch(/dictate\.exe|%LOCALAPPDATA%\\Dictate\\Licenses/);
+      expect(text).toMatch(/loah\.exe|%LOCALAPPDATA%\\Loah\\Licenses/);
     }
   });
 
@@ -445,6 +540,7 @@ describe("the developer guide", () => {
   });
 
   test("app_readme_says_where_ffmpeg_comes_from_and_the_order_of_the_encoders_of_windows", () => {
+    expect(appReadme).toContain("LOAH_FFMPEG");
     expect(appReadme).toContain("DICTATE_FFMPEG");
     expect(appReadme).toContain("loah-ffmpeg");
     expect(appReadme).toMatch(/h264_mf[^.]*hardware[^.]*h264_mf[^.]*software[^.]*h264_nvenc[^.]*h264_amf[^.]*libopenh264[^.]*libx264[^.]*mpeg4/s);
@@ -457,8 +553,8 @@ describe("the developer guide", () => {
     expect(appReadme).toContain("THIRD_PARTY_NOTICES.md");
     expect(appReadme).toContain("tauri.release.conf.json");
     expect(appReadme).toContain("scripts/stage-sidecars.sh");
-    expect(appReadme).toContain("/usr/lib/dictate");
-    expect(appReadme).toContain("$ORIGIN/../lib/dictate");
+    expect(appReadme).toContain("/usr/lib/loah");
+    expect(appReadme).toContain("$ORIGIN/../lib/loah");
   });
 
   test("the_contributing_guide_has_the_checks_that_ci_runs_and_the_rules_for_commits", () => {
@@ -490,13 +586,13 @@ describe("the policies and the templates of the repository", () => {
     expect(read("CODE_OF_CONDUCT.md")).toContain("Contributor Covenant");
     expect(read("CODE_OF_CONDUCT.md")).toMatch(/version 2\.1/);
     expect(read("SECURITY.md")).toContain(CONTACT);
-    expect(read("SECURITY.md")).toContain("https://github.com/henryonai/dictate/releases/latest");
+    expect(read("SECURITY.md")).toContain("https://github.com/henryonai/loah/releases/latest");
   });
 
   test("the_security_policy_says_what_counts_in_the_new_app", () => {
     const security = read("SECURITY.md");
     expect(security).toMatch(/credential store|Keychain|Credential Manager|Secret Service/);
-    expect(security).toMatch(/dictate-mcp/);
+    expect(security).toMatch(/loah-mcp/);
     expect(security).toMatch(/checksum|sha256/i);
     expect(security).toMatch(/not signed|unsigned|aren't signed|aren't notarized/i);
     // The scheme of the Swift app is gone from this one.
@@ -513,7 +609,37 @@ describe("the policies and the templates of the repository", () => {
     }
     expect(read(".github/ISSUE_TEMPLATE/feature_request.yml")).toContain("name: Feature request");
     const config = read(".github/ISSUE_TEMPLATE/config.yml");
-    expect(config).toContain("https://github.com/henryonai/dictate/blob/main/SECURITY.md");
+    expect(config).toContain("https://github.com/henryonai/loah/blob/main/SECURITY.md");
+  });
+
+  test.each([
+    ...DOCUMENTS,
+    ".github/ISSUE_TEMPLATE/bug_report.yml",
+    ".github/ISSUE_TEMPLATE/config.yml",
+    ".github/ISSUE_TEMPLATE/feature_request.yml",
+  ])("%s does not point at the old repository, henryonai/dictate", (file) => {
+    expect(read(file)).not.toContain("henryonai/dictate");
+  });
+
+  test("the_notices_the_developer_guide_and_the_policies_name_the_programs_and_the_crates_of_loah", () => {
+    // What ships is `loah`, `loah-mcp` and `loah-ffmpeg`, from the crates `loah-app`, `loah-mcp` and the two that they share: the written
+    // offer of the FFmpeg source has to name the program that a person finds in an installer.
+    const old = /dictate-(?:ffmpeg|mcp|app|core|services)|dictate\.exe|Dictate\.app|\/usr\/(?:lib|share\/doc)\/dictate|\bdictate --(?:toggle|record)/;
+    for (const [name, text] of [
+      ["THIRD_PARTY_NOTICES.md", notices],
+      ["app/README.md", appReadme],
+      ["CONTRIBUTING.md", read("CONTRIBUTING.md")],
+      ["SECURITY.md", read("SECURITY.md")],
+    ]) {
+      expect(text, name).not.toMatch(old);
+    }
+    expect(notices).toContain("`loah-ffmpeg`");
+    expect(notices).toContain("`loah-app`");
+    expect(notices).toContain("`loah-mcp`");
+    expect(notices).toContain("`Loah.app/Contents/MacOS/loah-ffmpeg`");
+    expect(notices).toContain("`/usr/bin/loah-ffmpeg`");
+    expect(read("SECURITY.md")).toContain("loah --toggle");
+    expect(appReadme).toContain("loah --toggle");
   });
 
   test("the_pull_request_template_lists_the_checks_of_this_stack", () => {

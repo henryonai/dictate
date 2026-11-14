@@ -1,7 +1,7 @@
 //! The read-only tools `loah-mcp` gives an AI client over the user's Loah library.
 //!
-//! Descriptions, argument handling and the text each tool returns follow the macOS (Swift) `dictate-mcp`, so a client
-//! sees the same server on every platform.
+//! Descriptions, argument handling and the text each tool returns follow the `dictate-mcp` of the Swift app (Dictate
+//! 1.x, macOS only), so a client sees the same server on every platform.
 
 use std::ops::RangeInclusive;
 
