@@ -79,7 +79,7 @@ Everything user-visible: window titles, tray menu and tooltip, notifications, Se
 
 ## 3. The Graphite theme
 
-### Palette (tokens in `app/ui/src/app.css`, light and dark)
+### Palette (tokens in `app/ui/src/tokens.css`, imported by every window; light and dark)
 | Token | Dark | Light |
 |---|---|---|
 | bg | `#1c1c1f` | `#f5f5f7` |
