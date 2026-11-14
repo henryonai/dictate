@@ -109,5 +109,11 @@ for pair in "${copies[@]}"; do
     # knows of the file by its inode), so a staged file that is there from an earlier run is removed and the copy is a new file.
     rm -f "$to"
     cp -L "$from" "$to"
+    # The bundler gives the package the permissions of the file. A sidecar that came without the execute bit (a file that went through
+    # upload-artifact and download-artifact has none) would be in the installer as a file that cannot run: on macOS and Linux it is
+    # made executable here. (The libraries are not programs.)
+    case "$to" in
+      "$bin_dir"/*) [ -n "$exe" ] || chmod 0755 "$to" ;;
+    esac
   fi
 done

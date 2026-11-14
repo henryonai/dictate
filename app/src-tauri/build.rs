@@ -92,7 +92,17 @@ fn main() {
     // own package, which has none, and neither does the one of `dictate-services` reach this package). A build script's link arguments
     // reach only the binaries of its own package, so the libraries' build scripts cannot set this up for them.
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-    for arg in build_rpath::link_args(&target_os) {
+    // The release build asks for the run path of the installed package only (`build_rpath::INSTALLED_ONLY_VARIABLE`); a change of the
+    // variable has to run this script again.
+    println!(
+        "cargo::rerun-if-env-changed={}",
+        build_rpath::INSTALLED_ONLY_VARIABLE
+    );
+    let installed = std::env::var(build_rpath::INSTALLED_ONLY_VARIABLE).ok();
+    for arg in build_rpath::link_args(
+        &target_os,
+        build_rpath::installed_only(installed.as_deref()),
+    ) {
         println!("cargo::rustc-link-arg={arg}");
     }
     tauri_build::try_build(

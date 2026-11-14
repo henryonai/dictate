@@ -739,47 +739,38 @@ fn stage_sidecars_stops_before_it_builds_anything_when_the_ffmpeg_is_not_there()
     );
 }
 
-#[test]
-fn stage_sidecars_replaces_a_sidecar_that_is_there_with_a_new_file_and_does_not_write_over_it() {
-    // macOS kills a program that was written over in place after it had been run or signed (the kernel keeps what it knows of the file by
-    // its inode): the file is removed and copied anew, so that it is a new one. A second name for each old file (a hard link) keeps its
-    // inode alive: a file that is written over in place changes what that name reads, and a file that was removed and made again does not.
-    // (Comparing inode numbers is not enough: a file system hands the number of a file that was just removed to the next one.)
+/// A copy of the layout that `stage-sidecars.sh` works in (it works from the root of the repository that it is in): the script, the MCP
+/// server that the build would have made and the ffmpeg of `build-ffmpeg.sh`, with the permissions `mode` (what a file that went
+/// through an artifact of Actions has is 0644).
+fn staging_repo(triple: &str, mode: u32) -> tempfile::TempDir {
     let repo = tempfile::tempdir().unwrap();
-    let triple = "aarch64-apple-darwin";
     fs::create_dir_all(repo.path().join("scripts")).unwrap();
     fs::copy(
         scripts().join("stage-sidecars.sh"),
         repo.path().join("scripts/stage-sidecars.sh"),
     )
     .unwrap();
-    let write = |relative: &str, text: &str| {
+    for (relative, text) in [
+        (
+            format!("target/{triple}/release/dictate-mcp"),
+            "the new mcp",
+        ),
+        (
+            format!("target/ffmpeg/{triple}/dictate-ffmpeg"),
+            "the new ffmpeg",
+        ),
+    ] {
         let path = repo.path().join(relative);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, text).unwrap();
-        path
-    };
-    write(
-        &format!("target/{triple}/release/dictate-mcp"),
-        "the new mcp",
-    );
-    write(
-        &format!("target/ffmpeg/{triple}/dictate-ffmpeg"),
-        "the new ffmpeg",
-    );
-    let old_mcp = write(
-        &format!("app/src-tauri/binaries/dictate-mcp-{triple}"),
-        "the old mcp",
-    );
-    let old_ffmpeg = write(
-        &format!("app/src-tauri/binaries/dictate-ffmpeg-{triple}"),
-        "the old ffmpeg",
-    );
-    let kept_mcp = repo.path().join("kept-mcp");
-    let kept_ffmpeg = repo.path().join("kept-ffmpeg");
-    fs::hard_link(&old_mcp, &kept_mcp).unwrap();
-    fs::hard_link(&old_ffmpeg, &kept_ffmpeg).unwrap();
-    // The build of the MCP server is not what is under test: a `cargo` that does nothing leaves the file that is in target/ as it is.
+        fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
+    }
+    repo
+}
+
+/// Runs the script in `repo` for `triple`, with a `cargo` that does nothing (the build of the MCP server is not what is under test: it
+/// leaves the file that is in target/ as it is).
+fn stage_in(repo: &Path, triple: &str) -> Output {
     let tools = tempfile::tempdir().unwrap();
     let cargo = tools.path().join("cargo");
     fs::write(&cargo, "#!/bin/sh\nexit 0\n").unwrap();
@@ -789,15 +780,43 @@ fn stage_sidecars_replaces_a_sidecar_that_is_there_with_a_new_file_and_does_not_
         tools.path().display(),
         std::env::var("PATH").unwrap_or_default()
     );
-
-    let output = run({
+    run({
         let mut command = Command::new("bash");
         command
-            .arg(repo.path().join("scripts/stage-sidecars.sh"))
+            .arg(repo.join("scripts/stage-sidecars.sh"))
             .arg(triple)
             .env("PATH", path);
+        // Linux stages the libraries of sherpa-onnx too: the folder that a test made for them, when it made one.
+        if repo.join("sherpa").is_dir() {
+            command.env("SHERPA_ONNX_LIB_DIR", repo.join("sherpa"));
+        }
         command
-    });
+    })
+}
+
+#[test]
+fn stage_sidecars_replaces_a_sidecar_that_is_there_with_a_new_file_and_does_not_write_over_it() {
+    // macOS kills a program that was written over in place after it had been run or signed (the kernel keeps what it knows of the file by
+    // its inode): the file is removed and copied anew, so that it is a new one. A second name for each old file (a hard link) keeps its
+    // inode alive: a file that is written over in place changes what that name reads, and a file that was removed and made again does not.
+    // (Comparing inode numbers is not enough: a file system hands the number of a file that was just removed to the next one.)
+    let triple = "aarch64-apple-darwin";
+    let repo = staging_repo(triple, 0o755);
+    let old_mcp = repo
+        .path()
+        .join(format!("app/src-tauri/binaries/dictate-mcp-{triple}"));
+    let old_ffmpeg = repo
+        .path()
+        .join(format!("app/src-tauri/binaries/dictate-ffmpeg-{triple}"));
+    fs::create_dir_all(old_mcp.parent().unwrap()).unwrap();
+    fs::write(&old_mcp, "the old mcp").unwrap();
+    fs::write(&old_ffmpeg, "the old ffmpeg").unwrap();
+    let kept_mcp = repo.path().join("kept-mcp");
+    let kept_ffmpeg = repo.path().join("kept-ffmpeg");
+    fs::hard_link(&old_mcp, &kept_mcp).unwrap();
+    fs::hard_link(&old_ffmpeg, &kept_ffmpeg).unwrap();
+
+    let output = stage_in(repo.path(), triple);
 
     assert_eq!(code(&output), 0, "{}{}", stdout(&output), stderr(&output));
     assert_eq!(fs::read_to_string(&old_mcp).unwrap(), "the new mcp");
@@ -812,4 +831,40 @@ fn stage_sidecars_replaces_a_sidecar_that_is_there_with_a_new_file_and_does_not_
         "the old ffmpeg",
         "dictate-ffmpeg was written over in place"
     );
+}
+
+#[test]
+fn stage_sidecars_makes_the_sidecars_executable_whatever_the_files_it_copies_were() {
+    // The bundler copies the permissions of the file into the package: a sidecar that came without the bit (a file that went through
+    // upload-artifact and download-artifact has none) would be in the installer as a file that cannot run.
+    for triple in [
+        "aarch64-apple-darwin",
+        "x86_64-apple-darwin",
+        "x86_64-unknown-linux-gnu",
+    ] {
+        let repo = staging_repo(triple, 0o644);
+        // Linux also stages the libraries of sherpa-onnx, which have to be there.
+        let sherpa = repo.path().join("sherpa");
+        fs::create_dir_all(&sherpa).unwrap();
+        for library in ["libsherpa-onnx-c-api.so", "libonnxruntime.so"] {
+            fs::write(sherpa.join(library), "a library").unwrap();
+        }
+
+        let output = stage_in(repo.path(), triple);
+
+        assert_eq!(
+            code(&output),
+            0,
+            "{triple}: {}{}",
+            stdout(&output),
+            stderr(&output)
+        );
+        for name in ["dictate-mcp", "dictate-ffmpeg"] {
+            let staged = repo
+                .path()
+                .join(format!("app/src-tauri/binaries/{name}-{triple}"));
+            let mode = fs::metadata(&staged).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o755, "{triple}: {name} is {mode:o}");
+        }
+    }
 }
