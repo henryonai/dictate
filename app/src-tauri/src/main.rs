@@ -266,7 +266,10 @@ fn setup(
     let diarize_dir = state::open_diarize_dir(&models_base)?;
     let state = AppState::new(store, warning, Arc::new(KeyringStore::new()), models)
         .with_fallbacks(fallbacks);
-    state.set_migration_note(carried.report.failure_list());
+    state.set_migration_note(
+        (!carried.report.failed.is_empty())
+            .then(|| carried.report.failed_items(&carried.fallbacks)),
+    );
     let startup = state.clone();
     app.manage(state);
     // One platform layer for the whole app. What the system says about the permissions is read now, to know whether

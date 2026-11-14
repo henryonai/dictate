@@ -14,6 +14,7 @@ use std::sync::Mutex;
 use loah_core::meetings::library::MeetingLibrary;
 use loah_services::ai;
 use loah_services::http::ApiError;
+use loah_services::migrate::FailedItem;
 use loah_services::presets::{AiProvider, TranscribePreset, EDIT_PRESETS};
 use loah_services::secrets::{Account, SecretStore};
 use loah_services::settings::{self, Settings, SettingsStore};
@@ -50,9 +51,9 @@ pub struct SettingsView {
     pub shares_openrouter_key: bool,
     /// Why the settings file wasn't used as it was. Only the first view after the start carries it.
     pub load_warning: Option<String>,
-    /// What could not be copied from Dictate at this start ("settings.json (Permission denied); Dictations (...)"), for a
-    /// note that says so. Only the first view after the start carries it, like `load_warning`.
-    pub migration_note: Option<String>,
+    /// What could not be copied from Dictate at this start, with what the system said and whether Dictate's copy is used
+    /// meanwhile, for a note that says so. Only the first view after the start carries it, like `load_warning`.
+    pub migration_note: Option<Vec<FailedItem>>,
     /// What the language choice "System" means on this machine: the language of the tray menu. The window
     /// resolves "System" to this one and not by its own guess, so that both always agree.
     pub system_language: tray::Lang,
@@ -530,6 +531,11 @@ pub(crate) fn set_launch_at_login(app: &AppHandle, enabled: bool) -> Result<(), 
 /// Opens a folder in the file manager, creating it first if needed.
 fn open_folder(app: &AppHandle, folder: &Path) -> Result<(), String> {
     ensure_directory(folder)?;
+    open_existing_folder(app, folder)
+}
+
+/// Opens a folder in the file manager as it is: nothing is made.
+fn open_existing_folder(app: &AppHandle, folder: &Path) -> Result<(), String> {
     app.opener()
         .open_path(folder.to_string_lossy().into_owned(), None::<String>)
         .map_err(|e| format!("Could not open {}: {e}", folder.display()))
@@ -541,13 +547,19 @@ pub fn open_meetings_folder_now(app: &AppHandle) -> Result<(), String> {
 }
 
 /// Opens the folder of the saved dictations (`Loah/Dictations`), creating it first if needed. When the copy of Dictate's
-/// dictations failed it is Dictate's folder, where they still are (it is only opened, which writes nothing there).
+/// dictations failed it is Dictate's folder, where they still are: only opened, never made or changed (if it is gone, Loah's
+/// own is opened).
 pub fn open_dictations_folder_now(app: &AppHandle) -> Result<(), String> {
     let paths = SavePaths::system().ok_or("The system has no folder for the app's data.")?;
     let dictates = app
         .try_state::<AppState>()
         .and_then(|state| state.fallbacks.dictations.clone());
-    open_folder(app, paths.folder_to_open(dictates.as_deref()))
+    let target = paths.folder_to_open(dictates.as_deref());
+    if target.create {
+        open_folder(app, target.folder)
+    } else {
+        open_existing_folder(app, target.folder)
+    }
 }
 
 // ---- the commands
@@ -918,6 +930,24 @@ mod tests {
         assert_eq!(json["shares_openrouter_key"], false);
         assert_eq!(json["load_warning"], serde_json::Value::Null);
         assert_eq!(json["migration_note"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn view_carries_what_could_not_be_copied_as_items_that_say_whether_dictates_copy_is_used() {
+        let f = fixture();
+        let mut view = get_settings_view(&f.store, &f.keys);
+        view.migration_note = Some(vec![FailedItem {
+            item: "Dictations".into(),
+            reason: "Permission denied".into(),
+            fallback: true,
+        }]);
+
+        let json = serde_json::to_value(view).unwrap();
+
+        assert_eq!(
+            json["migration_note"],
+            serde_json::json!([{"item": "Dictations", "reason": "Permission denied", "fallback": true}])
+        );
     }
 
     #[test]

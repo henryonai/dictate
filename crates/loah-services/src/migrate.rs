@@ -29,6 +29,8 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use serde::Serialize;
+
 /// The file in Loah's config folder that says the migration is finished.
 pub const MARKER: &str = "migrated-from-dictate";
 
@@ -141,6 +143,18 @@ impl MigrationReport {
         fallbacks
     }
 
+    /// What could not be carried over, for the Settings window, with whether Dictate's copy is used for each.
+    pub fn failed_items(&self, fallbacks: &Fallbacks) -> Vec<FailedItem> {
+        self.failed
+            .iter()
+            .map(|(item, reason)| FailedItem {
+                item: item.clone(),
+                reason: reason.clone(),
+                fallback: fallbacks.has(item),
+            })
+            .collect()
+    }
+
     /// What could not be carried over, as one line ("settings.json (Permission denied); Dictations (...)"), or `None`.
     pub fn failure_list(&self) -> Option<String> {
         if self.failed.is_empty() {
@@ -167,6 +181,32 @@ pub struct Fallbacks {
     pub diarization_models: Option<PathBuf>,
     /// `Dictations/`: where Open folder opens, as that is where the saved dictations are.
     pub dictations: Option<PathBuf>,
+}
+
+impl Fallbacks {
+    /// Whether the item that failed (`settings.json`, `whisper-models`, ...) is read from Dictate's copy.
+    pub fn has(&self, item: &str) -> bool {
+        match item {
+            "settings.json" => self.settings.is_some(),
+            "whisper-models" => self.whisper_models.is_some(),
+            "diarization-models" => self.diarization_models.is_some(),
+            "Dictations" => self.dictations.is_some(),
+            _ => false,
+        }
+    }
+}
+
+/// An item that could not be carried over, as the Settings window is told of it: it says whether Dictate's own copy is used
+/// meanwhile (it is not, for an item that Dictate has nothing of to read, and for the marker that could not be written), and
+/// the window words the two cases apart.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FailedItem {
+    /// `settings.json`, `whisper-models`, `diarization-models`, `Dictations`, or `MARKER`.
+    pub item: String,
+    /// What the system said.
+    pub reason: String,
+    /// Dictate's copy of it is read in its place.
+    pub fallback: bool,
 }
 
 /// Whether the run that wrote the marker has left the login item to be registered (see `LOGIN_ITEM_PENDING`).
@@ -1081,6 +1121,61 @@ mod tests {
         assert_eq!(
             MigrationReport::default().fallbacks(&world.old),
             Fallbacks::default()
+        );
+    }
+
+    #[test]
+    fn what_failed_says_which_items_are_read_from_dictate_meanwhile_and_which_are_not() {
+        let world = World::split();
+        put_dictate_2_in(&world.old);
+        // Dictate has no diarization-models folder here.
+        fs::remove_dir_all(world.old.data.join("diarization-models")).unwrap();
+        let report = MigrationReport {
+            failed: [
+                "settings.json",
+                "whisper-models",
+                "diarization-models",
+                MARKER,
+            ]
+            .iter()
+            .map(|item| (item.to_string(), format!("why {item}")))
+            .collect(),
+            ..MigrationReport::default()
+        };
+
+        let items = report.failed_items(&report.fallbacks(&world.old));
+
+        let item = |item: &str, fallback: bool| FailedItem {
+            item: item.to_string(),
+            reason: format!("why {item}"),
+            fallback,
+        };
+        assert_eq!(
+            items,
+            [
+                item("settings.json", true),
+                item("whisper-models", true),
+                // Nothing of Dictate's to read, and the marker is no item at all.
+                item("diarization-models", false),
+                item(MARKER, false),
+            ]
+        );
+        assert!(MigrationReport::default()
+            .failed_items(&Fallbacks::default())
+            .is_empty());
+    }
+
+    #[test]
+    fn a_failed_item_is_serialized_for_the_window_with_its_name_its_reason_and_whether_dictates_copy_is_used(
+    ) {
+        let item = FailedItem {
+            item: "Dictations".into(),
+            reason: "Permission denied".into(),
+            fallback: true,
+        };
+        assert_eq!(
+            serde_json::to_value(&item).unwrap(),
+            serde_json::json!({"item": "Dictations", "reason": "Permission denied", "fallback": true})
         );
     }
 

@@ -9,7 +9,7 @@
 // change to a setting wins. A call sends the same, but only up to its own change: the ones made after it come with
 // their own calls.
 import { api, errorText } from "./api";
-import type { Account, AiProvider, HotkeyStatus, Settings, SettingsView, TranscribePreset } from "./api";
+import type { Account, AiProvider, HotkeyStatus, MigrationItem, Settings, SettingsView, TranscribePreset } from "./api";
 import { setLanguage } from "./i18n";
 
 /** The settings without what the view adds to them. */
@@ -34,7 +34,7 @@ export class SettingsStore {
    */
   loadWarning = $state<string | null>(null);
   /** What could not be copied from Dictate: told once like `loadWarning`, and kept like it until it is dismissed. */
-  migrationNote = $state<string | null>(null);
+  migrationNote = $state<MigrationItem[] | null>(null);
   /** What went wrong last, as the Rust side said it; empty when all is well. */
   error = $state("");
   /** True while the settings are being read; the window has nothing to show before that has worked once. */

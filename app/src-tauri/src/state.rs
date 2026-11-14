@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
-use loah_services::migrate::Fallbacks;
+use loah_services::migrate::{FailedItem, Fallbacks};
 use loah_services::secrets::{Account, SecretStore};
 use loah_services::settings::{LoadWarning, SettingsStore};
 use loah_services::whisper::local::LocalWhisper;
@@ -253,7 +253,7 @@ pub struct AppState {
     pub whisper: Arc<WhisperCache>,
     pub jobs: Arc<Jobs>,
     load_warning: Arc<Mutex<Option<String>>>,
-    migration_note: Arc<Mutex<Option<String>>>,
+    migration_note: Arc<Mutex<Option<Vec<FailedItem>>>>,
     /// Where an item that could not be copied from Dictate is still read from (read only); none of them when all was copied.
     pub fallbacks: Arc<Fallbacks>,
 }
@@ -292,12 +292,12 @@ impl AppState {
 
     /// What could not be carried over from Dictate at this start (the files, with what the system said), for the
     /// Settings window to show. Set once, before the window can ask.
-    pub fn set_migration_note(&self, note: Option<String>) {
+    pub fn set_migration_note(&self, note: Option<Vec<FailedItem>>) {
         *lock(&self.migration_note) = note;
     }
 
     /// The same as the load warning: the first call gets it, later ones nothing.
-    pub fn take_migration_note(&self) -> Option<String> {
+    pub fn take_migration_note(&self) -> Option<Vec<FailedItem>> {
         lock(&self.migration_note).take()
     }
 
@@ -484,18 +484,23 @@ mod tests {
         // Nothing to tell, unless the migration said so.
         assert_eq!(state.take_migration_note(), None);
 
-        state.set_migration_note(Some("Dictations (Permission denied)".into()));
+        let item = |name: &str, fallback: bool| FailedItem {
+            item: name.to_string(),
+            reason: "Permission denied".to_string(),
+            fallback,
+        };
+        state.set_migration_note(Some(vec![item("Dictations", true)]));
 
         assert_eq!(
-            state.take_migration_note().as_deref(),
-            Some("Dictations (Permission denied)")
+            state.take_migration_note(),
+            Some(vec![item("Dictations", true)])
         );
         assert_eq!(state.take_migration_note(), None);
         // A clone is the same state: the one that was managed is the one the commands ask.
-        state.set_migration_note(Some("settings.json (x)".into()));
+        state.set_migration_note(Some(vec![item("settings.json", false)]));
         assert_eq!(
-            state.clone().take_migration_note().as_deref(),
-            Some("settings.json (x)")
+            state.clone().take_migration_note(),
+            Some(vec![item("settings.json", false)])
         );
     }
 

@@ -48,6 +48,16 @@ export interface Settings {
   transcribe_language: string;
 }
 
+/** One item that could not be copied from Dictate at the start. */
+export interface MigrationItem {
+  /** `settings.json`, `whisper-models`, `diarization-models`, `Dictations`, or `migrated-from-dictate` (the mark that the copy is done). */
+  item: string;
+  /** What the system said. */
+  reason: string;
+  /** Dictate's own copy of it is read in its place (read only); false when there is none to read. */
+  fallback: boolean;
+}
+
 /** The settings plus what the UI may know about the keys (never the keys). */
 export interface SettingsView extends Settings {
   has_ai_key: boolean;
@@ -56,8 +66,8 @@ export interface SettingsView extends Settings {
   shares_openrouter_key: boolean;
   /** Why the settings file wasn't used as it was. Only the first view after the start carries it. */
   load_warning: string | null;
-  /** What could not be copied from Dictate at this start ("settings.json (Permission denied); Dictations (...)"). Only the first view carries it. */
-  migration_note: string | null;
+  /** What could not be copied from Dictate at this start. Only the first view carries it. */
+  migration_note: MigrationItem[] | null;
   /** What the "system" language means on this machine, as the Rust side resolved it: the language of the tray menu. */
   system_language: "en" | "vi";
 }

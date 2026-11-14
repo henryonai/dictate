@@ -31,9 +31,19 @@ impl SavePaths {
     }
 
     /// The folder that Open folder opens: where the saved dictations are. Loah's, unless the copy of Dictate's dictations
-    /// failed (`dictates` is then the folder of Dictate, which is only read): the ones that were not copied are there.
-    pub fn folder_to_open<'a>(&'a self, dictates: Option<&'a Path>) -> &'a Path {
-        dictates.unwrap_or(&self.dir)
+    /// failed (`dictates` is then the folder of Dictate, which is only read): the ones that were not copied are there. Dictate's
+    /// folder is only opened when it is still a folder, and is never made: if it is gone, Loah's own is opened.
+    pub fn folder_to_open<'a>(&'a self, dictates: Option<&'a Path>) -> OpenTarget<'a> {
+        match dictates.filter(|folder| folder.is_dir()) {
+            Some(folder) => OpenTarget {
+                folder,
+                create: false,
+            },
+            None => OpenTarget {
+                folder: &self.dir,
+                create: true,
+            },
+        }
     }
 
     /// `Loah/Dictations` below `data_dir`, with `temp` for the audio that isn't saved.
@@ -43,6 +53,14 @@ impl SavePaths {
             temp,
         }
     }
+}
+
+/// A folder to open in the file manager.
+#[derive(Debug, PartialEq, Eq)]
+pub struct OpenTarget<'a> {
+    pub folder: &'a Path,
+    /// Whether it is made first when it is not there: Loah's own folder is, Dictate's never is.
+    pub create: bool,
 }
 
 /// The audio of one dictation, as it was written. A temporary file goes when the `Take` does, whichever way the dictation
@@ -208,18 +226,49 @@ mod tests {
     use loah_services::whisper::local::read_wav_16k_mono;
 
     #[test]
-    fn open_folder_opens_dictates_dictations_only_when_they_could_not_be_copied() {
-        let paths = SavePaths::below(Path::new("data"), PathBuf::from("tmp"));
-        // As ever, when all came over.
-        assert_eq!(
-            paths.folder_to_open(None),
-            Path::new("data/Loah/Dictations")
-        );
-        // When the copy failed that is where the saved dictations are.
-        let dictates = Path::new("data/Dictate/Dictations");
-        assert_eq!(paths.folder_to_open(Some(dictates)), dictates);
+    fn open_folder_opens_dictates_dictations_only_when_they_could_not_be_copied_and_are_there() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let paths = SavePaths::below(&data, PathBuf::from("tmp"));
+        // As ever, when all came over: Loah's folder, which is made if it is not there.
+        let target = paths.folder_to_open(None);
+        assert_eq!(target.folder, data.join("Loah").join("Dictations"));
+        assert!(target.create);
+
+        // When the copy failed that is where the saved dictations are: opened as it is, never made.
+        let dictates = root.path().join("Dictate").join("Dictations");
+        fs::create_dir_all(&dictates).unwrap();
+        let target = paths.folder_to_open(Some(&dictates));
+        assert_eq!(target.folder, dictates);
+        assert!(!target.create);
         // New dictations are saved in Loah's folder either way.
-        assert_eq!(paths.dir, Path::new("data/Loah/Dictations"));
+        assert_eq!(paths.dir, data.join("Loah").join("Dictations"));
+    }
+
+    #[test]
+    fn a_dictations_folder_of_dictate_that_is_gone_is_not_made_again_and_loahs_is_opened() {
+        // The person deleted it since: opening must not bring back an empty folder in Dictate's tree.
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let paths = SavePaths::below(&data, PathBuf::from("tmp"));
+        let dictates = root.path().join("Dictate").join("Dictations");
+
+        let target = paths.folder_to_open(Some(&dictates));
+
+        assert_eq!(target.folder, data.join("Loah").join("Dictations"));
+        assert!(target.create);
+        assert!(!dictates.exists());
+        assert!(
+            !root.path().join("Dictate").exists(),
+            "nothing of Dictate's tree is made"
+        );
+        // A file in its place is not a folder to open either.
+        fs::create_dir_all(dictates.parent().unwrap()).unwrap();
+        fs::write(&dictates, b"not a folder").unwrap();
+        assert_eq!(
+            paths.folder_to_open(Some(&dictates)).folder,
+            data.join("Loah").join("Dictations")
+        );
     }
 
     #[test]

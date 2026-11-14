@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { api } from "../lib/api";
+  import type { MigrationItem } from "../lib/api";
   import { t } from "../lib/i18n";
   import { SettingsStore } from "../lib/settings-store.svelte";
   import Accounts from "./Accounts.svelte";
@@ -16,6 +17,16 @@
   ] as const;
 
   const store = new SettingsStore();
+
+  // The items of the note about the copy from Dictate, in the words of the window: a name for each (the Rust side's own name for an
+  // item this window has no name for), and the two kinds of item in a sentence each, as only the ones that have a copy of Dictate's
+  // to read are read from it.
+  const itemName = (item: string) => {
+    const key = `migration.item.${item}`;
+    const name = t(key);
+    return name === key ? item : name;
+  };
+  const itemList = (items: MigrationItem[]) => items.map((entry) => `${itemName(entry.item)} (${entry.reason})`).join("; ");
   let tab = $state<(typeof TABS)[number]["id"]>("general");
 
   onMount(() => {
@@ -47,10 +58,17 @@
     </div>
   {/if}
   {#if store.migrationNote}
+    {@const used = store.migrationNote.filter((entry) => entry.fallback)}
+    {@const unused = store.migrationNote.filter((entry) => !entry.fallback)}
     <div class="banner warning" role="alert">
       <span>
         <strong>{t("settings.migration_lead")}</strong>
-        {t("settings.migration_failed", { items: store.migrationNote })}
+        {#if used.length > 0}
+          {t("settings.migration_failed", { items: itemList(used) })}
+        {/if}
+        {#if unused.length > 0}
+          {t("settings.migration_failed_plain", { items: itemList(unused) })}
+        {/if}
       </span>
       <button type="button" onclick={() => store.dismissMigrationNote()}>{t("settings.dismiss")}</button>
     </div>
