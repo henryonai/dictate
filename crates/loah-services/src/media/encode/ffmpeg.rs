@@ -440,6 +440,7 @@ mod tests {
         assert!(message.contains("could not start ffmpeg"), "{message}");
     }
 
+    #[cfg(unix)]
     #[test]
     fn dropping_the_sink_kills_what_ffmpeg_started_too() {
         // A Scoop or Chocolatey ffmpeg is a shim that starts the real one, and a program that reads its input from a
@@ -459,66 +460,94 @@ mod tests {
                 late.display(),
                 started.display()
             ),
-            &format!(
-                "start \"\" /b cmd /c \"{}\" & echo started> \"{}\" & ping -n 60 127.0.0.1 >nul",
-                script(
-                    dir.path(),
-                    "grandchild",
-                    "",
-                    &format!(
-                        "ping -n 4 127.0.0.1 >nul & echo late> \"{}\"",
-                        late.display()
-                    ),
-                )
-                .display(),
-                started.display()
-            ),
+            "",
         );
         let sink = start(&out, &fake).unwrap();
-        // For the message of a failure: what the job of the sink holds, before the sink is dropped and after.
-        #[cfg(windows)]
-        let job = sink.job.clone();
         wait_for("the fake ffmpeg to start its own program", || {
             started.exists()
         });
-        #[cfg(windows)]
-        let before = job.as_ref().map_or_else(
-            || "the job could not be made".to_owned(),
-            |job| job.describe(),
-        );
 
         drop(sink);
 
         // The program itself is gone, and reaped (a zombie still answers `kill -0`).
-        #[cfg(unix)]
-        {
-            let pid = fs::read_to_string(&pid_file).unwrap();
-            let alive = std::process::Command::new("sh")
-                .args(["-c", &format!("kill -0 {}", pid.trim())])
-                .stderr(std::process::Stdio::null())
-                .status()
-                .unwrap()
-                .success();
-            assert!(!alive, "ffmpeg is still there (running, or a zombie)");
-        }
+        let pid = fs::read_to_string(&pid_file).unwrap();
+        let alive = std::process::Command::new("sh")
+            .args(["-c", &format!("kill -0 {}", pid.trim())])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success();
+        assert!(!alive, "ffmpeg is still there (running, or a zombie)");
         // Long enough for the program of the fake to have written the file, had it been left running.
         std::thread::sleep(Duration::from_secs(6));
-        // On Windows a failure says what the job held before the drop (the fake's own `cmd.exe` and its `ping` and, if the program
-        // that `start /b` makes was in the job, a `cmd.exe` with a `ping` more) and what is left of it now. `IsProcessInJob` of that
-        // program is not asked: `start /b` does not say its id.
-        #[cfg(windows)]
-        let report = format!(
-            "; in the job before the drop, {before}; now, {}",
-            job.as_ref().map_or_else(
-                || "the job could not be made".to_owned(),
-                |job| job.describe()
-            )
-        );
-        #[cfg(not(windows))]
-        let report = "";
         assert!(
             !late.exists(),
-            "a program that ffmpeg started is still running{report}"
+            "a program that ffmpeg started is still running"
+        );
+    }
+
+    /// `ping` by its path, as a script of the system's own programs is run by `cmd`: through `%SystemRoot%`, which is not a PATH.
+    #[cfg(windows)]
+    const PING: &str = r#""%SystemRoot%\System32\PING.EXE""#;
+
+    #[cfg(windows)]
+    #[test]
+    fn dropping_the_sink_kills_what_ffmpeg_started_too() {
+        // A Scoop or Chocolatey ffmpeg is a shim that starts the real one and waits for it, and a program that reads its
+        // input from a pipe does not end when the sink goes away. So the fake runs a program of its own, a `ping` of
+        // four pings (three seconds) whose output goes to a file: a program that writes to a file has the output held
+        // until it ends (or is full), so that only a `ping` that was left running to its end has filled this one. Once
+        // the sink is dropped, no such `ping` is left, and the job that counts what ffmpeg started is empty.
+        //
+        // What is not looked at is a file that the program's `cmd` writes after its `ping` has ended: a program of the
+        // kind may end by itself at any moment (a `ping` that was not found ends at once), and a job is ended one
+        // process after the other, so that a `cmd` whose `ping` was ended first may write it in the moment before it is
+        // ended itself. It says nothing of whether anything was left running.
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("audio.m4a");
+        let pinged = dir.path().join("ping.txt");
+        let own = script(
+            dir.path(),
+            "own",
+            "",
+            &format!("{PING} -n 4 127.0.0.1 > \"{}\"", pinged.display()),
+        );
+        let fake = script(
+            dir.path(),
+            "fake-ffmpeg",
+            "",
+            &format!("cmd /c \"{}\"", own.display()),
+        );
+        let sink = start(&out, &fake).unwrap();
+        let job = sink
+            .job
+            .clone()
+            .expect("the job that counts what ffmpeg started could not be made");
+        // The fake's `cmd`, the `cmd` of its program and the `ping` are in the job: the program is running, and it is one of
+        // what the sink is to end.
+        wait_for("the fake ffmpeg to run its own program", || {
+            job.active_processes().is_ok_and(|active| active >= 3)
+        });
+        let before = job.describe();
+
+        drop(sink);
+
+        // Dropping the sink waits for the job to be empty.
+        assert_eq!(
+            job.active_processes().ok(),
+            Some(0),
+            "what ffmpeg started is still running: in the job before the drop, {before}; now, {}",
+            job.describe()
+        );
+        // Long enough for the `ping` to have ended by itself, had it been left running.
+        std::thread::sleep(Duration::from_secs(4));
+        let lines = std::fs::read_to_string(&pinged)
+            .unwrap_or_default()
+            .lines()
+            .count();
+        assert!(
+            lines < 8,
+            "a program that ffmpeg started went on to its end ({lines} lines of ping.txt); in the job before the drop, {before}"
         );
     }
 
@@ -575,25 +604,34 @@ mod tests {
         ping_done: bool,
         /// How many processes of the job were left when the drop returned.
         left_after_drop: u32,
-        /// The control: how long the program lived by itself when the sink was kept, and how many lines its ping wrote.
+        /// The control: how long the program lived by itself when the sink was kept, how many lines its ping wrote, and what it said
+        /// on its standard error.
         lived_ms: Option<u128>,
         ping_lines: usize,
+        said: String,
         note: String,
     }
 
-    /// 1: the control: a program that is left alone for six seconds, and how long it lives. 2: the fake runs the program and waits for it,
-    /// as a shim does, and the sink is dropped when the program says that it is running. 3: `start /b` makes the program, and the test goes
-    /// when the program says that it is running. The program is `echo up & ping -n 4 > ping.txt & echo late > late.txt`.
+    /// 1: the control with `ping` found through the PATH, as the test above has it. 2: the control with `ping` by its path. In a
+    /// control the sink is kept for six seconds and the program is watched. 3: the fake runs the program (by its path) and waits for
+    /// it, as a shim does, and the sink is dropped when the program says that it is running. 4: `start /b` makes the program.
+    /// The program is `echo up & ping -n 4 > ping.txt & echo late > late.txt`.
     #[cfg(windows)]
     fn hunt_one(variant: u8, tag: &str) -> Result<Found, String> {
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("audio.m4a");
         let late = dir.path().join("late.txt");
         let pinged = dir.path().join("ping.txt");
+        let said = dir.path().join("said.txt");
         let started = dir.path().join("started.txt");
         let up = dir.path().join("up.txt");
-        let ping = format!("ping -n 4 127.0.0.1 > \"{}\"", pinged.display());
-        let (fake, waits) = if variant != 3 {
+        let tool = if variant == 1 { "ping" } else { PING };
+        let ping = format!(
+            "{tool} -n 4 127.0.0.1 > \"{}\" 2> \"{}\"",
+            pinged.display(),
+            said.display()
+        );
+        let (fake, waits) = if variant != 4 {
             let own = script(
                 dir.path(),
                 "own",
@@ -628,13 +666,14 @@ mod tests {
                 "fake-ffmpeg",
                 "",
                 &format!(
-                    "start \"\" /b cmd /c \"{}\" & echo started> \"{}\" & ping -n 60 127.0.0.1 >nul",
+                    "start \"\" /b cmd /c \"{}\" & echo started> \"{}\" & {PING} -n 60 127.0.0.1 >nul",
                     own.display(),
                     started.display()
                 ),
             );
             (fake, vec![started.clone(), up.clone()])
         };
+        let control = variant <= 2;
         let t0 = std::time::Instant::now();
         let sink = start(&out, &fake).map_err(|e| format!("{tag}: {e:?}"))?;
         let job = sink.job.clone();
@@ -661,7 +700,7 @@ mod tests {
 
         // The control: the sink is kept, and what the job holds is watched until it is empty or six seconds have gone by.
         let mut lived_ms = None;
-        if variant == 1 {
+        if control {
             let begun = std::time::Instant::now();
             while begun.elapsed() < Duration::from_secs(6) {
                 if job
@@ -696,9 +735,14 @@ mod tests {
             left_after_drop,
             lived_ms,
             ping_lines: ping_text.lines().count(),
+            said: std::fs::read_to_string(&said)
+                .unwrap_or_default()
+                .chars()
+                .take(120)
+                .collect(),
             note: String::new(),
         };
-        if variant != 1 && (found.old_late || found.ping_done || left_after_drop != 0) {
+        if !control && (found.old_late || found.ping_done || left_after_drop != 0) {
             return Ok(Found {
                 note: format!(
                     "{tag}: old_late {}, written before the drop {}, ping_done {}, left when the drop returned {left_after_drop}. seen at +{seen_at}ms, dropped by +{dropped_at}ms\n  timeline: {timeline:?}\n  before: {before}\n  1 s after the drop: {survivors:?}\n  ping.txt: {ping_text:?}",
@@ -714,13 +758,13 @@ mod tests {
     #[test]
     fn hunt_the_windows_flake() {
         // Per variant: runs, old oracle, written before the drop, ping finished, job not empty at the drop.
-        let mut counts = [[0usize; 5]; 3];
-        let mut control: Vec<(Option<u128>, usize)> = Vec::new();
+        let mut counts = [[0usize; 5]; 4];
+        let mut control: Vec<(u8, Option<u128>, usize, String)> = Vec::new();
         let mut notes: Vec<String> = Vec::new();
         for round in 0..2 {
-            let handles: Vec<_> = (0..30)
+            let handles: Vec<_> = (0..40)
                 .map(|i| {
-                    let variant = (i % 3) as u8 + 1;
+                    let variant = (i % 4) as u8 + 1;
                     std::thread::spawn(move || {
                         (
                             variant,
@@ -739,8 +783,8 @@ mod tests {
                         row[2] += usize::from(found.late_before_drop);
                         row[3] += usize::from(found.ping_done);
                         row[4] += usize::from(found.left_after_drop != 0);
-                        if variant == 1 {
-                            control.push((found.lived_ms, found.ping_lines));
+                        if variant <= 2 {
+                            control.push((variant, found.lived_ms, found.ping_lines, found.said));
                         } else if (found.ping_done || found.left_after_drop != 0 || notes.len() < 4)
                             && !found.note.is_empty()
                         {
@@ -751,8 +795,10 @@ mod tests {
                 }
             }
         }
+        let path = std::env::var_os("PATH").map_or(0, |p| p.len());
         panic!(
-            "HUNT RESULT, [runs, old oracle, written before the drop, ping finished, job not empty at the drop] per variant: {counts:?}\ncontrol, (ms the program lived alone, lines of ping.txt): {control:?}\n{}",
+            "HUNT RESULT, [runs, old oracle, written before the drop, ping finished, job not empty at the drop] per variant: {counts:?}\nPATH of the test {path} characters, the search path of the programs it starts {}\ncontrol, (variant, ms the program lived alone, lines of ping.txt, what it said on stderr): {control:?}\n{}",
+            tools::search_path().len(),
             notes.join("\n")
         );
     }
