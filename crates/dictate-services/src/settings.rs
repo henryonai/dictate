@@ -123,12 +123,15 @@ impl Default for Settings {
 }
 
 impl Settings {
-    /// Switch provider; the base URL follows unless the user has changed it.
+    /// Switch provider; the base URL and the model follow unless the user has changed them.
     pub fn set_ai_provider(&mut self, p: AiProvider) {
         let old = self.ai_provider;
         self.ai_provider = p;
         if self.ai_base_url == old.default_base_url() || self.ai_base_url.is_empty() {
             self.ai_base_url = p.default_base_url().into();
+        }
+        if self.ai_model == old.default_model() || self.ai_model.is_empty() {
+            self.ai_model = p.default_model().into();
         }
     }
 
@@ -357,6 +360,15 @@ fn parse(bytes: &[u8]) -> Result<(Settings, Vec<String>), String> {
             }
         }
     }
+    // A URL or a model the file doesn't have is the provider's own, whichever provider the file chose: a file that
+    // names Anthropic and nothing more must not end up sending Anthropic requests to OpenRouter. What is saved is
+    // never touched.
+    if !accepted.contains_key("ai_base_url") {
+        settings.ai_base_url = settings.ai_provider.default_base_url().into();
+    }
+    if !accepted.contains_key("ai_model") {
+        settings.ai_model = settings.ai_provider.default_model().into();
+    }
     Ok((settings, dropped))
 }
 
@@ -416,9 +428,6 @@ mod tests {
         assert_eq!(s.ui_language, UiLanguage::System);
         assert_eq!(s.dictation_language, "en-US");
         assert_eq!(s.hotkey, "Ctrl+Alt+Space");
-        assert_eq!(s.ai_provider, AiProvider::Anthropic);
-        assert_eq!(s.ai_base_url, "https://api.anthropic.com");
-        assert_eq!(s.ai_model, "claude-haiku-5-5");
         assert_eq!(s.summary_model, "");
         assert_eq!(s.vocabulary, "");
         assert_eq!(s.default_edit_preset, "clean");
@@ -541,29 +550,79 @@ mod tests {
     }
 
     #[test]
+    fn a_new_settings_uses_openrouter_and_deepseek() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, warning) = store_in(&dir);
+        assert!(warning.is_none(), "no file is a new install, not a problem");
+        for s in [Settings::default(), store.get()] {
+            assert_eq!(s.ai_provider, AiProvider::OpenAi);
+            assert_eq!(s.ai_base_url, "https://openrouter.ai/api/v1");
+            assert_eq!(s.ai_model, "deepseek/deepseek-v4.1-flash");
+        }
+    }
+
+    #[test]
     fn switching_provider_moves_untouched_url() {
         let mut s = Settings::default();
-        s.set_ai_provider(AiProvider::OpenAi);
-        assert_eq!(s.ai_provider, AiProvider::OpenAi);
-        assert_eq!(s.ai_base_url, "http://localhost:8317/v1");
-        assert_eq!(s.ai_model, "claude-haiku-5-5");
-
         s.set_ai_provider(AiProvider::Anthropic);
+        assert_eq!(s.ai_provider, AiProvider::Anthropic);
         assert_eq!(s.ai_base_url, "https://api.anthropic.com");
 
-        let mut s = Settings {
-            ai_base_url: "https://openrouter.ai/api/v1".into(),
-            ..Settings::default()
-        };
         s.set_ai_provider(AiProvider::OpenAi);
         assert_eq!(s.ai_base_url, "https://openrouter.ai/api/v1");
+
+        let mut s = Settings {
+            ai_base_url: "http://localhost:11434/v1".into(),
+            ..Settings::default()
+        };
+        s.set_ai_provider(AiProvider::Anthropic);
+        assert_eq!(s.ai_base_url, "http://localhost:11434/v1");
 
         let mut s = Settings {
             ai_base_url: String::new(),
             ..Settings::default()
         };
+        s.set_ai_provider(AiProvider::Anthropic);
+        assert_eq!(s.ai_base_url, "https://api.anthropic.com");
+    }
+
+    #[test]
+    fn switching_provider_moves_a_default_model_but_keeps_a_typed_one() {
+        let mut s = Settings::default();
+        s.set_ai_provider(AiProvider::Anthropic);
+        assert_eq!(s.ai_model, "claude-haiku-5-5");
         s.set_ai_provider(AiProvider::OpenAi);
-        assert_eq!(s.ai_base_url, "http://localhost:8317/v1");
+        assert_eq!(s.ai_model, "deepseek/deepseek-v4.1-flash");
+
+        // A model the person typed stays, whichever way they switch.
+        let mut s = Settings {
+            ai_model: "anthropic/claude-haiku-5.5".into(),
+            ..Settings::default()
+        };
+        s.set_ai_provider(AiProvider::Anthropic);
+        assert_eq!(s.ai_model, "anthropic/claude-haiku-5.5");
+        s.set_ai_provider(AiProvider::OpenAi);
+        assert_eq!(s.ai_model, "anthropic/claude-haiku-5.5");
+
+        // An empty one is filled in.
+        let mut s = Settings {
+            ai_model: String::new(),
+            ..Settings::default()
+        };
+        s.set_ai_provider(AiProvider::Anthropic);
+        assert_eq!(s.ai_model, "claude-haiku-5-5");
+    }
+
+    #[test]
+    fn choosing_the_same_provider_changes_nothing() {
+        let mut s = Settings {
+            ai_base_url: "http://localhost:11434/v1".into(),
+            ai_model: "my-model".into(),
+            ..Settings::default()
+        };
+        let before = s.clone();
+        s.set_ai_provider(AiProvider::OpenAi);
+        assert_eq!(s, before);
     }
 
     /// Settings with OpenRouter as the transcription service, the two base URLs as given.
@@ -615,6 +674,19 @@ mod tests {
         let elsewhere = openrouter_with("https://openrouter.ai/api/v1", "https://stt.example.com");
         assert!(!shares_ai_key(&elsewhere, true, false));
         assert!(!shares_ai_key(&Settings::default(), true, false));
+    }
+
+    #[test]
+    fn the_default_ai_service_shares_its_key_with_openrouter_transcription() {
+        let mut s = Settings::default();
+        // OpenRouter is the AI service from the start, so choosing it for transcription is all it takes.
+        s.set_transcribe_preset(TranscribePreset::OpenRouter);
+        assert!(shares_ai_key(&s, true, false));
+        assert_eq!(
+            effective_transcribe_key(&s, Some("ai-key"), None),
+            Some("ai-key".to_string())
+        );
+        assert_eq!(effective_transcribe_key(&s, None, None), None);
     }
 
     #[test]
@@ -712,8 +784,16 @@ mod tests {
     }
 
     #[test]
+    fn the_default_service_needs_a_key() {
+        let s = Settings::default();
+        assert!(!is_ai_configured(&s, false));
+        assert!(is_ai_configured(&s, true));
+    }
+
+    #[test]
     fn anthropic_always_needs_a_key() {
         let mut s = Settings::default();
+        s.set_ai_provider(AiProvider::Anthropic);
         assert!(!is_ai_configured(&s, false));
         assert!(is_ai_configured(&s, true));
         s.ai_base_url = "http://localhost:8317".into();
@@ -969,14 +1049,14 @@ mod tests {
 
         let (store, warning) = store_in(&dir);
         let s = store.get();
-        assert_eq!(s.ai_provider, AiProvider::Anthropic);
+        assert_eq!(s.ai_provider, AiProvider::OpenAi);
         assert!(!s.auto_refine);
         assert_eq!(s.transcribe_preset, TranscribePreset::OpenAi);
         assert_eq!(s.dictation_engine, Engine::Whisper);
         assert_eq!(s.file_engine, Engine::Whisper);
         assert_eq!(s.ui_language, UiLanguage::System);
         assert_eq!(s.vocabulary, "Dictate");
-        assert_eq!(s.ai_base_url, "https://api.anthropic.com");
+        assert_eq!(s.ai_base_url, "https://openrouter.ai/api/v1");
 
         // Like any other field that cannot be read: named in the warning, and the file kept as it was.
         let warning = warning.expect("unknown values are reported");
@@ -1015,6 +1095,73 @@ mod tests {
         assert_eq!(s.dictation_engine, Engine::Api);
         assert_eq!(s.ui_language, UiLanguage::Vi);
         assert_eq!(s.transcribe_preset, TranscribePreset::Groq);
+    }
+
+    #[test]
+    fn an_old_settings_file_keeps_its_saved_provider_url_and_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = r#"{"ai_provider":"anthropic","ai_base_url":"https://api.anthropic.com","ai_model":"claude-haiku-5-5"}"#;
+        fs::write(dir.path().join("settings.json"), original).unwrap();
+
+        let (store, warning) = store_in(&dir);
+
+        assert!(warning.is_none());
+        let s = store.get();
+        assert_eq!(s.ai_provider, AiProvider::Anthropic);
+        assert_eq!(s.ai_base_url, "https://api.anthropic.com");
+        assert_eq!(s.ai_model, "claude-haiku-5-5");
+        // Opening is only reading: the file is as it was.
+        assert_eq!(
+            fs::read_to_string(dir.path().join("settings.json")).unwrap(),
+            original
+        );
+    }
+
+    #[test]
+    fn a_file_without_the_ai_keys_gets_the_new_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("settings.json"), r#"{"push_to_talk":true}"#).unwrap();
+
+        let (store, warning) = store_in(&dir);
+
+        assert!(warning.is_none());
+        let s = store.get();
+        assert!(s.push_to_talk);
+        assert_eq!(s.ai_provider, AiProvider::OpenAi);
+        assert_eq!(s.ai_base_url, "https://openrouter.ai/api/v1");
+        assert_eq!(s.ai_model, "deepseek/deepseek-v4.1-flash");
+    }
+
+    #[test]
+    fn a_missing_url_or_model_follows_the_saved_provider_and_a_saved_one_stays() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+
+        // The provider alone: its own URL and model, not OpenRouter's, which would not answer for it.
+        fs::write(&path, r#"{"ai_provider":"anthropic"}"#).unwrap();
+        let s = store_in(&dir).0.get();
+        assert_eq!(s.ai_provider, AiProvider::Anthropic);
+        assert_eq!(s.ai_base_url, "https://api.anthropic.com");
+        assert_eq!(s.ai_model, "claude-haiku-5-5");
+
+        // What is saved is kept, and only what is missing is filled in.
+        fs::write(
+            &path,
+            r#"{"ai_provider":"anthropic","ai_model":"claude-sonnet-5-5"}"#,
+        )
+        .unwrap();
+        let s = store_in(&dir).0.get();
+        assert_eq!(s.ai_base_url, "https://api.anthropic.com");
+        assert_eq!(s.ai_model, "claude-sonnet-5-5");
+
+        fs::write(
+            &path,
+            r#"{"ai_provider":"anthropic","ai_base_url":"https://proxy.example.com"}"#,
+        )
+        .unwrap();
+        let s = store_in(&dir).0.get();
+        assert_eq!(s.ai_base_url, "https://proxy.example.com");
+        assert_eq!(s.ai_model, "claude-haiku-5-5");
     }
 
     #[test]

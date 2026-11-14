@@ -800,8 +800,8 @@ impl Fixture {
         let settings = Arc::new(settings);
         let flags = Arc::new(KeyFlags::default());
         flags.set(Account::Ai, true);
-        // Anthropic needs a key and has one: the AI edit is configured.
-        assert_eq!(settings.get().ai_provider, AiProvider::Anthropic);
+        // The AI service (OpenRouter by default) needs a key and has one: the AI edit is configured.
+        assert_eq!(settings.get().ai_provider, AiProvider::OpenAi);
 
         let clock = FakeClock::new();
         let log = Arc::new(CallLog::default());

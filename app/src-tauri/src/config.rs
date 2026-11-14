@@ -195,10 +195,33 @@ mod tests {
     // ---- the AI check
 
     #[test]
-    fn the_ai_check_needs_a_key_for_anthropic() {
+    fn the_ai_check_needs_a_key_for_openrouter_the_default() {
         let f = fixture();
         let err = ai_config(&f.store, &f.secrets).unwrap_err();
         assert!(err.to_lowercase().contains("key"), "{err}");
+    }
+
+    #[test]
+    fn the_ai_check_needs_a_key_for_anthropic() {
+        let f = fixture();
+        f.store
+            .update(|s| s.set_ai_provider(AiProvider::Anthropic))
+            .unwrap();
+        let err = ai_config(&f.store, &f.secrets).unwrap_err();
+        assert!(err.to_lowercase().contains("key"), "{err}");
+    }
+
+    #[test]
+    fn a_new_install_asks_openrouter_for_deepseek() {
+        let f = fixture();
+        f.secrets.set(Account::Ai, AI_KEY).unwrap();
+
+        let config = ai_config(&f.store, &f.secrets).unwrap();
+
+        assert_eq!(config.provider, AiProvider::OpenAi);
+        assert_eq!(config.base_url, "https://openrouter.ai/api/v1");
+        assert_eq!(config.model, "deepseek/deepseek-v4.1-flash");
+        assert_eq!(config.api_key.as_deref(), Some(AI_KEY));
     }
 
     #[test]
@@ -214,7 +237,7 @@ mod tests {
         assert_eq!(config.api_key.as_deref(), Some(AI_KEY));
         assert_eq!(config.vocabulary, "Dictate");
         assert_eq!(config.model, "my-model");
-        assert_eq!(config.base_url, "https://api.anthropic.com");
+        assert_eq!(config.base_url, "https://openrouter.ai/api/v1");
     }
 
     #[test]
@@ -222,6 +245,7 @@ mod tests {
         let f = fixture();
         let mut s = f.store.get();
         s.set_ai_provider(AiProvider::OpenAi);
+        s.ai_base_url = "http://localhost:8317/v1".into();
         f.store.save(&s).unwrap();
         let config = ai_config(&f.store, &f.secrets).unwrap();
         assert_eq!(config.api_key, None);
@@ -252,7 +276,7 @@ mod tests {
         let config = summary_ai_config(&f.store, &f.secrets).unwrap();
         assert_eq!(config.model, "summary-model");
         assert_eq!(config.api_key.as_deref(), Some(AI_KEY));
-        assert_eq!(config.base_url, "https://api.anthropic.com");
+        assert_eq!(config.base_url, "https://openrouter.ai/api/v1");
         assert_eq!(config.vocabulary, "Dictate");
         // The main config is untouched by it.
         assert_eq!(ai_config(&f.store, &f.secrets).unwrap().model, "main-model");
@@ -290,7 +314,7 @@ mod tests {
         let f = fixture();
         f.secrets.set(Account::Ai, AI_KEY).unwrap();
         let mut s = f.store.get();
-        s.ai_base_url = "https://openrouter.ai/api/v1".into();
+        // The AI part is on OpenRouter from the start: no URL to set for the key to be shared.
         s.set_transcribe_preset(TranscribePreset::OpenRouter);
         s.transcribe_language = "vi".into();
         s.vocabulary = "Dictate".into();

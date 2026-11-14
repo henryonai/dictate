@@ -151,16 +151,20 @@ describe("saving a change", () => {
 });
 
 describe("the changes that need the Rust side's rules", () => {
-  test("a new AI provider comes back with the base URL that goes with it", async () => {
+  test("a new AI provider comes back with the base URL and the model that go with it", async () => {
     const store = await loaded();
     vi.mocked(api.setAiProvider).mockResolvedValue(
-      fakeView({ ai_provider: "openai", ai_base_url: "http://localhost:8317/v1" }),
+      fakeView({ ai_provider: "anthropic", ai_base_url: "https://api.anthropic.com", ai_model: "claude-haiku-5-5" }),
     );
 
-    await store.setAiProvider("openai");
+    await store.setAiProvider("anthropic");
 
-    expect(api.setAiProvider).toHaveBeenCalledWith("openai");
-    expect(store.view).toMatchObject({ ai_provider: "openai", ai_base_url: "http://localhost:8317/v1" });
+    expect(api.setAiProvider).toHaveBeenCalledWith("anthropic");
+    expect(store.view).toMatchObject({
+      ai_provider: "anthropic",
+      ai_base_url: "https://api.anthropic.com",
+      ai_model: "claude-haiku-5-5",
+    });
   });
 
   test("a new transcription service comes back with its base URL and models", async () => {
@@ -321,16 +325,16 @@ describe("a change made while a call is on its way", () => {
     const store = await loaded();
     const switching = later<ReturnType<typeof fakeView>>();
     vi.mocked(api.setAiProvider).mockReturnValue(switching.promise);
-    const switched = store.setAiProvider("openai");
+    const switched = store.setAiProvider("anthropic");
 
-    const edit = store.update({ ai_model: "claude-sonnet-5" });
-    switching.resolve(fakeView({ ai_provider: "openai", ai_base_url: "http://localhost:8317/v1" }));
+    const edit = store.update({ summary_model: "claude-sonnet-5" });
+    switching.resolve(fakeView({ ai_provider: "anthropic", ai_base_url: "https://api.anthropic.com" }));
     await Promise.all([switched, edit]);
 
     expect(vi.mocked(api.saveSettings).mock.calls[0][0]).toMatchObject({
-      ai_provider: "openai",
-      ai_base_url: "http://localhost:8317/v1",
-      ai_model: "claude-sonnet-5",
+      ai_provider: "anthropic",
+      ai_base_url: "https://api.anthropic.com",
+      summary_model: "claude-sonnet-5",
     });
   });
 });
@@ -344,12 +348,12 @@ describe("what a call sends", () => {
     await vi.waitFor(() => expect(api.saveSettings).toHaveBeenCalledTimes(1));
 
     // Both are made while the slow call is out: the edit first, the switch after it.
-    const edit = store.update({ ai_model: "claude-sonnet-5" });
+    const edit = store.update({ summary_model: "claude-sonnet-5" });
     vi.mocked(api.setAiProvider).mockResolvedValue(
-      fakeView({ hotkey: "F1", ai_model: "claude-sonnet-5", ai_provider: "openai", ai_base_url: "http://localhost:8317/v1" }),
+      fakeView({ hotkey: "F1", summary_model: "claude-sonnet-5", ai_provider: "anthropic", ai_base_url: "https://api.anthropic.com" }),
     );
-    const switched = store.setAiProvider("openai");
-    expect(store.view?.ai_provider).toBe("openai");
+    const switched = store.setAiProvider("anthropic");
+    expect(store.view?.ai_provider).toBe("anthropic");
 
     slow.resolve(fakeView({ hotkey: "F1" }));
     await Promise.all([inFlight, edit, switched]);
@@ -358,11 +362,11 @@ describe("what a call sends", () => {
     expect(api.saveSettings).toHaveBeenCalledTimes(2);
     expect(vi.mocked(api.saveSettings).mock.calls[1][0]).toMatchObject({
       hotkey: "F1",
-      ai_model: "claude-sonnet-5",
-      ai_provider: "anthropic",
-      ai_base_url: "https://api.anthropic.com",
+      summary_model: "claude-sonnet-5",
+      ai_provider: "openai",
+      ai_base_url: "https://openrouter.ai/api/v1",
     });
-    expect(store.view).toMatchObject({ ai_provider: "openai", ai_base_url: "http://localhost:8317/v1" });
+    expect(store.view).toMatchObject({ ai_provider: "anthropic", ai_base_url: "https://api.anthropic.com" });
   });
 });
 

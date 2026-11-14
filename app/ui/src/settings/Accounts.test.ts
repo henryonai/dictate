@@ -131,7 +131,7 @@ test("a key typed but not saved yet is saved before it is checked", async () => 
   expect(api.setSecret).toHaveBeenCalledWith("ai", "sk-typed-key");
   expect(ai.getByLabelText("API key")).toHaveValue("");
   // Saving the key was part of the check: its result stays.
-  expect(await ai.findByText("Connected: claude-haiku-5-5 answered.")).toBeInTheDocument();
+  expect(await ai.findByText("Connected: deepseek/deepseek-v4.1-flash answered.")).toBeInTheDocument();
 });
 
 // ---- a result belongs to the settings it was got with
@@ -315,26 +315,48 @@ test("the hint on the key says that the AI key serves only when the AI part is O
 
 // ---- the AI provider
 
-test("the provider and its settings are shown", async () => {
+test("the provider and its settings are shown: OpenRouter with DeepSeek to begin with", async () => {
   render(Accounts, { store: await loadedStore() });
   const { ai } = await sections();
-  expect(ai.getByLabelText("Provider")).toHaveDisplayValue("Anthropic");
-  expect(ai.getByLabelText("Base URL")).toHaveValue("https://api.anthropic.com");
-  expect(ai.getByLabelText("Model")).toHaveValue("claude-haiku-5-5");
+  expect(ai.getByLabelText("Provider")).toHaveDisplayValue("OpenAI-compatible");
+  expect(ai.getByLabelText("Base URL")).toHaveValue("https://openrouter.ai/api/v1");
+  expect(ai.getByLabelText("Model")).toHaveValue("deepseek/deepseek-v4.1-flash");
 });
 
-test("another provider is switched by the Rust side, which moves the base URL along", async () => {
+test("the note under the AI section says OpenRouter is the default", async () => {
+  render(Accounts, { store: await loadedStore() });
+  const { ai } = await sections();
+  expect(
+    ai.getByText(
+      "OpenRouter is the default: get a key at openrouter.ai/keys. Its models look like deepseek/deepseek-v4.1-flash or anthropic/claude-haiku-5.5.",
+    ),
+  ).toBeInTheDocument();
+});
+
+test("the note under the AI section says it in Vietnamese in a Vietnamese UI", async () => {
+  setLanguage("vi");
+  render(Accounts, { store: await loadedStore({ ui_language: "vi" }) });
+  const ai = within(await screen.findByRole("region", { name: "AI — sửa chữ & tóm tắt" }));
+  expect(
+    ai.getByText(
+      "OpenRouter là mặc định: lấy key tại openrouter.ai/keys. Model của OpenRouter có dạng deepseek/deepseek-v4.1-flash hoặc anthropic/claude-haiku-5.5.",
+    ),
+  ).toBeInTheDocument();
+});
+
+test("another provider is switched by the Rust side, which moves the base URL and the model along", async () => {
   const user = userEvent.setup();
   vi.mocked(api.setAiProvider).mockResolvedValue(
-    fakeView({ ai_provider: "openai", ai_base_url: "http://localhost:8317/v1" }),
+    fakeView({ ai_provider: "anthropic", ai_base_url: "https://api.anthropic.com", ai_model: "claude-haiku-5-5" }),
   );
   render(Accounts, { store: await loadedStore() });
   const { ai } = await sections();
 
-  await user.selectOptions(ai.getByLabelText("Provider"), "OpenAI-compatible");
+  await user.selectOptions(ai.getByLabelText("Provider"), "Anthropic");
 
-  expect(api.setAiProvider).toHaveBeenCalledWith("openai");
-  await vi.waitFor(() => expect(ai.getByLabelText("Base URL")).toHaveValue("http://localhost:8317/v1"));
+  expect(api.setAiProvider).toHaveBeenCalledWith("anthropic");
+  await vi.waitFor(() => expect(ai.getByLabelText("Base URL")).toHaveValue("https://api.anthropic.com"));
+  expect(ai.getByLabelText("Model")).toHaveValue("claude-haiku-5-5");
 });
 
 test("the base URL and model save when the field is left", async () => {

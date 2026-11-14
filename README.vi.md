@@ -154,9 +154,11 @@ Những gì giữ nguyên: thư viện của bạn (thư mục `Dictate Meetings
    Windows và Linux không hỏi quyền nào lúc cài: xem [Đọc chính tả trên từng hệ điều hành](#đọc-chính-tả-trên-từng-hệ-điều-hành) để biết mỗi hệ cần gì.
 
 2. **Chọn model Whisper.** Cài đặt → *Nhận dạng giọng nói* → *Model Whisper*: bấm **Tải** ở model được đánh dấu *Đề xuất* (tuỳ theo dung lượng RAM của máy; **Tiny** và **Base** kém tiếng Việt, từ **Small** trở lên tốt hơn). Model chỉ tải một lần, từ Hugging Face, sau đó giọng nói được nhận dạng offline. Chưa có model thì khi đọc chính tả app sẽ báo.
-3. **Tuỳ chọn: cài một AI** để sửa chữ khi đọc chính tả và để tóm tắt. Cài đặt → *Tài khoản & API key* → *AI*, rồi bấm **Kiểm tra**:
-   - **Anthropic:** base URL `https://api.anthropic.com`, một model như `claude-haiku-5-5` (nhanh) hoặc `claude-sonnet-5-5`, cùng API key của bạn.
-   - **Tương thích OpenAI:** OpenRouter (`https://openrouter.ai/api/v1`), OpenAI, hoặc server chạy trên máy như Ollama (`http://localhost:11434/v1`), kèm tên một model mà endpoint đó có.
+3. **Tuỳ chọn: thêm key OpenRouter** để sửa chữ khi đọc chính tả và để tóm tắt. Mặc định Dictate dùng [OpenRouter](https://openrouter.ai) với model `deepseek/deepseek-v4.1-flash`, nên bạn không phải nhập URL hay tên model: tạo key tại [openrouter.ai/keys](https://openrouter.ai/keys), rồi vào Cài đặt → *Tài khoản & API key* → *AI*, dán key vào và bấm **Kiểm tra**. Nếu *API transcript* cũng chọn OpenRouter thì không cần key thứ hai: nó dùng chung key này.
+
+   Muốn dùng dịch vụ khác, chọn ở mục *Nhà cung cấp* rồi nhập base URL, tên một model mà dịch vụ đó có và key của bạn:
+   - **Anthropic:** base URL `https://api.anthropic.com`, một model như `claude-haiku-5-5` (nhanh) hoặc `claude-sonnet-5-5`.
+   - **Tương thích OpenAI:** OpenRouter với model khác (như `anthropic/claude-haiku-5.5`), OpenAI, hoặc server chạy trên máy như Ollama (`http://localhost:11434/v1`).
 
    API key được lưu trong kho credential của hệ thống (Keychain, Credential Manager, Secret Service), không bao giờ nằm trong file. Chưa có AI thì đọc chính tả vẫn chạy, chỉ là chữ không được sửa, và bản ghi chỉ có transcript, không có tóm tắt.
 4. **Chọn ngôn ngữ đọc:** Cài đặt → *Chung* → *Đọc chính tả* → *Ngôn ngữ* (mặc định là English (US); nói tiếng Việt thì chọn *Tiếng Việt*).
@@ -331,7 +333,7 @@ Dictate lưu dữ liệu ở đâu:
 Dictate không có tài khoản, không thu thập số liệu sử dụng hay telemetry. App chỉ kết nối tới các dịch vụ bạn tự cài đặt, tới trang của link bạn thêm (qua yt-dlp), tới Hugging Face và GitHub để tải model (các model Whisper và hai model tách người nói) và, trên Windows 10 chưa có WebView2, tới Microsoft khi bộ cài tải nó về. Hình và tiếng của bản ghi được phát lại bởi một server nhỏ nằm trong app, chỉ lắng nghe trên `127.0.0.1`, với một token ngẫu nhiên trong địa chỉ.
 
 - **Nằm trên máy bạn:** bản ghi, transcript và tóm tắt (trong các thư mục ở trên), và Whisper, thứ nhận dạng giọng nói ngay trên máy. API key nằm trong kho credential của hệ thống.
-- **Gửi cho nhà cung cấp AI:** đoạn chữ bạn đọc khi được sửa hay viết lại, và transcript của bản ghi khi tóm tắt hoặc khi bạn hỏi về nó. Dùng endpoint chạy trên máy như Ollama thì phần này cũng nằm trên máy.
+- **Gửi cho nhà cung cấp AI** (OpenRouter, trừ khi bạn chọn dịch vụ khác): đoạn chữ bạn đọc khi được sửa hay viết lại, và transcript của bản ghi khi tóm tắt hoặc khi bạn hỏi về nó. Dùng endpoint chạy trên máy như Ollama thì phần này cũng nằm trên máy.
 - **Gửi cho API transcript,** chỉ khi bạn chọn API làm engine: âm thanh của đoạn đọc hoặc của bản ghi.
 - **Claude đọc** qua MCP server: nội dung bản ghi, khi Claude đọc nó.
 
