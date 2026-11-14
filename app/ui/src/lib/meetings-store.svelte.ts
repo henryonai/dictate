@@ -15,6 +15,15 @@ import { IDLE_RECORDING } from "./recording";
 /** How long the search waits for another key before it asks for the list. */
 export const SEARCH_DELAY_MS = 200;
 
+/**
+ * The width of the window from which the list of recordings is beside the recording. A narrower window has the list closed at first,
+ * closes it when the window is made narrower than this, and lets the person open it over the recording (layout.test.ts adds the widths up).
+ */
+export const NARROW_WIDTH = 1100;
+
+/** The window is narrower than the list can be beside the recording. */
+const isNarrow = () => window.innerWidth < NARROW_WIDTH;
+
 /** A question asked about a recording. `answer` is null while the model works on it. */
 export interface QA {
   question: string;
@@ -53,7 +62,10 @@ export class MeetingsStore {
    * the picker was asked for because of that (a start from the shortcut), and what a start from the picker said.
    */
   recorder = $state.raw<{ error: ErrorView | null } | null>(null);
-  sidebarOpen = $state(true);
+  /** The list of recordings is shown: beside the recording, or over it when the window is narrow. Open at first only in a wide window. */
+  sidebarOpen = $state(!isNarrow());
+  /** The window is narrower than `NARROW_WIDTH`: the list is over the recording when it is open. */
+  narrow = $state(isNarrow());
   /**
    * The rename of speakers that was asked for: the speaker whose name was clicked, or null for the sheet as a whole. The sheet is
    * open while this is set and clears it when it closes.
@@ -72,6 +84,13 @@ export class MeetingsStore {
   /** A state of the recording came by the event: the answer to the question asked at the start is older than it. */
   private heardRecording = false;
   private readonly onFocus = () => void this.refreshReadiness();
+  // A window that is made narrower than the list can be beside the recording closes it, once, as it crosses the width: the list that the
+  // person opens in a narrow window is theirs, and a window that is made wider does not open one that was closed.
+  private readonly onResize = () => {
+    const narrow = isNarrow();
+    if (narrow && !this.narrow) this.sidebarOpen = false;
+    this.narrow = narrow;
+  };
 
   /** A dialog is open over the window: what is pasted or dropped on the window is not for the library then. */
   modalOpen = $derived(this.logFor !== null || this.linkDialogOpen || this.renameFor !== null || this.recorder !== null);
@@ -126,6 +145,9 @@ export class MeetingsStore {
     if (failed) this.notify(errorText(failed.reason));
     // The keys are set in the Settings window: what is ready may be different when this one gets the focus back.
     window.addEventListener("focus", this.onFocus);
+    window.addEventListener("resize", this.onResize);
+    // The window may have changed its size while the listeners were being set up.
+    this.onResize();
     await Promise.all([this.load(), this.refreshReadiness(), this.refreshRecording()]);
   }
 
@@ -136,6 +158,7 @@ export class MeetingsStore {
     this.unlisten.forEach((stop) => stop());
     this.unlisten = [];
     window.removeEventListener("focus", this.onFocus);
+    window.removeEventListener("resize", this.onResize);
   }
 
   async load(): Promise<void> {
@@ -481,6 +504,12 @@ export class MeetingsStore {
 
   toggleSidebar(): void {
     this.sidebarOpen = !this.sidebarOpen;
+  }
+
+  /** A recording picked in the list: it is shown, and a list that lies over it is put away. */
+  choose(id: string): Promise<void> {
+    if (this.narrow) this.sidebarOpen = false;
+    return this.select(id);
   }
 
   // ---- What is heard

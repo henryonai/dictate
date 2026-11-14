@@ -261,3 +261,13 @@ test("the_list_is_the_page_itself_that_scrolls_and_not_a_framed_box_that_runs_em
     expect(list, `.list has no ${frame}`).not.toHaveProperty(frame);
   }
 });
+
+test("the_transcript_fills_its_column: the section takes the room that is left and the list has no height of its own, so a short one leaves no box", () => {
+  expect(declarationsOf(styles, ".transcript").flex).toBe("1");
+  const list = declarationsOf(styles, ".list");
+  // `min-height: 0` lets it shrink and scroll; any other minimum or a height would hold a box open under a short transcript.
+  expect(list["min-height"]).toBe("0");
+  for (const size of ["height", "max-height", "min-block-size", "block-size"]) {
+    expect(list, `.list has no ${size}`).not.toHaveProperty(size);
+  }
+});

@@ -81,6 +81,19 @@ test("a finished recording is a split view: the player and the transcript on the
   expect(button("Copy summary")).toBeInTheDocument();
 });
 
+test("the right column has the tabs of the recording, and the header keeps Copy summary and Export, whichever tab is open", async () => {
+  const { user } = await opened();
+
+  const tabs = screen.getByRole("tablist").closest(".right");
+  expect(tabs).not.toBeNull();
+  expect(document.querySelector(".left")).not.toContainElement(screen.getByRole("tablist"));
+  await user.click(screen.getByRole("tab", { name: "Ask" }));
+  expect(within(tabs as HTMLElement).getByRole("textbox", { name: "Ask about this recording" })).toBeInTheDocument();
+  const header = screen.getByRole("heading", { level: 1 }).closest("header") as HTMLElement;
+  expect(within(header).getByRole("button", { name: "Copy summary" })).toBeInTheDocument();
+  expect(within(header).getByRole("button", { name: "Export" })).toBeInTheDocument();
+});
+
 test("the player is a video for a recording with a picture, and an audio element for one without", async () => {
   const first = await opened(whole({ media: fakeMedia({ video: true }) }));
   expect(video().getAttribute("src")).toBe(FIRST_URL);
@@ -93,13 +106,14 @@ test("the player is a video for a recording with a picture, and an audio element
 });
 
 test("a recording with no media has no player, and the rest is shown", async () => {
-  await opened(whole({ media: null }));
+  const { user } = await opened(whole({ media: null }));
 
   expect(document.querySelector("video, audio")).toBeNull();
   expect(screen.getByRole("heading", { name: "Transcript" })).toBeInTheDocument();
   expect(screen.queryByText("follows the video")).not.toBeInTheDocument();
   // Nothing to seek: the stamps and the chapters are off.
   expect(button("01:05")).toBeDisabled();
+  await user.click(screen.getByRole("tab", { name: "Chapters (2)" }));
   expect(button("01:05 Budget")).toBeDisabled();
 });
 
@@ -211,13 +225,14 @@ test("stamp_click_seeks_player: a stamp of the transcript sets the position of t
 test("chapters and the stamps of the texts seek the same player", async () => {
   const { user } = await opened();
 
-  await user.click(button("01:05 Budget"));
+  await user.click(within(part("Key points")).getByRole("link", { name: "[01:05]" }));
   await vi.waitFor(() => expect(video().currentTime).toBe(65));
 
+  await user.click(screen.getByRole("tab", { name: "Chapters (2)" }));
   await user.click(button("00:00 Kick-off"));
   await vi.waitFor(() => expect(video().currentTime).toBe(0));
 
-  await user.click(within(part("Key points")).getByRole("link", { name: "[01:05]" }));
+  await user.click(button("01:05 Budget"));
   await vi.waitFor(() => expect(video().currentTime).toBe(65));
 });
 

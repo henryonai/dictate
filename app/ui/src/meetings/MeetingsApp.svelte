@@ -83,7 +83,7 @@
   {:else}
     <div class="body">
       {#if store.sidebarOpen}
-        <aside id="library-list"><List {store} /></aside>
+        <aside id="library-list" class:overlay={store.narrow}><List {store} /></aside>
       {/if}
       <section class="detail"><Detail {store} /></section>
     </div>
@@ -120,6 +120,7 @@
     flex: none;
   }
   .body {
+    position: relative;
     display: flex;
     flex: 1;
     min-height: 0;
@@ -131,6 +132,17 @@
     max-width: 360px;
     background: var(--surface);
     border-right: 1px solid var(--border);
+  }
+  /* In a window narrower than 1100 px (`NARROW_WIDTH` in the store) the list is over the recording, not beside it: it takes none of its
+     room, so the two columns of the recording are as wide as when the list is closed (layout.test.ts adds it up). The ground is solid,
+     and the shadow says that it is over. */
+  aside.overlay {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 5;
+    box-shadow: var(--shadow-pop);
   }
   .detail,
   .scroll {

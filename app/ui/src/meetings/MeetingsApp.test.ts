@@ -108,6 +108,97 @@ test("the list can be hidden and shown again", async () => {
   expect(screen.getByRole("navigation", { name: "Recordings" })).toBeInTheDocument();
 });
 
+// ---- A narrow window
+
+/** The window is `width` px wide, as the web view reports it, and it says so. */
+function resize(width: number) {
+  window.innerWidth = width;
+  window.dispatchEvent(new Event("resize"));
+}
+
+const recordings = () => screen.queryByRole("navigation", { name: "Recordings" });
+
+test("the_list_folds_below_1100px: a window narrower than 1100 px opens with the list hidden, and one of 1100 px with it open", async () => {
+  const user = userEvent.setup();
+  window.innerWidth = 1099;
+  const narrow = await open();
+
+  expect(recordings()).not.toBeInTheDocument();
+  const show = screen.getByRole("button", { name: "Show list" });
+  expect(show).toHaveAttribute("aria-expanded", "false");
+
+  // It is the person's to open.
+  await user.click(show);
+  expect(recordings()).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Hide list" })).toHaveAttribute("aria-expanded", "true");
+  narrow.unmount();
+
+  window.innerWidth = 1100;
+  await open();
+  expect(recordings()).toBeInTheDocument();
+});
+
+test("the_list_folds_below_1100px: a window that is made narrower folds the list, and one that is made wider does not open it again", async () => {
+  const user = userEvent.setup();
+  await open();
+  expect(recordings()).toBeInTheDocument();
+
+  resize(1099);
+  await vi.waitFor(() => expect(recordings()).not.toBeInTheDocument());
+  expect(screen.getByRole("button", { name: "Show list" })).toBeInTheDocument();
+
+  resize(1500);
+  expect(recordings()).not.toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "Show list" }));
+  expect(recordings()).toBeInTheDocument();
+});
+
+test("the_list_folds_below_1100px: the list that was opened in a narrow window stays while the window is narrow, and a wide one keeps what the person chose", async () => {
+  const user = userEvent.setup();
+  window.innerWidth = 900;
+  await open();
+  await user.click(screen.getByRole("button", { name: "Show list" }));
+
+  // A smaller window, or a larger one that is still narrow: the list is as it was left.
+  resize(880);
+  resize(1000);
+  expect(recordings()).toBeInTheDocument();
+
+  // A wide window with the list hidden by the person stays hidden when it gets narrower and wider again.
+  resize(1300);
+  await user.click(screen.getByRole("button", { name: "Hide list" }));
+  resize(1000);
+  resize(1300);
+  expect(recordings()).not.toBeInTheDocument();
+});
+
+test("picking_a_recording_closes_the_overlay_list: in a narrow window the list lies over the recording, and a pick shows the recording", async () => {
+  const user = userEvent.setup();
+  window.innerWidth = 900;
+  await open();
+  await user.click(screen.getByRole("button", { name: "Show list" }));
+  expect(recordings()?.closest("aside")).toHaveClass("overlay");
+
+  await user.click(screen.getByRole("button", { name: /Weekly planning/ }));
+
+  expect(await screen.findByRole("heading", { level: 1, name: "Weekly planning" })).toBeInTheDocument();
+  expect(api.meetingDetail).toHaveBeenCalledWith(ID);
+  expect(recordings()).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Show list" })).toHaveAttribute("aria-expanded", "false");
+});
+
+test("picking_a_recording_closes_the_overlay_list: in a wide window the list is beside the recording and stays open", async () => {
+  const user = userEvent.setup();
+  await open();
+  expect(recordings()?.closest("aside")).not.toHaveClass("overlay");
+
+  await user.click(screen.getByRole("button", { name: /Weekly planning/ }));
+
+  expect(await screen.findByRole("heading", { level: 1, name: "Weekly planning" })).toBeInTheDocument();
+  expect(recordings()).toBeInTheDocument();
+});
+
 test("a title that looks like HTML is shown as text, in the list and in the header", async () => {
   const user = userEvent.setup();
   const evil = '<img src=x onerror="alert(1)">';

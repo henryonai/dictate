@@ -4,8 +4,10 @@ import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
 import { declarationsOf, parseCss, styleOf } from "../css-rules";
 
-// The layout can't be seen by a test, but its numbers can be added up: at the narrowest window that the Rust side allows, with the
-// list open, the two columns of a recording must fit in what is left.
+// The layout can't be seen by a test, but its numbers can be added up. The list of recordings is beside the recording only in a window
+// of 1100 px or more (`NARROW_WIDTH`); in a narrower one it is closed, and when it is opened it lies over the recording and takes no
+// room from it. So the two columns of a recording must fit in two cases: at the narrowest window that the Rust side allows, with the
+// list closed, and at the narrowest window that has the list beside the recording, with it open.
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, "../../../..");
 
@@ -19,21 +21,22 @@ const number = (text: string, pattern: RegExp, what: string): number => {
 /** The widths that the layout adds up, from the sources that decide them. */
 function widths() {
   const window = readFileSync(join(repo, "app/src-tauri/src/meetings/window.rs"), "utf8");
-  const app = source("MeetingsApp.svelte");
   const detail = source("Detail.svelte");
-  const aside = /aside \{[^}]*\}/.exec(app)?.[0] ?? "";
-  const split = /\.split \{[^}]*\}/.exec(detail)?.[0] ?? "";
-  const columns = /grid-template-columns:\s*minmax\((\d+)px,[^)]*\)\s*minmax\((\d+)px,[^)]*\)/.exec(split);
+  const aside = declarationsOf(parseCss(styleOf(source("MeetingsApp.svelte"))), "aside");
+  const split = declarationsOf(parseCss(styleOf(detail)), ".split");
+  const columns = /^minmax\((\d+)px,\s*(\d+)fr\)\s+minmax\((\d+)px,\s*(\d+)fr\)$/.exec(split["grid-template-columns"] ?? "");
   expect(columns, "the columns of .split").not.toBeNull();
   return {
     window: number(window, /MIN_WIDTH: f64 = (\d+)/, "MIN_WIDTH"),
-    list: number(aside, /\bwidth:\s*(\d+)px/, "the width of the list"),
-    border: number(aside, /border-right:\s*(\d+)px/, "the border of the list"),
+    /** The width from which the list is beside the recording (the store folds it below it). */
+    narrow: number(source("../lib/meetings-store.svelte.ts"), /export const NARROW_WIDTH = (\d+)/, "NARROW_WIDTH"),
+    list: px(aside.width, "the width of the list"),
+    border: px(/(\d+px)/.exec(aside["border-right"] ?? "")?.[1], "the border of the list"),
     padding: number(detail, /\.detail \{[^}]*padding:\s*\d+px (\d+)px/, "the side padding of the detail"),
-    gap: number(split, /\bgap:\s*(\d+)px/, "the gap of .split"),
-    columns: [Number(columns?.[1]), Number(columns?.[2])],
+    gap: px(split.gap, "the gap of .split"),
+    columns: [Number(columns?.[1]), Number(columns?.[3])],
     /** The shares of the two columns (`480fr`, `420fr`). */
-    shares: [...(/minmax\(\d+px,\s*(\d+)fr\)\s*minmax\(\d+px,\s*(\d+)fr\)/.exec(split) ?? [])].slice(1).map(Number),
+    shares: [Number(columns?.[2]), Number(columns?.[4])],
     detail,
   };
 }
@@ -41,12 +44,41 @@ function widths() {
 /** A classic scroll bar, which takes room from the detail when it has one. */
 const SCROLL_BAR = 17;
 
-test("the two columns of a recording fit at the narrowest window, with the list open and a scroll bar", () => {
-  const { window, list, border, padding, gap, columns } = widths();
+/** What the detail has for its two columns and the gap between them, in a window of `width` with the list beside the recording or not. */
+function room(width: number, listBeside: boolean): number {
+  const { list, border, padding } = widths();
+  return width - (listBeside ? list + border : 0) - 2 * padding - SCROLL_BAR;
+}
 
-  const room = window - list - border - 2 * padding - SCROLL_BAR;
+test("the two columns of a recording fit at the narrowest window, with the list closed and a scroll bar", () => {
+  const { window, gap, columns } = widths();
 
-  expect(columns[0] + columns[1] + gap).toBeLessThanOrEqual(room);
+  expect(columns[0] + columns[1] + gap).toBeLessThanOrEqual(room(window, false));
+});
+
+test("the two columns of a recording fit with the list open, at the narrowest window that has it beside the recording, and a scroll bar", () => {
+  const { narrow, gap, columns } = widths();
+
+  expect(columns[0] + columns[1] + gap).toBeLessThanOrEqual(room(narrow, true));
+});
+
+test("below the narrow width the list lies over the recording and takes none of its room, and the window it folds in is one that can be made", () => {
+  const { window, narrow } = widths();
+  // A fold that is below the narrowest window is never reached: the list would be beside the recording in every window.
+  expect(narrow).toBeGreaterThan(window);
+
+  const rules = parseCss(styleOf(source("MeetingsApp.svelte")));
+  const overlay = declarationsOf(rules, "aside.overlay");
+  // Out of the flow, over the recording, with a shadow to say it is over it: the `.body` is what it is placed in.
+  expect(overlay.position).toBe("absolute");
+  expect(overlay["box-shadow"]).toBe("var(--shadow-pop)");
+  expect(Number(overlay["z-index"])).toBeGreaterThan(0);
+  expect(declarationsOf(rules, ".body").position).toBe("relative");
+  // It is as high as the body and at its left, and has a solid ground (no `color-mix`): the recording does not show through it.
+  expect(overlay.top).toBe("0");
+  expect(overlay.bottom).toBe("0");
+  expect(overlay.left).toBe("0");
+  expect(declarationsOf(rules, "aside").background).toBe("var(--surface)");
 });
 
 test("no breakpoint of the detail is below the narrowest window: it could never be reached", () => {
@@ -95,11 +127,16 @@ function slimBar() {
   };
 }
 
-/** The width of the left column (the player's) in a window of `width`, with the list open and a scroll bar. */
-function leftColumn(width: number): number {
-  const { list, border, padding, gap, columns, shares } = widths();
-  const room = width - list - border - 2 * padding - SCROLL_BAR - gap;
-  return Math.max(columns[0], Math.floor((room * shares[0]) / (shares[0] + shares[1])));
+/** The width of the left column (the player's) in a window of `width`, with the list beside the recording or closed, and a scroll bar. */
+function leftColumn(width: number, listBeside: boolean): number {
+  const { gap, columns, shares } = widths();
+  return Math.max(columns[0], Math.floor(((room(width, listBeside) - gap) * shares[0]) / (shares[0] + shares[1])));
+}
+
+/** The narrowest that the left column is in a window that the app makes: the list closed at the narrowest window, or open at the narrow width. */
+function narrowestColumn(): number {
+  const { window, narrow } = widths();
+  return Math.min(leftColumn(window, false), leftColumn(narrow, true));
 }
 
 /**
@@ -113,13 +150,13 @@ function needs(bar: ReturnType<typeof slimBar>, { chars, total, video }: { chars
 }
 
 test("the slim bar fits the narrowest column in every mode, and its slider keeps at least 80 px", () => {
-  const { window, columns } = widths();
+  const { columns } = widths();
   const bar = slimBar();
   expect(bar.slider).toBeGreaterThanOrEqual(80);
   expect(bar.containerName, "the bar is the container that the rule asks").toBe(true);
   expect(bar.container).toBe("bar / inline-size");
 
-  const narrowest = leftColumn(window);
+  const narrowest = narrowestColumn();
   expect(narrowest).toBeGreaterThanOrEqual(columns[0]);
 
   // Every width of the column from the least that the grid gives to a wide one: what is inside the bar is its width less its border and
@@ -138,16 +175,17 @@ test("the slim bar fits the narrowest column in every mode, and its slider keeps
   // At the narrowest window the widest bar (the video hidden, the longest time) has room, and the slider has more than its least.
   const inside = narrowest - 2 * bar.border - 2 * bar.padding;
   expect(inside - (needs(bar, { chars: 7, total: false, video: true }) - bar.slider)).toBeGreaterThanOrEqual(80);
-  // The 301 px that a 323 px column leaves inside the bar, as measured when this was found.
-  expect(narrowest).toBe(323);
+  // 397 px is the column of the list open at 1100 px (the list closed at the narrowest window has 473 px): 379 px inside the bar.
+  expect(narrowest).toBe(397);
 });
 
-test("the slim bar shows the total when the window is as wide as it is by default, and leaves it out only when it is narrow", () => {
+test("the slim bar shows the total in every window that the app makes, and leaves it out only in a column that the grid squeezed to its least", () => {
   const bar = slimBar();
   // The wide window: the columns at their shares (480 px, a little more), the bar inside is 462 px or more.
   expect(columnsInside(bar, 480)).toBeGreaterThan(bar.totalHiddenAt);
-  // And a narrow one is where the rule is for.
-  expect(columnsInside(bar, leftColumn(widths().window))).toBeLessThanOrEqual(bar.totalHiddenAt);
+  // The narrowest column of a window that the app makes has the total too: the rule is the net under the grid's least width.
+  expect(columnsInside(bar, narrowestColumn())).toBeGreaterThan(bar.totalHiddenAt);
+  expect(columnsInside(bar, widths().columns[0])).toBeLessThanOrEqual(bar.totalHiddenAt);
 });
 
 function columnsInside(bar: ReturnType<typeof slimBar>, column: number): number {

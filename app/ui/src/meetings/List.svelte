@@ -31,7 +31,7 @@
         <h2>{group.label}</h2>
         <ul>
           {#each group.rows as row (row.id)}
-            <li><Row {row} selected={row.id === store.selectedId} onselect={(id) => store.select(id)} /></li>
+            <li><Row {row} selected={row.id === store.selectedId} onselect={(id) => store.choose(id)} /></li>
           {/each}
         </ul>
       </section>

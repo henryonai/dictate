@@ -629,6 +629,86 @@ describe("what a person asks the window to do", () => {
   });
 });
 
+describe("the list in a narrow window", () => {
+  /** The window is `width` px wide, and says so. */
+  const resize = (width: number) => {
+    window.innerWidth = width;
+    window.dispatchEvent(new Event("resize"));
+  };
+
+  test("is open at first in a window of 1100 px or more, and closed in a narrower one", async () => {
+    window.innerWidth = 1100;
+    await started();
+    expect(store.sidebarOpen).toBe(true);
+    expect(store.narrow).toBe(false);
+    store.stop();
+
+    window.innerWidth = 1099;
+    await started();
+    expect(store.sidebarOpen).toBe(false);
+    expect(store.narrow).toBe(true);
+  });
+
+  test("is closed when the window is made narrower than 1100 px, and is not opened again when it is made wider", async () => {
+    await started();
+    expect(store.sidebarOpen).toBe(true);
+
+    resize(1100);
+    expect(store.sidebarOpen).toBe(true);
+    resize(1099);
+    expect(store.sidebarOpen).toBe(false);
+    expect(store.narrow).toBe(true);
+
+    resize(1400);
+    expect(store.sidebarOpen).toBe(false);
+    expect(store.narrow).toBe(false);
+  });
+
+  test("is left as the person put it by a resize that does not cross 1100 px", async () => {
+    window.innerWidth = 900;
+    await started();
+    store.toggleSidebar();
+    expect(store.sidebarOpen).toBe(true);
+
+    resize(850);
+    resize(1000);
+    expect(store.sidebarOpen).toBe(true);
+
+    resize(1300);
+    store.toggleSidebar();
+    resize(1500);
+    expect(store.sidebarOpen).toBe(false);
+  });
+
+  test("stops listening to the size of the window when the store stops", async () => {
+    await started();
+    store.stop();
+
+    resize(800);
+
+    expect(store.sidebarOpen).toBe(true);
+  });
+
+  test("a recording that is picked closes the list when it is over the recording, and leaves it when it is beside it", async () => {
+    window.innerWidth = 900;
+    await started();
+    store.toggleSidebar();
+    expect(store.sidebarOpen).toBe(true);
+
+    await store.choose(ID);
+
+    expect(store.selectedId).toBe(ID);
+    expect(store.sidebarOpen).toBe(false);
+    store.stop();
+
+    window.innerWidth = 1240;
+    await started();
+    await store.choose(OTHER);
+    expect(store.selectedId).toBe(OTHER);
+    expect(store.sidebarOpen).toBe(true);
+  });
+});
+
 describe("the questions asked", () => {
   test("are kept for each recording in memory, for the window to show again", async () => {
     await started();
