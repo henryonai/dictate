@@ -112,6 +112,11 @@ export class PlayerController {
   private released = false;
   /** How many times `pause()` was called: a seek that was waiting when it grew was paused, and does not play. */
   private pauses = 0;
+  /**
+   * An address was given to the element and has not loaded yet. Loading puts the element back to its normal speed and says so
+   * (`ratechange`): that is not a speed that someone chose, and the speed that is kept is put back once it has loaded.
+   */
+  private loading = false;
   /** The size that the picture comes back to when it is shown again after it was hidden. */
   private visibleSize: "small" | "large" = this.size === "large" ? "large" : "small";
 
@@ -129,7 +134,7 @@ export class PlayerController {
       this.reset();
       this.url = media?.url ?? "";
       this.video = media?.video ?? false;
-      if (this.element && this.url) this.element.src = this.url;
+      if (this.element && this.url) this.load(this.element, this.url);
       return;
     }
     if (media) this.video = this.picture(media);
@@ -150,6 +155,7 @@ export class PlayerController {
     this.detach();
     this.element = element;
     this.released = false;
+    this.loading = false;
     this.handlers = {
       play: () => this.onPlay(),
       pause: () => this.onPause(),
@@ -159,6 +165,7 @@ export class PlayerController {
       emptied: () => this.clearBackstop(),
       loadedmetadata: () => this.onLoaded(),
       durationchange: () => this.readDuration(),
+      ratechange: () => this.onRate(),
       waiting: () => this.startBackstop(),
       stalled: () => this.startBackstop(),
       error: () => {
@@ -168,7 +175,7 @@ export class PlayerController {
     for (const [type, handler] of Object.entries(this.handlers)) element.addEventListener(type, handler);
     this.ticker = setInterval(() => this.tick(), TICK_MS);
     this.applyRate(element);
-    if (this.url) element.src = this.url;
+    if (this.url) this.load(element, this.url);
     return () => this.detach(element);
   }
 
@@ -337,6 +344,20 @@ export class PlayerController {
     if (this.element && !this.pending && !this.released) this.currentTime = this.element.currentTime;
   }
 
+  /** The speed was changed (with the menu of the video): the bar shows it. Not while an address loads, which is not a choice. */
+  private onRate(): void {
+    const element = this.element;
+    if (!element || this.loading || this.released) return;
+    const rate = element.playbackRate;
+    if (Number.isFinite(rate) && rate > 0) this.rate = rate;
+  }
+
+  /** Gives the element its address; it loads, and the speed that it says meanwhile is not read. */
+  private load(element: HTMLMediaElement, url: string): void {
+    this.loading = true;
+    element.src = url;
+  }
+
   private onLoaded(): void {
     this.clearBackstop();
     this.recoveries = 0;
@@ -347,8 +368,10 @@ export class PlayerController {
       // A video that has loaded and has no width has no picture. (Another element than a video has no width to tell: not 0.)
       this.noPicture = this.video && (element as Partial<HTMLVideoElement>).videoWidth === 0;
       this.readDuration();
-      // Loading an address puts the element back to the normal speed.
+      // Loading an address puts the element back to the normal speed: the speed that is kept is put back, and what the element
+      // says about its speed is read again.
       this.applyRate(element);
+      this.loading = false;
     }
     if (!element || !pending) return;
     element.currentTime = pending.at;
@@ -401,7 +424,7 @@ export class PlayerController {
     this.released = false;
     this.pending = { at, resume };
     this.clearBackstop();
-    if (this.element) this.element.src = url;
+    if (this.element) this.load(this.element, url);
   }
 
   /** The address the server gives now, when it is not the one that is played; null when it is the same, or cannot be known. */

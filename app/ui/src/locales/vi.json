@@ -365,7 +365,7 @@
   "meetings.player.play": "Phát",
   "meetings.player.pause": "Tạm dừng",
   "meetings.player.position": "Vị trí",
-  "meetings.player.speed": "Tốc độ phát",
+  "meetings.player.speed": "Tốc độ phát {rate}×",
   "meetings.player.enlarge": "Phóng to",
   "meetings.player.shrink": "Thu nhỏ",
   "meetings.player.hide_video": "Ẩn video",

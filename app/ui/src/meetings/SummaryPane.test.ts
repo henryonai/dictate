@@ -368,14 +368,14 @@ test("a_trailing_time_is_a_chip_that_seeks: the time at the end of each kind of 
 });
 
 test("a_trailing_time_is_a_chip_that_seeks: the link of a time is drawn as a pill in the timestamp color and the monospaced face", () => {
-  const chip = declarationsOf(styles, ".sections :global(a[data-seek])");
+  const chip = declarationsOf(styles, ".sections :global(.inline a[data-seek])");
   expect(chip["border-radius"]).toBe("999px");
   expect(chip.color).toBe("var(--ts)");
   expect(chip["font-family"]).toBe("var(--mono)");
   expect(chip["font-variant-numeric"]).toBe("tabular-nums");
   expect(chip.background).toBe("var(--panel)");
   expect(chip.border).toBe("1px solid var(--line)");
-  expect(declarationsOf(styles, ".sections :global(a[data-seek]:hover)").background).toBe("var(--hl)");
+  expect(declarationsOf(styles, ".sections :global(.inline a[data-seek]:hover)").background).toBe("var(--hl)");
 });
 
 test("a_trailing_time_is_a_chip_that_seeks: with no player the time is plain text and is not drawn as a pill", () => {
@@ -383,10 +383,46 @@ test("a_trailing_time_is_a_chip_that_seeks: with no player the time is plain tex
 
   for (const link of document.querySelectorAll(".sections a[data-seek]")) expect(link).toHaveAttribute("data-inert");
   // The pill is left off an inert one: it is text again, as it was in the summary.
-  const inert = declarationsOf(styles, ".sections :global(a[data-inert])");
+  const inert = declarationsOf(styles, ".sections :global(.inline a[data-inert])");
   expect(inert.border).toBe("0");
   expect(inert.background).toBe("none");
   expect(inert.color).toBe("inherit");
+});
+
+/** What a selector of a Svelte style weighs on the page, as [classes, attributes and pseudo-classes, types]. Svelte adds the class of the component once. */
+function weight(selector: string): [number, number] {
+  const plain = selector.replace(/:global\((.*)\)$/, "$1");
+  const classes = (plain.match(/\.[\w-]+/g) ?? []).length + (plain.match(/\[[^\]]*\]/g) ?? []).length + (plain.match(/(?<!:):[\w-]+/g) ?? []).length;
+  const types = (plain.match(/(?:^|[\s>+~])[a-z][\w-]*/g) ?? []).length;
+  return [classes + 1, types];
+}
+
+const heavier = (a: [number, number], b: [number, number]) => a[0] > b[0] || (a[0] === b[0] && a[1] > b[1]);
+
+test("a_trailing_time_is_a_chip_that_seeks: the chip wins over the style of a stamp in Inline whatever the order of the style sheets", () => {
+  const inline = parseCss(styleOf(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "Inline.svelte"), "utf8")));
+  const own = (rules: typeof styles, property: string) =>
+    rules.flatMap((rule) => (property in rule.declarations ? rule.selectors.map((selector) => ({ selector, rule })) : []));
+
+  // Every property that both set (the size, the color and the face) is set by the chip with a selector that weighs more, so that the
+  // order of the two style sheets in the page does not decide.
+  const chipSelector = ".sections :global(.inline a[data-seek])";
+  const stamp = ".inline :global(a[data-seek])";
+  expect(inline.some((rule) => rule.selectors.includes(stamp))).toBe(true);
+  expect(heavier(weight(chipSelector), weight(stamp))).toBe(true);
+  for (const property of ["font-size", "color", "font-family"]) {
+    expect(own(styles, property).some(({ selector }) => selector === chipSelector), `the chip sets ${property}`).toBe(true);
+    expect(own(inline, property).some(({ selector }) => selector === stamp), `a stamp sets ${property}`).toBe(true);
+  }
+  expect(declarationsOf(styles, chipSelector)["font-size"]).toBe("0.85em");
+
+  // The stamp that has no player is plain text again: as heavy as the chip, and after it, so that it wins over the chip (and over
+  // the stamp of Inline, which it is heavier than).
+  const inert = ".sections :global(.inline a[data-inert])";
+  expect(weight(inert)).toEqual(weight(chipSelector));
+  expect(heavier(weight(inert), weight(stamp))).toBe(true);
+  const order = styles.flatMap((rule) => rule.selectors);
+  expect(order.indexOf(inert)).toBeGreaterThan(order.indexOf(chipSelector));
 });
 
 test("a_trailing_time_is_a_chip_that_seeks: a summary from before the times shows as it was, with no link of its own", () => {

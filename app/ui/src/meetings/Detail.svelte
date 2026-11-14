@@ -199,6 +199,12 @@
     min-width: 0;
     min-height: 0;
   }
+  /* The left column is a container of its size (it has the height of the row and the width of its track, whatever is in it): the large
+     picture of the player is capped by its height (`cqh`) so that the transcript keeps its room. */
+  .left {
+    container-name: column;
+    container-type: size;
+  }
   .none {
     margin: 0;
     padding: 48px 16px;

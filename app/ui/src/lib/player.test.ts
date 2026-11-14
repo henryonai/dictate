@@ -900,6 +900,52 @@ describe("the controls of the slim bar", () => {
     expect((next as unknown as HTMLMediaElement).playbackRate).toBe(1.5);
   });
 
+  test("a speed that is changed with the native menu is the speed of the bar, but the reset of a load is not", async () => {
+    const { player } = setup();
+    const native = element as unknown as HTMLMediaElement;
+    element.emit("loadedmetadata");
+
+    // The menu of the video: the bar follows it.
+    native.playbackRate = 2;
+    element.emit("ratechange");
+    expect(player.rate).toBe(2);
+
+    // Loading an address (another recording, a new port) puts the element back to the normal speed, and says so: that is no choice.
+    player.bind("another", fakeMedia({ url: "http://127.0.0.1:41000/tok-a/2" }));
+    native.playbackRate = 1;
+    element.emit("ratechange");
+    expect(player.rate).toBe(2);
+    // Once it has loaded the speed that was chosen is put back, and a change after that is a choice again.
+    element.emit("loadedmetadata");
+    expect(native.playbackRate).toBe(2);
+    native.playbackRate = 1.5;
+    element.emit("ratechange");
+    expect(player.rate).toBe(1.5);
+  });
+
+  test("the reset that a swap of the address brings, and the one of a new element, are no choice either", async () => {
+    const { player } = setup(NEW);
+    const native = element as unknown as HTMLMediaElement;
+    element.emit("loadedmetadata");
+    player.setRate(1.5);
+
+    // After a pause the address is read again and swapped in: it loads, which puts the element back.
+    await player.seek(65);
+    expect(element.src).toBe(NEW.url);
+    native.playbackRate = 1;
+    element.emit("ratechange");
+    expect(player.rate).toBe(1.5);
+    element.emit("loadedmetadata");
+    expect(native.playbackRate).toBe(1.5);
+
+    // An element that attaches is given its address and its speed, and what it says while it loads is not read.
+    const next = new FakeMedia();
+    player.attach(next as unknown as HTMLMediaElement);
+    (next as unknown as HTMLMediaElement).playbackRate = 1;
+    next.emit("ratechange");
+    expect(player.rate).toBe(1.5);
+  });
+
   test("the length is read from the element, and is 0 when it is not a number yet", () => {
     const { player } = setup();
     expect(player.duration).toBe(0);

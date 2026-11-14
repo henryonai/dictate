@@ -254,8 +254,9 @@
     border-radius: 999px;
   }
   /* The time at the end of an item is a chip: the link that `Inline` makes of a stamp, drawn as a pill so that it reads as a place to go
-     to. Without a player it is plain text again, as in `Inline`. */
-  .sections :global(a[data-seek]) {
+     to. Without a player it is plain text again, as in `Inline`. The selectors name `.inline` (the box that `Inline` makes) so that they
+     weigh more than the style of a stamp in `Inline` itself: the chip wins over it whichever of the two style sheets comes last. */
+  .sections :global(.inline a[data-seek]) {
     padding: 0 7px;
     font-family: var(--mono);
     font-size: 0.85em;
@@ -266,10 +267,10 @@
     border: 1px solid var(--line);
     border-radius: 999px;
   }
-  .sections :global(a[data-seek]:hover) {
+  .sections :global(.inline a[data-seek]:hover) {
     background: var(--hl);
   }
-  .sections :global(a[data-inert]) {
+  .sections :global(.inline a[data-inert]) {
     padding: 0;
     color: inherit;
     background: none;
