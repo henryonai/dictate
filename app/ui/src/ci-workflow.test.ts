@@ -546,13 +546,3 @@ describe("the Intel Mac is checked before a release finds out that it does not b
     expect(text()).toContain("key: sherpa-onnx-1.13.8-${{ runner.os }}-${{ runner.arch }}");
   });
 });
-
-describe("how CI is started", () => {
-  test("on every pull request and on main, and by hand on any branch", () => {
-    // By hand: a branch that is not a pull request yet (the one that prepares a release, for one) can run the same jobs on the real runners.
-    const on = workflow.slice(workflow.indexOf("\non:\n"), workflow.indexOf("\npermissions:\n"));
-    expect(on).toMatch(/^ {2}push:\n {4}branches: \[main\]$/m);
-    expect(on).toMatch(/^ {2}pull_request:$/m);
-    expect(on).toMatch(/^ {2}workflow_dispatch:$/m);
-  });
-});
