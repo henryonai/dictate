@@ -145,7 +145,7 @@ Loah is Dictate under a new name, from version 2.1.0. To your system it is a new
 2. Point your MCP client at Loah.
 3. Quit Dictate and remove it.
 
-While Dictate is still installed, Settings → General shows a notice with a button that opens this section: the two apps use the same shortcut and the same meetings folder, so run only one of them.
+While Dictate is running, or is set to open at login, Settings → General shows a notice with a button that opens this section: the two apps use the same shortcut and the same meetings folder, so run only one of them.
 
 ### What Loah copies from Dictate
 
@@ -165,7 +165,7 @@ If an item cannot be copied (a file in use, a full disk), Loah goes on reading D
 
 - **Meetings library.** If you have a `Dictate Meetings` folder in Documents and no `Loah Meetings` one, Loah and `loah-mcp` go on using `Dictate Meetings`, where it is: nothing is moved or renamed. A new install uses `Loah Meetings`.
 - **Environment variables.** `LOAH_MEETINGS_DIR` and `LOAH_FFMPEG` are the names now. `DICTATE_MEETINGS_DIR` and `DICTATE_FFMPEG` are still read when the new one is not set, so an MCP configuration or a shell profile that sets them keeps working.
-- **API keys.** The keys are kept in the credential store of your system under the service `Loah` (on Windows, the entries `default.Loah` and `transcribe.Loah`). The first time Loah needs a key that it does not have, it copies Dictate's key (the service `Dictate`; on Windows `default.Dictate` and `transcribe.Dictate`) and leaves Dictate's entry where it is. On a Mac, Keychain may ask whether Loah can use the item that Dictate saved: choose **Allow**. Clearing a key in Settings → *Accounts & API keys* removes it in Loah and leaves Dictate's entry alone.
+- **API keys.** The keys are kept in the credential store of your system under the service `Loah` (on Windows, the entries `default.Loah` and `transcribe.Loah`). The first time Loah needs a key that it does not have, it copies Dictate's key (the service `Dictate`; on Windows `default.Dictate` and `transcribe.Dictate`) and leaves Dictate's entry where it is. On a Mac, Keychain may ask whether Loah can use the item that Dictate saved: choose **Allow**. If you choose **Deny**, Loah goes on as if it had no key (it says to add one) and asks again at the next start; you can also type the key again in Settings. Clearing a key in Settings → *Accounts & API keys* removes it in Loah and leaves Dictate's entry alone.
 
 To remove a key completely by hand, remove **both** entries, Loah's and Dictate's: if Dictate's is left, Loah copies the key back the next time it needs it. On Windows, in PowerShell:
 
@@ -188,10 +188,10 @@ The server has a new path. Keep the name that your client uses for it, `dictate`
 | Windows | `%LOCALAPPDATA%\Dictate\dictate-mcp.exe` | `%LOCALAPPDATA%\Loah\loah-mcp.exe` |
 | Linux | `/usr/bin/dictate-mcp` | `/usr/bin/loah-mcp` |
 
-- **macOS.** Re-point Claude Code (an entry that exists has to be removed before it is added again):
+- **macOS.** Re-point Claude Code (an entry that exists has to be removed before it is added again). If the first command says that no MCP server is named `dictate`, go on to the next line:
 
   ```sh
-  claude mcp remove --scope user dictate
+  claude mcp remove dictate
   claude mcp add --scope user dictate -- /Applications/Loah.app/Contents/MacOS/loah-mcp
   ```
 
@@ -199,7 +199,7 @@ The server has a new path. Keep the name that your client uses for it, `dictate`
 - **Windows.** Loah installs beside Dictate (an installer for one user cannot safely remove another program), and `%LOCALAPPDATA%\Dictate\dictate-mcp.exe` keeps working until you uninstall Dictate. Re-point Claude Code, in PowerShell:
 
   ```powershell
-  claude mcp remove --scope user dictate
+  claude mcp remove dictate
   claude mcp add --scope user dictate -- "$env:LOCALAPPDATA\Loah\loah-mcp.exe"
   ```
 
@@ -207,7 +207,7 @@ The server has a new path. Keep the name that your client uses for it, `dictate`
 - **Linux.** Installing the Loah `.deb` replaces the `dictate` package, and `/usr/bin/dictate-mcp` and `/usr/bin/dictate` keep working: they are small scripts that start `loah-mcp` and `loah`, so an MCP client set up for Dictate and a key bound to `dictate --toggle` go on as they were. They stay for the 2.x versions and go in a later major version, which the release notes will announce, so point your client at `loah-mcp` when you can:
 
   ```sh
-  claude mcp remove --scope user dictate
+  claude mcp remove dictate
   claude mcp add --scope user dictate -- loah-mcp
   ```
 

@@ -71,6 +71,17 @@ function codeBlocks(text: string): string[] {
   return [...text.matchAll(/^(```|~~~)[^\n]*\n([\s\S]*?)^\1[^\n]*$/gm)].map((match) => match[2].trim());
 }
 
+/** Every fenced code block, also the ones inside a list item (indented), as their lines without the indent: what `codeBlocks` leaves out. */
+function allCode(text: string): string[] {
+  return [...text.matchAll(/^([ \t]*)(```|~~~)[^\n]*\n([\s\S]*?)^\1\2[^\n]*$/gm)].map((match) =>
+    match[3]
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line !== "")
+      .join("\n"),
+  );
+}
+
 /** The headings of a document, by level. */
 const headings = (text: string, level: number) =>
   [...withoutCode(text).matchAll(new RegExp(`^${"#".repeat(level)}\\s+(.+)$`, "gm"))].map((match) => match[1]);
@@ -207,6 +218,11 @@ describe("the two READMEs", () => {
     expect(readme).toMatch(/quit the old one first/i);
   });
 
+  test("the_vietnamese_readme_spells_xoa_one_way", () => {
+    expect(readmeVi).not.toMatch(/xoá|Xoá/);
+    expect(readmeVi).toMatch(/xóa/);
+  });
+
   test("the_readmes_are_headed_loah_and_point_at_its_repository", () => {
     for (const text of [readme, readmeVi]) {
       expect(text).toContain('<h1 align="center">Loah</h1>');
@@ -247,7 +263,8 @@ describe("the two READMEs", () => {
       for (const name of ["cmdkey /delete:default.Loah", "cmdkey /delete:default.Dictate", "cmdkey /delete:transcribe.Loah", "cmdkey /delete:transcribe.Dictate"]) {
         expect(commands, `${language}: ${name}`).toContain(name);
       }
-      for (const name of ["Keychain", "Allow"]) {
+      // The prompt of the Keychain on a Mac: what to choose, and what Deny does.
+      for (const name of ["Keychain", "Allow", "Deny"]) {
         expect(text, `${language}: ${name}`).toContain(name);
       }
       // The permissions of a Mac are asked again, as the app has a new identifier.
@@ -269,20 +286,42 @@ describe("the two READMEs", () => {
       expect(text, language).toContain("claude mcp add --scope user dictate -- /Applications/Loah.app/Contents/MacOS/loah-mcp");
       expect(text, language).toContain('claude mcp add --scope user dictate -- "$env:LOCALAPPDATA\\Loah\\loah-mcp.exe"');
       expect(text, language).toContain("claude mcp add --scope user dictate -- loah-mcp");
+      // The old entry is removed without naming a scope (the command takes it from whichever has it: with `--scope user` it fails when the
+      // entry is in another one), once before each of the three `add` lines.
+      const removes = allCode(text)
+        .flatMap((block) => block.split("\n"))
+        .filter((line) => line.startsWith("claude mcp remove"));
+      expect(removes, language).toEqual(Array(3).fill("claude mcp remove dictate"));
       // Linux: the package replaces the old one, and the two commands keep working.
       expect(text, language).toContain("`/usr/bin/dictate`");
       expect(text, language).toContain("`/usr/bin/dictate-mcp`");
       // The old program is removed at the end, and Settings says so when it is still there.
       expect(text, language).toContain("Installed apps");
     }
+    // The notice of Settings shows while Dictate runs or is set to open at login (`dictate_still_present`), not while it is merely installed.
+    expect(sections.en).toMatch(/Dictate is running[^.]*login[^.]*Settings → General shows a notice/);
+    expect(sections.vi).toMatch(/đang chạy[^.]*khởi động máy[^.]*Cài đặt → Chung hiện một thông báo/);
+    for (const text of [sections.en, sections.vi]) {
+      expect(text).not.toMatch(/Dictate is still installed|Dictate vẫn còn trên máy/);
+    }
+    // A `remove` that finds nothing says so, and the next line goes on.
+    expect(sections.en).toContain("go on to the next line");
+    expect(sections.vi).toContain("cứ chạy tiếp dòng sau");
+    // While the copy of the saved dictations has failed, the tray item opens Dictate's folder (the label as the tray has it, in each language).
+    const tray = read("app/src-tauri/src/tray.rs");
+    expect(tray).toContain('open_dictations: "Open dictations folder"');
+    expect(tray).toContain('open_dictations: "Mở thư mục đọc chính tả"');
+    expect(sections.en).toContain("**Open dictations folder**");
+    expect(sections.vi).toContain("**Mở thư mục đọc chính tả**");
     // The permission guide mark is not copied (a new app has no permission yet, so the guide shows again), and Dictate's own folders are
     // never changed or deleted.
     for (const text of [readme, readmeVi]) {
       expect(text).not.toContain("permission-guide-shown");
     }
     expect(sections.en).toMatch(/never (?:changes?|changed|touch(?:es|ed)?|delet(?:es?|ed))/i);
-    // A command is the same in both languages.
-    expect(codeBlocks(sections.vi)).toEqual(codeBlocks(sections.en));
+    // A command is the same in both languages, the ones inside a list item too.
+    expect(allCode(sections.vi)).toEqual(allCode(sections.en));
+    expect(allCode(readmeVi)).toEqual(allCode(readme));
     // The lead of each README links to its own section.
     expect(targets(readme)).toContain("#upgrading-from-dictate");
     expect(targets(readmeVi)).toContain("#nâng-cấp-từ-dictate");
@@ -625,13 +664,21 @@ describe("the policies and the templates of the repository", () => {
     // What ships is `loah`, `loah-mcp` and `loah-ffmpeg`, from the crates `loah-app`, `loah-mcp` and the two that they share: the written
     // offer of the FFmpeg source has to name the program that a person finds in an installer.
     const old = /dictate-(?:ffmpeg|mcp|app|core|services)|dictate\.exe|Dictate\.app|\/usr\/(?:lib|share\/doc)\/dictate|\bdictate --(?:toggle|record)/;
+    // The lines about the two wrappers of the `.deb` name the old commands on purpose (app/README.md, Installers).
+    const withoutTheWrappers = (text: string) => text.split("\n").filter((line) => !line.includes("`/usr/bin/dictate`")).join("\n");
     for (const [name, text] of [
       ["THIRD_PARTY_NOTICES.md", notices],
       ["app/README.md", appReadme],
       ["CONTRIBUTING.md", read("CONTRIBUTING.md")],
       ["SECURITY.md", read("SECURITY.md")],
     ]) {
-      expect(text, name).not.toMatch(old);
+      expect(withoutTheWrappers(text), name).not.toMatch(old);
+    }
+    // The Linux package keeps Dictate's commands working for the 2.x series, and says how (the developer guide has the mechanism).
+    const wrappers = appReadme.split("\n").filter((line) => line.includes("`/usr/bin/dictate`"));
+    expect(wrappers, "one line of app/README.md about the wrappers").toHaveLength(1);
+    for (const word of ["`/usr/bin/dictate-mcp`", "Replaces", "Conflicts", "Provides", "later major release", "app/src-tauri/linux/dictate"]) {
+      expect(wrappers[0], word).toContain(word);
     }
     expect(notices).toContain("`loah-ffmpeg`");
     expect(notices).toContain("`loah-app`");

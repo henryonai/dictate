@@ -139,13 +139,13 @@ Dữ liệu của Dictate, nếu bạn từng dùng, không phải việc của 
 
 ## Nâng cấp từ Dictate
 
-Loah là Dictate dưới một cái tên mới, từ phiên bản 2.1.0. Với hệ điều hành, đây là một app mới, có tên và mã định danh riêng (`io.github.henryonai.loah`), nên bộ cài đặt nó cạnh Dictate chứ không đè lên (trên Linux thì gói mới thay gói cũ: xem bên dưới). Ở lần mở đầu tiên, Loah mang dữ liệu của bạn sang, và không bao giờ sửa hay xóa bất cứ thứ gì của Dictate, nên bạn vẫn quay lại Dictate được cho tới khi tự tay gỡ nó. Tóm tắt:
+Loah là Dictate dưới một cái tên mới, từ phiên bản 2.1.0. Với hệ điều hành, đây là một app mới, có tên và mã định danh riêng (`io.github.henryonai.loah`), nên bộ cài sẽ cài nó cạnh Dictate chứ không đè lên (trên Linux thì gói mới thay gói cũ: xem bên dưới). Ở lần mở đầu tiên, Loah mang dữ liệu của bạn sang, và không bao giờ sửa hay xóa bất cứ thứ gì của Dictate, nên bạn vẫn quay lại Dictate được cho tới khi tự tay gỡ nó. Tóm tắt:
 
 1. Cài Loah và mở một lần: Loah sẽ chép những gì bạn đã có.
 2. Trỏ MCP client của bạn sang Loah.
 3. Thoát Dictate và gỡ nó.
 
-Khi Dictate vẫn còn trên máy, Cài đặt → Chung hiện một thông báo kèm nút mở mục này: hai app dùng chung phím tắt và thư mục cuộc họp, nên chỉ chạy một trong hai.
+Khi Dictate đang chạy, hoặc được đặt tự mở khi khởi động máy, Cài đặt → Chung hiện một thông báo kèm nút mở mục này: hai app dùng chung phím tắt và thư mục cuộc họp, nên chỉ chạy một trong hai.
 
 ### Loah chép gì từ Dictate
 
@@ -165,7 +165,7 @@ Nếu một mục chép không được (file đang được dùng, đĩa đầy
 
 - **Thư viện cuộc họp.** Nếu bạn có thư mục `Dictate Meetings` trong Documents mà chưa có `Loah Meetings`, Loah và `loah-mcp` tiếp tục dùng `Dictate Meetings` tại chỗ: không có gì bị di chuyển hay đổi tên. Bản cài mới dùng `Loah Meetings`.
 - **Biến môi trường.** Tên hiện nay là `LOAH_MEETINGS_DIR` và `LOAH_FFMPEG`. `DICTATE_MEETINGS_DIR` và `DICTATE_FFMPEG` vẫn được đọc khi biến mới chưa đặt, nên cấu hình MCP hay shell profile đang đặt chúng vẫn chạy.
-- **API key.** Các key được lưu trong kho credential của hệ thống với service `Loah` (trên Windows là các mục `default.Loah` và `transcribe.Loah`). Lần đầu Loah cần một key mà nó chưa có, nó chép key của Dictate (service `Dictate`; trên Windows là `default.Dictate` và `transcribe.Dictate`) và để nguyên mục của Dictate. Trên Mac, Keychain có thể hỏi Loah có được dùng mục mà Dictate đã lưu không: hãy chọn **Allow**. Xóa một key trong Cài đặt → *Tài khoản & API key* thì key bị xóa ở Loah và mục của Dictate vẫn nguyên.
+- **API key.** Các key được lưu trong kho credential của hệ thống với service `Loah` (trên Windows là các mục `default.Loah` và `transcribe.Loah`). Lần đầu Loah cần một key mà nó chưa có, nó chép key của Dictate (service `Dictate`; trên Windows là `default.Dictate` và `transcribe.Dictate`) và để nguyên mục của Dictate. Trên Mac, Keychain có thể hỏi Loah có được dùng mục mà Dictate đã lưu không: hãy chọn **Cho phép (Allow)**. Nếu bạn chọn **Từ chối (Deny)**, Loah coi như chưa có key (và báo cần thêm key) rồi hỏi lại ở lần mở sau; bạn cũng có thể nhập lại key trong Cài đặt. Xóa một key trong Cài đặt → *Tài khoản & API key* thì key bị xóa ở Loah và mục của Dictate vẫn nguyên.
 
 Muốn xóa hẳn một key bằng tay, hãy xóa **cả hai** mục, của Loah và của Dictate: nếu để lại mục của Dictate thì lần tới cần key, Loah sẽ chép nó trở lại. Trên Windows, trong PowerShell:
 
@@ -188,10 +188,10 @@ MCP server có đường dẫn mới. Hãy giữ nguyên tên mà client của b
 | Windows | `%LOCALAPPDATA%\Dictate\dictate-mcp.exe` | `%LOCALAPPDATA%\Loah\loah-mcp.exe` |
 | Linux | `/usr/bin/dictate-mcp` | `/usr/bin/loah-mcp` |
 
-- **macOS.** Trỏ lại Claude Code (mục đã có thì phải xóa trước khi thêm lại):
+- **macOS.** Trỏ lại Claude Code (mục đã có thì phải xóa trước khi thêm lại). Nếu lệnh đầu báo không có MCP server nào tên `dictate`, cứ chạy tiếp dòng sau:
 
   ```sh
-  claude mcp remove --scope user dictate
+  claude mcp remove dictate
   claude mcp add --scope user dictate -- /Applications/Loah.app/Contents/MacOS/loah-mcp
   ```
 
@@ -199,15 +199,15 @@ MCP server có đường dẫn mới. Hãy giữ nguyên tên mà client của b
 - **Windows.** Loah được cài cạnh Dictate (bộ cài cho một tài khoản không thể tự gỡ một chương trình khác một cách an toàn), và `%LOCALAPPDATA%\Dictate\dictate-mcp.exe` vẫn chạy được cho tới khi bạn gỡ Dictate. Trỏ lại Claude Code, trong PowerShell:
 
   ```powershell
-  claude mcp remove --scope user dictate
+  claude mcp remove dictate
   claude mcp add --scope user dictate -- "$env:LOCALAPPDATA\Loah\loah-mcp.exe"
   ```
 
   Với Claude Desktop, đổi `command` của mục `dictate` sang đường dẫn mới (mỗi dấu gạch chéo ngược viết hai lần) rồi khởi động lại Claude. Sau đó thoát Dictate và gỡ nó: Settings → Apps → Installed apps → Dictate → Uninstall.
-- **Linux.** Cài file `.deb` của Loah sẽ thay gói `dictate`, và `/usr/bin/dictate-mcp` cùng `/usr/bin/dictate` vẫn chạy được: đó là các script nhỏ khởi động `loah-mcp` và `loah`, nên MCP client đã cài cho Dictate và phím gán cho `dictate --toggle` vẫn hoạt động như cũ. Chúng còn trong các bản 2.x và sẽ bỏ ở một bản chính (major) sau, mà ghi chú phát hành sẽ báo trước; vì vậy hãy trỏ client sang `loah-mcp` khi bạn tiện:
+- **Linux.** Cài file `.deb` của Loah sẽ thay luôn gói `dictate`, còn `/usr/bin/dictate-mcp` và `/usr/bin/dictate` vẫn chạy được: đó là hai script nhỏ chỉ việc khởi động `loah-mcp` và `loah`, nên MCP client đã thiết lập cho Dictate và phím tắt gán cho `dictate --toggle` vẫn hoạt động như cũ. Hai script này được giữ trong suốt các bản 2.x và sẽ bị bỏ ở một bản chính (major) sau, ghi chú phát hành sẽ báo trước. Vì vậy, khi tiện, bạn nên trỏ client sang `loah-mcp`:
 
   ```sh
-  claude mcp remove --scope user dictate
+  claude mcp remove dictate
   claude mcp add --scope user dictate -- loah-mcp
   ```
 
@@ -221,7 +221,7 @@ App Swift cũ là một chương trình khác, trùng tên với app mà Loah th
 2. Cài Loah rồi cấp các quyền ([Lần chạy đầu tiên](#lần-chạy-đầu-tiên)). Cài đặt và API key của app cũ cũng không được chuyển sang: hãy nhập lại trong Cài đặt.
 3. Trỏ MCP client sang Loah như ở trên, rồi kéo `Dictate.app` cũ vào Thùng rác.
 
-Các file riêng của app cũ vẫn nằm nguyên chỗ cũ và Loah không dùng chúng: các model WhisperKit trong `~/Library/Application Support/Dictate/Models` và các bản ghi âm đọc chính tả của nó trong thư mục `Recordings` cạnh đó. Bạn có thể xoá cả hai thư mục để lấy lại dung lượng. Những gì giữ nguyên: thư viện của bạn (thư mục `Dictate Meetings` trong Documents cùng định dạng, các bản ghi của app cũ mở được như thường). Những gì không còn: Apple Speech và WhisperKit. Giọng nói được nhận dạng bằng các model Whisper, bạn tải lại trong Cài đặt.
+Các file riêng của app cũ vẫn nằm nguyên chỗ cũ và Loah không dùng chúng: các model WhisperKit trong `~/Library/Application Support/Dictate/Models` và các bản ghi âm đọc chính tả của nó trong thư mục `Recordings` cạnh đó. Bạn có thể xóa cả hai thư mục để lấy lại dung lượng. Những gì giữ nguyên: thư viện của bạn (thư mục `Dictate Meetings` trong Documents cùng định dạng, các bản ghi của app cũ mở được như thường). Những gì không còn: Apple Speech và WhisperKit. Giọng nói được nhận dạng bằng các model Whisper, bạn tải lại trong Cài đặt.
 
 ## Lần chạy đầu tiên
 
@@ -266,7 +266,7 @@ Khi không có ô chữ nào đang chọn, hoặc khi đã tắt thiết lập �
 
 #### Đọc chính tả trên từng hệ điều hành
 
-- **macOS:** đọc chính tả cần quyền Microphone và Accessibility (xem [Lần chạy đầu tiên](#lần-chạy-đầu-tiên)). App chưa ký, nên sau khi build lại hoặc cập nhật, có thể phải cấp lại Accessibility: trong System Settings → Privacy & Security → Accessibility, xoá Loah khỏi danh sách rồi thêm lại.
+- **macOS:** đọc chính tả cần quyền Microphone và Accessibility (xem [Lần chạy đầu tiên](#lần-chạy-đầu-tiên)). App chưa ký, nên sau khi build lại hoặc cập nhật, có thể phải cấp lại Accessibility: trong System Settings → Privacy & Security → Accessibility, xóa Loah khỏi danh sách rồi thêm lại.
 - **Windows:** app chạy với quyền administrator thì app thường không dán vào được: Loah sao chép chữ, thẻ báo như vậy, và bạn nhấn `Ctrl+V`. Nếu micro chỉ thu được im lặng, kiểm tra Settings → Privacy & security → Microphone và cho phép các app desktop dùng micro.
 - **Linux:** X11 dùng bình thường. Trên Wayland không app nào được nhấn phím trong app khác, nên hãy cài `wtype` (desktop wlroots như Sway, và Hyprland) hoặc `ydotool` để Loah dán được; không có cái nào thì chữ được sao chép và bạn nhấn `Ctrl+V`. Phím tắt đến từ GlobalShortcuts portal của desktop (KDE Plasma, GNOME 48 trở lên, Hyprland); nơi nào không có (Sway và các desktop wlroots khác), hãy gán một phím trong cài đặt của desktop để chạy `loah --toggle`.
 
@@ -282,7 +282,7 @@ Khi không có ô chữ nào đang chọn, hoặc khi đã tắt thiết lập �
 
 Mục **Cuộc họp…** trên menu khay mở thư viện: thêm một bản ghi thì Loah tạo transcript, tách người nói (Speaker 1, 2…) và, khi đã cài AI, viết bản tóm tắt gồm ý chính, quyết định, việc cần làm tick được và các chương nhảy tới đúng đoạn trong bản ghi. Bạn hỏi được về bản ghi, đổi tên người nói, xuất Markdown, hoặc chuyển bản ghi vào Thùng rác (Recycle Bin).
 
-- **Thêm bản ghi.** Chọn file âm thanh hoặc video, kéo thả vào cửa sổ, hoặc dán một link (YouTube hay trang nào yt-dlp hỗ trợ) bằng `Ctrl+V` / `⌘V` ở bất kỳ đâu trong cửa sổ. **File bạn thêm không được chép hay di chuyển:** bản ghi vẫn trỏ về file gốc, nên đừng chuyển file đi. Nếu file bị chuyển đi hoặc xoá, transcript và tóm tắt vẫn còn, còn phần phát sẽ báo file không còn.
+- **Thêm bản ghi.** Chọn file âm thanh hoặc video, kéo thả vào cửa sổ, hoặc dán một link (YouTube hay trang nào yt-dlp hỗ trợ) bằng `Ctrl+V` / `⌘V` ở bất kỳ đâu trong cửa sổ. **File bạn thêm không được chép hay di chuyển:** bản ghi vẫn trỏ về file gốc, nên đừng chuyển file đi. Nếu file bị chuyển đi hoặc xóa, transcript và tóm tắt vẫn còn, còn phần phát sẽ báo file không còn.
 - **Thư mục thư viện** là `Loah Meetings` trong thư mục Documents của bạn (thư viện do Dictate tạo vẫn nằm ở `Dictate Meetings`, tại chỗ: xem [Nâng cấp từ Dictate](#nâng-cấp-từ-dictate)), mỗi bản ghi một thư mục đặt theo thời gian bắt đầu, bên trong có `transcript.txt`, `summary.md`, `tasks.json`, `log.txt` và `meta.json`. Thư viện của app Swift cũ có cùng định dạng. Đặt biến `LOAH_MEETINGS_DIR` (dấu `~` ở đầu là thư mục home) trước khi mở app để dùng thư mục khác, ví dụ để dùng thử mà không đụng vào thư viện thật; `loah-mcp` đọc cùng biến này. `DICTATE_MEETINGS_DIR`, tên mà Dictate từng dùng, vẫn được đọc khi `LOAH_MEETINGS_DIR` chưa đặt.
 - **Chuyển giọng nói thành chữ.** Mặc định là Whisper trên máy; **API transcript** (OpenRouter, OpenAI, Groq hoặc endpoint của bạn) là lựa chọn cho file và cho đọc chính tả (Cài đặt → *Nhận dạng giọng nói* và *Tài khoản & API key*). Lần đầu tách người nói, Loah tải thêm hai model (khoảng 46 MB).
 - **Phát bản ghi trên Linux** cần plugin libav của GStreamer, gói `.deb` đã đề xuất sẵn: `sudo apt install gstreamer1.0-libav gstreamer1.0-plugins-good`. Chưa có thì cửa sổ nói cần cài gì; transcript và tóm tắt vẫn dùng bình thường.
@@ -390,7 +390,7 @@ Trên Windows, lệnh là đường dẫn ở trên, với mỗi dấu gạch ch
 }
 ```
 
-Thư viện nằm trong thư mục Documents, nên trên Mac, lần đầu macOS có thể hỏi cho Claude (hoặc app terminal chạy Claude Code) truy cập thư mục này: chọn Cho phép (Allow). Server chỉ đọc, không sửa hay xoá gì. Biến `LOAH_MEETINGS_DIR` trỏ server sang một thư viện khác (app cũng vậy), và `DICTATE_MEETINGS_DIR` cũng được khi biến kia chưa đặt. Đang dùng MCP server của Dictate? [Nâng cấp từ Dictate](#nâng-cấp-từ-dictate) nói cách trỏ client sang server này mà giữ nguyên tên các tool. Server hiểu cả hai đời giao thức MCP: đời mới (2026-07-28, mỗi request mang phiên bản trong `_meta`) và bắt tay `initialize` của 2025-11-25 trở về trước.
+Thư viện nằm trong thư mục Documents, nên trên Mac, lần đầu macOS có thể hỏi cho Claude (hoặc app terminal chạy Claude Code) truy cập thư mục này: chọn Cho phép (Allow). Server chỉ đọc, không sửa hay xóa gì. Biến `LOAH_MEETINGS_DIR` trỏ server sang một thư viện khác (app cũng vậy), và `DICTATE_MEETINGS_DIR` cũng được khi biến kia chưa đặt. Đang dùng MCP server của Dictate? [Nâng cấp từ Dictate](#nâng-cấp-từ-dictate) nói cách trỏ client sang server này mà giữ nguyên tên các tool. Server hiểu cả hai đời giao thức MCP: đời mới (2026-07-28, mỗi request mang phiên bản trong `_meta`) và bắt tay `initialize` của 2025-11-25 trở về trước.
 
 ## Cài đặt
 
