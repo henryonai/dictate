@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <title>Loah tray icon for Windows and Linux</title>
+  <!--
+    The tray icon of Windows and Linux. A taskbar or a panel can be light or dark and the app cannot tell, so a shape in one color
+    would vanish on one of them: this one brings its own ground. A graphite tile with the blue bars and the near-white lines of the
+    icon, which shows on both (the tile on a light bar, the lines on a dark one). The tile fills the image, since the little room
+    of a tray slot is not for a margin, and the glyph is the one of loah-tray.svg, a little smaller (x0.84) to sit inside it.
+  -->
+  <rect width="64" height="64" rx="14" fill="#232327"/>
+  <g transform="translate(5.12 5.12) scale(0.84)" fill="none" stroke-width="7" stroke-linecap="round">
+    <path d="M7.5 26v12M19.5 17v30M31.5 22v20" stroke="#4c9aff"/>
+    <path d="M42.5 17h14M42.5 32h10.5M42.5 47h13" stroke="#e9e9ee"/>
+  </g>
+</svg>

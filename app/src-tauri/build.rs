@@ -107,6 +107,9 @@ fn main() {
     ) {
         println!("cargo::rustc-link-arg={arg}");
     }
+    // The tray images (`tray.rs` includes them with `include_image!`, which Cargo does not watch): another image has to build the program
+    // again.
+    println!("cargo::rerun-if-changed=icons/tray");
     tauri_build::try_build(
         tauri_build::Attributes::new()
             .app_manifest(tauri_build::AppManifest::new().commands(COMMANDS)),

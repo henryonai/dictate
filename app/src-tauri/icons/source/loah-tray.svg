@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <title>Loah menu bar glyph</title>
+  <!--
+    The glyph of the icon in one color, for the menu bar of the Mac: a template image, which is only a shape (black here, with
+    transparency) that the menu bar paints dark or light to match itself. `currentColor` is black when the file is drawn on its own.
+    It is the icon's bars and lines on a 64 unit grid, with thicker strokes (7 units, 2 px at the 18 px the menu bar draws) and wider
+    gaps than the icon, which has to stay clear at that size. No tile: the glyph fills the image.
+  -->
+  <g fill="none" stroke="currentColor" stroke-width="7" stroke-linecap="round">
+    <path d="M7.5 26v12M19.5 17v30M31.5 22v20"/>
+    <path d="M42.5 17h14M42.5 32h10.5M42.5 47h13"/>
+  </g>
+</svg>

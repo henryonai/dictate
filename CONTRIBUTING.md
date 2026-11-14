@@ -63,7 +63,7 @@ Some tests read files of the repository as text, so that a change in one place c
 | `crates/loah-mcp/` | The `loah-mcp` program |
 | `app/src-tauri/` | The Tauri shell: the tray, the windows, the commands, the dictation controller, the recorder, the settings of the system |
 | `app/ui/` | The interface (Svelte 5, Vite, Vitest): `settings/`, `meetings/`, `panel/` (the floating dictation windows), `recorder/` (the recording bar), `locales/` |
-| `scripts/` | What CI and the release use: the ffmpeg build, the checks of an installer, fetching sherpa-onnx, the golden comparison with the Swift MCP server |
+| `scripts/` | What CI and the release use: the ffmpeg build, the checks of an installer, fetching sherpa-onnx, the golden comparison with the Swift MCP server. `make-icons.sh` makes the icon files (the app icon and the tray images) from the SVG drawings in `app/src-tauri/icons/source/`; it is not part of CI, the icons are committed |
 | `tests/golden/` | The outputs of the Swift MCP server that `loah-mcp` has to match byte for byte |
 | `docs/` | The design spec and the plans |
 
