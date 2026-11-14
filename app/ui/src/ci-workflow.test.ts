@@ -490,6 +490,17 @@ describe("the ffmpeg that ships with the app (LGPL v2.1 or later, built from sou
     }
   });
 
+  test("the Rust cache is restored before the ffmpeg is put in target/, or a restore of another key empties target/ffmpeg", () => {
+    // Swatinem/rust-cache cleans target/ when what it restores is not an exact match (any change of Cargo.toml or Cargo.lock): the
+    // ffmpeg that the job had built or restored a step before is gone, and `"$DICTATE_FFMPEG" -version` fails with 127.
+    const ffmpeg = job("ffmpeg");
+    expect(ffmpeg.indexOf(step("ffmpeg", "Swatinem/rust-cache@v2"))).toBeLessThan(ffmpeg.indexOf(step("ffmpeg", "id: ffmpeg-build")));
+    const windows = job("ffmpeg-windows");
+    expect(windows.indexOf(step("ffmpeg-windows", "Swatinem/rust-cache@v2"))).toBeLessThan(
+      windows.indexOf(step("ffmpeg-windows", "actions/download-artifact@v4")),
+    );
+  });
+
   test("the job gets time for a cold build of the whole workspace's libraries on a slow runner", () => {
     for (const name of ["ffmpeg", "ffmpeg-windows"]) {
       expect(Number(/^ {4}timeout-minutes: (\d+)$/m.exec(job(name))?.[1])).toBeGreaterThanOrEqual(45);

@@ -437,6 +437,16 @@ jobs:
             exe: .exe
     steps:
       - uses: actions/checkout@v4
+      # What loah-services is built with, as in the test job: the Rust toolchain and its cache (read, not written: what this job builds is
+      # part of what that one does). They come first: when the cache that is restored is not an exact match (any change of Cargo.toml or
+      # Cargo.lock) Swatinem/rust-cache cleans target/ before it unpacks, and the ffmpeg that was put there a step earlier would be gone.
+      - uses: dtolnay/rust-toolchain@stable
+        if: matrix.tests
+      - uses: Swatinem/rust-cache@v2
+        if: matrix.tests
+        with:
+          shared-key: ${{ runner.os }}
+          save-if: false
       # What the build made, under the hash of the script (it has the version, the flags and the pins of the source in it).
       - uses: actions/cache@v4
         id: ffmpeg-build
@@ -498,15 +508,7 @@ jobs:
           for name in g722 g726 shorten als; do
             echo "$decoders" | grep -q " $name " || { echo "the decoder $name is not in the build"; exit 1; }
           done
-      # What loah-services is built with, as in the test job: the Rust toolchain and its cache (read, not written: what this job builds is
-      # part of what that one does), and the sherpa-onnx library of the system.
-      - uses: dtolnay/rust-toolchain@stable
-        if: matrix.tests
-      - uses: Swatinem/rust-cache@v2
-        if: matrix.tests
-        with:
-          shared-key: ${{ runner.os }}
-          save-if: false
+      # The sherpa-onnx library of the system, which loah-services is built with (the Rust toolchain and its cache are the steps above).
       - uses: actions/cache@v4
         if: runner.os == 'macOS' && matrix.tests
         with:
@@ -554,6 +556,12 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+      # Before the download: a cache that is not an exact match makes Swatinem/rust-cache clean target/ (see the job above).
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ runner.os }}
+          save-if: false
       - uses: actions/download-artifact@v4
         with:
           name: loah-ffmpeg-x86_64-pc-windows-msvc
@@ -582,11 +590,6 @@ jobs:
           for name in g722 g726 shorten als; do
             echo "$decoders" | grep -q " $name " || { echo "the decoder $name is not in the build"; exit 1; }
           done
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ${{ runner.os }}
-          save-if: false
       # The /MD build of sherpa-onnx without text to speech: the same step as in the test job, with the same key and the same pin.
       - uses: actions/cache@v4
         with:
