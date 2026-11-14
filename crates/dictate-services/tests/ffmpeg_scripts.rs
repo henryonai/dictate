@@ -741,10 +741,10 @@ fn stage_sidecars_stops_before_it_builds_anything_when_the_ffmpeg_is_not_there()
 
 #[test]
 fn stage_sidecars_replaces_a_sidecar_that_is_there_with_a_new_file_and_does_not_write_over_it() {
-    // macOS kills a program that was written over in place after it had been run or signed (the signature is kept by the kernel for the
-    // inode): the file is removed and copied anew, so that it is a new one.
-    use std::os::unix::fs::MetadataExt;
-
+    // macOS kills a program that was written over in place after it had been run or signed (the kernel keeps what it knows of the file by
+    // its inode): the file is removed and copied anew, so that it is a new one. A second name for each old file (a hard link) keeps its
+    // inode alive: a file that is written over in place changes what that name reads, and a file that was removed and made again does not.
+    // (Comparing inode numbers is not enough: a file system hands the number of a file that was just removed to the next one.)
     let repo = tempfile::tempdir().unwrap();
     let triple = "aarch64-apple-darwin";
     fs::create_dir_all(repo.path().join("scripts")).unwrap();
@@ -775,10 +775,10 @@ fn stage_sidecars_replaces_a_sidecar_that_is_there_with_a_new_file_and_does_not_
         &format!("app/src-tauri/binaries/dictate-ffmpeg-{triple}"),
         "the old ffmpeg",
     );
-    let inodes = [
-        fs::metadata(&old_mcp).unwrap().ino(),
-        fs::metadata(&old_ffmpeg).unwrap().ino(),
-    ];
+    let kept_mcp = repo.path().join("kept-mcp");
+    let kept_ffmpeg = repo.path().join("kept-ffmpeg");
+    fs::hard_link(&old_mcp, &kept_mcp).unwrap();
+    fs::hard_link(&old_ffmpeg, &kept_ffmpeg).unwrap();
     // The build of the MCP server is not what is under test: a `cargo` that does nothing leaves the file that is in target/ as it is.
     let tools = tempfile::tempdir().unwrap();
     let cargo = tools.path().join("cargo");
@@ -802,14 +802,14 @@ fn stage_sidecars_replaces_a_sidecar_that_is_there_with_a_new_file_and_does_not_
     assert_eq!(code(&output), 0, "{}{}", stdout(&output), stderr(&output));
     assert_eq!(fs::read_to_string(&old_mcp).unwrap(), "the new mcp");
     assert_eq!(fs::read_to_string(&old_ffmpeg).unwrap(), "the new ffmpeg");
-    assert_ne!(
-        fs::metadata(&old_mcp).unwrap().ino(),
-        inodes[0],
+    assert_eq!(
+        fs::read_to_string(&kept_mcp).unwrap(),
+        "the old mcp",
         "dictate-mcp was written over in place"
     );
-    assert_ne!(
-        fs::metadata(&old_ffmpeg).unwrap().ino(),
-        inodes[1],
+    assert_eq!(
+        fs::read_to_string(&kept_ffmpeg).unwrap(),
+        "the old ffmpeg",
         "dictate-ffmpeg was written over in place"
     );
 }
