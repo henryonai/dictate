@@ -1,12 +1,14 @@
 /// Every command the app registers, with a permission made for each (`allow-get-settings`, ...). With this list the
 /// app has an ACL of its own: a window may call a command only when its capability file names the permission. The
-/// Settings window has the commands of `default.json`, the floating dictation windows those of `panel.json` and the
-/// meetings window those of `meetings.json`.
+/// Settings window has the commands of `default.json`, the floating dictation windows those of `panel.json`, the
+/// meetings window those of `meetings.json` and the recording bar those of `recorder.json`; `current_theme` is in all four.
 /// `main.rs` registers the same names, and a test there checks that the two agree and that the files scope them.
 const COMMANDS: &[&str] = &[
     // Settings.
     "get_settings",
     "save_settings",
+    // The theme of the settings, which every window with a page asks when it opens (and then hears `theme-changed`).
+    "current_theme",
     "set_ai_provider",
     "set_transcribe_preset",
     "set_hotkey",

@@ -217,7 +217,7 @@
     margin: 0;
   }
   .tools code {
-    font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font: 12px var(--mono);
     user-select: text;
     overflow-wrap: anywhere;
   }

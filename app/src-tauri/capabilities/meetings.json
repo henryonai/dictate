@@ -27,6 +27,7 @@
     "allow-copy-text",
     "allow-meetings-open-settings",
     "allow-meetings-readiness",
+    "allow-current-theme",
     "allow-recording-sources",
     "allow-recording-start",
     "allow-recording-pause",

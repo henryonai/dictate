@@ -1357,6 +1357,8 @@ mod tests {
             "allow-panel-state",
             "allow-panel-language",
             "allow-panel-resized",
+            // The theme that the settings ask for, which every window with a page asks (`main.rs` has the same name in each capability).
+            "allow-current-theme",
         ];
         let mut wanted = vec!["core:event:allow-listen", "core:event:allow-unlisten"];
         wanted.extend(commands);

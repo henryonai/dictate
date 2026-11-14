@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/svelte";
+import { fireEvent, render, screen, within } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api } from "../lib/api";
@@ -183,6 +183,42 @@ test("switching the language back to the system's follows the web view", async (
 
   expect(lastSaved()).toMatchObject({ ui_language: "system" });
   expect(await screen.findByLabelText("Interface language")).toBeInTheDocument();
+});
+
+test("the_theme_choice_is_saved", async () => {
+  const user = userEvent.setup();
+  render(General, { store: await loadedStore() });
+
+  const theme = screen.getByLabelText("Theme");
+  // System first, as the setting is by default.
+  expect(theme).toHaveValue("system");
+  expect(within(theme).getAllByRole("option").map((option) => option.textContent)).toEqual(["Same as the system", "Light", "Dark"]);
+
+  await user.selectOptions(theme, "Dark");
+  expect(lastSaved()).toMatchObject({ theme: "dark" });
+
+  await user.selectOptions(theme, "Light");
+  expect(lastSaved()).toMatchObject({ theme: "light" });
+
+  await user.selectOptions(theme, "Same as the system");
+  expect(lastSaved()).toMatchObject({ theme: "system" });
+});
+
+test("the theme that is saved is the one the select shows", async () => {
+  render(General, { store: await loadedStore({ theme: "light" }) });
+
+  expect(screen.getByLabelText("Theme")).toHaveValue("light");
+});
+
+test("the theme choice has words in Vietnamese", async () => {
+  const user = userEvent.setup();
+  render(General, { store: await loadedStore({ ui_language: "vi" }) });
+
+  const theme = screen.getByLabelText("Chủ đề");
+  expect(within(theme).getAllByRole("option").map((option) => option.textContent)).toEqual(["Theo hệ thống", "Sáng", "Tối"]);
+  await user.selectOptions(theme, "Tối");
+
+  expect(lastSaved()).toMatchObject({ theme: "dark" });
 });
 
 test("picks a dictation language from the list", async () => {

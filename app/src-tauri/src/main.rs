@@ -107,6 +107,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::get_settings,
             commands::save_settings,
+            commands::current_theme,
             commands::set_ai_provider,
             commands::set_transcribe_preset,
             commands::set_hotkey,
@@ -430,6 +431,14 @@ mod tests {
     /// The command that only the recording bar has: its page tells how big its capsule is, and the window is sized to it.
     const BAR_ONLY_COMMAND: &str = "recording_bar_resized";
 
+    /// The command of every window that has a page: the theme that the settings ask for. The panels and the bar can't read the
+    /// settings, and a window that opens asks for the theme before it hears of a change. It is in no list above, which say what
+    /// is one window's and not another's: this one is everyone's.
+    const THEME_COMMAND: &str = "current_theme";
+
+    /// The windows that draw a page, by the label that their capability names.
+    const PAGE_WINDOWS: [&str; 5] = ["settings", "meetings", "bubble", "card", "recorder"];
+
     /// The commands of the two floating windows.
     const PANEL_COMMANDS: [&str; 18] = [
         "dictation_languages",
@@ -555,9 +564,46 @@ mod tests {
             .into_iter()
             .chain(PANEL_COMMANDS)
             .chain(MEETINGS_COMMANDS)
-            .chain([BAR_ONLY_COMMAND])
+            .chain([BAR_ONLY_COMMAND, THEME_COMMAND])
         {
             assert!(asked_by(&app, "stranger", command).is_err(), "{command}");
+        }
+    }
+
+    #[test]
+    fn every_window_that_draws_a_page_may_ask_for_the_theme_and_a_stranger_may_not() {
+        let app = app();
+        for window in PAGE_WINDOWS {
+            assert_eq!(asked_by(&app, window, THEME_COMMAND), Ok(()), "{window}");
+        }
+        let refusal = asked_by(&app, "stranger", THEME_COMMAND).expect_err("a stranger");
+        assert!(refusal.contains("not allowed"), "{refusal}");
+    }
+
+    #[test]
+    fn every_window_that_draws_a_page_may_hear_the_theme_change() {
+        // `theme-changed` reaches the page as an event that it listens for: the permission to listen is the one that the settings'
+        // capability has by `core:default` and each of the others names.
+        for (file, source) in [
+            ("default.json", include_str!("../capabilities/default.json")),
+            (
+                "meetings.json",
+                include_str!("../capabilities/meetings.json"),
+            ),
+            ("panel.json", include_str!("../capabilities/panel.json")),
+            (
+                "recorder.json",
+                include_str!("../capabilities/recorder.json"),
+            ),
+        ] {
+            let (_, commands, others) = capability(source);
+            assert!(commands.contains(THEME_COMMAND), "{file}");
+            assert!(
+                others
+                    .iter()
+                    .any(|name| name == "core:default" || name == "core:event:allow-listen"),
+                "{file}: {others:?}"
+            );
         }
     }
 
@@ -663,14 +709,14 @@ mod tests {
     }
 
     #[test]
-    fn the_capability_of_the_recorder_is_its_five_commands_the_language_listening_for_events_and_being_dragged(
+    fn the_capability_of_the_recorder_is_its_five_commands_the_language_the_theme_listening_for_events_and_being_dragged(
     ) {
         let (windows, commands, others) = capability(include_str!("../capabilities/recorder.json"));
 
         assert_eq!(windows, ["recorder"]);
         let wanted: BTreeSet<String> = RECORDER_COMMANDS
             .into_iter()
-            .chain([BAR_SHARED_COMMAND, BAR_ONLY_COMMAND])
+            .chain([BAR_SHARED_COMMAND, BAR_ONLY_COMMAND, THEME_COMMAND])
             .map(str::to_owned)
             .collect();
         assert_eq!(commands, wanted);
@@ -766,7 +812,11 @@ mod tests {
         let (windows, commands, others) = capability(include_str!("../capabilities/meetings.json"));
 
         assert_eq!(windows, ["meetings"]);
-        let wanted: BTreeSet<String> = MEETINGS_COMMANDS.into_iter().map(str::to_owned).collect();
+        let wanted: BTreeSet<String> = MEETINGS_COMMANDS
+            .into_iter()
+            .chain([THEME_COMMAND])
+            .map(str::to_owned)
+            .collect();
         assert_eq!(commands, wanted);
         // The events of the jobs (`meeting-job`, `meetings-changed`) and of the files dropped on it; no more of the core.
         assert_eq!(
@@ -787,8 +837,12 @@ mod tests {
             );
             assert!(!panels.contains(command), "{command} in panel.json");
         }
-        // And every command of Settings is still the settings' own (no panel command crept in).
-        let own: BTreeSet<String> = SETTINGS_COMMANDS.into_iter().map(str::to_owned).collect();
+        // And every command of Settings is still the settings' own, and the theme that every window asks (no panel command crept in).
+        let own: BTreeSet<String> = SETTINGS_COMMANDS
+            .into_iter()
+            .chain([THEME_COMMAND])
+            .map(str::to_owned)
+            .collect();
         assert_eq!(settings, own);
     }
 
@@ -908,7 +962,7 @@ mod tests {
             .into_iter()
             .chain(PANEL_COMMANDS)
             .chain(MEETINGS_COMMANDS)
-            .chain([BAR_ONLY_COMMAND])
+            .chain([BAR_ONLY_COMMAND, THEME_COMMAND])
             .map(str::to_owned)
             .collect();
         for build in as_checked_out(include_str!("../build.rs")) {

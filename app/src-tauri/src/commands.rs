@@ -17,7 +17,7 @@ use loah_services::http::ApiError;
 use loah_services::migrate::FailedItem;
 use loah_services::presets::{AiProvider, TranscribePreset, EDIT_PRESETS};
 use loah_services::secrets::{Account, SecretStore};
-use loah_services::settings::{self, Settings, SettingsStore};
+use loah_services::settings::{self, Settings, SettingsStore, Theme};
 use loah_services::transcribe_api::{self, TranscribeError};
 use loah_services::whisper::models::{self, DownloadError, ModelStatus, HUGGING_FACE_BASE_URL};
 use serde::Serialize;
@@ -37,6 +37,9 @@ use crate::tray;
 const DOWNLOAD_EVENT: &str = "model-download";
 /// The event that tells the Settings window of settings that changed without it (see [`emit_language`]).
 const SETTINGS_EVENT: &str = "settings-changed";
+/// The event that tells every window of the theme that was chosen (see [`save_settings_telling`]): its payload is the word of the
+/// setting, `"system"`, `"light"` or `"dark"`.
+const THEME_EVENT: &str = "theme-changed";
 
 /// The settings plus what the UI may know about the keys.
 ///
@@ -359,6 +362,26 @@ fn save_settings_inner(
     Ok(get_settings_view(store, keys))
 }
 
+/// `save_settings_inner`, and when the saved theme is not the one the settings had, every window is told (`THEME_EVENT`): the choice shows
+/// in all of them at once, the dictation panels and the recording bar included, which hold no copy of the settings. Nothing is told
+/// when the save failed: what the windows show is what the file says.
+fn save_settings_telling<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    store: &SettingsStore,
+    keys: &KeyFlags,
+    settings: Settings,
+    apply_launch_at_login: impl FnMut(bool) -> Result<(), String>,
+) -> Result<SettingsView, String> {
+    let before = store.get().theme;
+    let view = save_settings_inner(store, keys, settings, apply_launch_at_login)?;
+    if view.settings.theme != before {
+        if let Err(e) = app.emit(THEME_EVENT, view.settings.theme) {
+            log::warn!("Could not tell the windows of the new theme: {e}");
+        }
+    }
+    Ok(view)
+}
+
 /// An API error as shown to the user. An error status with no message gets the HTTP reason phrase, so that a
 /// reply with an empty body doesn't end in "API error 301: ".
 pub(crate) fn api_error_text(error: &ApiError) -> String {
@@ -607,13 +630,26 @@ pub async fn save_settings(
     let state = state.inner().clone();
     let handle = app.clone();
     let view = blocking(move || {
-        save_settings_inner(&state.settings, state.loaded_keys(), settings, |enabled| {
-            set_launch_at_login(&handle, enabled)
-        })
+        save_settings_telling(
+            &handle,
+            &state.settings,
+            state.loaded_keys(),
+            settings,
+            |enabled| set_launch_at_login(&handle, enabled),
+        )
     })
     .await??;
     tray::refresh(&app, &view.settings);
     Ok(view)
+}
+
+/// The theme that the settings ask for, for a window that has just opened: it follows `theme-changed` from then on. The windows of the
+/// dictation panels and of the recording bar can't read the settings, so this is how they know.
+#[tauri::command]
+pub async fn current_theme(state: State<'_, AppState>) -> Result<Theme, String> {
+    let state = state.inner().clone();
+    // The settings are locked while they are written to disk.
+    blocking(move || state.settings.get().theme).await
 }
 
 #[tauri::command]
@@ -813,7 +849,7 @@ mod tests {
     use crate::test_support::{CountingStore, FakeRegistry, NoKeyring};
     use loah_services::presets::EDIT_PRESETS;
     use loah_services::secrets::{Account, MemoryStore, SecretError};
-    use loah_services::settings::UiLanguage;
+    use loah_services::settings::{Theme, UiLanguage};
     use loah_services::whisper::models::{ModelDir, CATALOG};
     use std::io::{Read, Write};
     use std::net::TcpListener;
@@ -1106,6 +1142,109 @@ mod tests {
             *heard.lock().unwrap(),
             [r#"{"dictation_language":"vi-VN"}"#]
         );
+    }
+
+    /// What a window has heard of the event of the theme: its label and the payloads, in order.
+    type Heard = Vec<(String, Arc<Mutex<Vec<String>>>)>;
+
+    /// A mock app with a window for each label, each of which keeps what it hears of the event of the theme.
+    fn windows_hearing_the_theme(labels: &[&str]) -> (tauri::App<tauri::test::MockRuntime>, Heard) {
+        use tauri::{test::mock_builder, Listener, WebviewUrl, WebviewWindowBuilder};
+        let app = mock_builder().build(crate::context()).unwrap();
+        let heard = labels
+            .iter()
+            .map(|label| {
+                let window = WebviewWindowBuilder::new(&app, *label, WebviewUrl::default())
+                    .build()
+                    .unwrap();
+                let sink = Arc::new(Mutex::new(Vec::new()));
+                let keep = sink.clone();
+                window.listen(THEME_EVENT, move |event| {
+                    keep.lock().unwrap().push(event.payload().to_owned());
+                });
+                (label.to_string(), sink)
+            })
+            .collect();
+        (app, heard)
+    }
+
+    #[test]
+    fn saving_a_new_theme_tells_every_window() {
+        let f = fixture();
+        let (app, heard) =
+            windows_hearing_the_theme(&["settings", "meetings", "bubble", "card", "recorder"]);
+        let mut s = f.store.get();
+        s.theme = Theme::Dark;
+
+        let view =
+            save_settings_telling(app.handle(), &f.store, &f.keys, s.clone(), |_| Ok(())).unwrap();
+
+        // Saved, and told as the word that the page's `applyTheme` takes.
+        assert_eq!(view.settings.theme, Theme::Dark);
+        assert_eq!(f.store.get().theme, Theme::Dark);
+        for (label, events) in &heard {
+            assert_eq!(*events.lock().unwrap(), [r#""dark""#], "{label}");
+        }
+
+        // And back to following the system: that is told too.
+        s.theme = Theme::System;
+        save_settings_telling(app.handle(), &f.store, &f.keys, s, |_| Ok(())).unwrap();
+        for (label, events) in &heard {
+            assert_eq!(
+                *events.lock().unwrap(),
+                [r#""dark""#, r#""system""#],
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
+    fn saving_something_else_leaves_the_windows_as_they_are() {
+        let f = fixture();
+        let (app, heard) = windows_hearing_the_theme(&["settings", "bubble"]);
+        let mut s = f.store.get();
+        s.vocabulary = "Loah".into();
+
+        save_settings_telling(app.handle(), &f.store, &f.keys, s, |_| Ok(())).unwrap();
+
+        for (label, events) in &heard {
+            assert!(events.lock().unwrap().is_empty(), "{label}");
+        }
+    }
+
+    #[test]
+    fn a_save_that_fails_tells_no_window_of_the_theme() {
+        // The settings file cannot be written: its folder is a file. What is not saved is not what the windows show.
+        let dir = tempfile::tempdir().unwrap();
+        let in_the_way = dir.path().join("in-the-way");
+        std::fs::write(&in_the_way, b"x").unwrap();
+        let (store, _) = SettingsStore::open(in_the_way.join("settings.json"));
+        let (app, heard) = windows_hearing_the_theme(&["settings"]);
+        let mut s = store.get();
+        s.theme = Theme::Light;
+
+        save_settings_telling(app.handle(), &store, &KeyFlags::default(), s, |_| Ok(()))
+            .unwrap_err();
+
+        assert!(heard[0].1.lock().unwrap().is_empty());
+        assert_eq!(store.get().theme, Theme::System);
+    }
+
+    #[test]
+    fn a_window_that_opens_is_told_the_theme_that_is_saved() {
+        use tauri::{test::mock_builder, Manager as _};
+        let dir = tempfile::tempdir().unwrap();
+        let state = state_in(&dir);
+        state.settings.update(|s| s.theme = Theme::Light).unwrap();
+        let app = mock_builder()
+            .manage(state)
+            .build(crate::context())
+            .unwrap();
+
+        let theme = tauri::async_runtime::block_on(current_theme(app.state())).unwrap();
+
+        assert_eq!(theme, Theme::Light);
+        assert_eq!(serde_json::to_string(&theme).unwrap(), r#""light""#);
     }
 
     #[test]

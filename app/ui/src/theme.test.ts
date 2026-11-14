@@ -54,11 +54,20 @@ const SPEC = {
 /**
  * The spec lets the builder tune a value for contrast ("WCAG AA for text"). The light `muted` of the table is 4.38:1 on the panel and
  * 4.32:1 on the selected row, under the 4.5:1 that the text of the sidebar needs (the subtitles are 12 px); this one is 4.65 and 4.59.
- * The light `ok` (green of a check) was 4.39:1 on the panel and is 4.68.
  */
 const TUNED = { light: { "--muted": "#6a6a6f" }, dark: {} } as Record<"light" | "dark", Record<string, string>>;
 const expected = (theme: "light" | "dark", token: string): string =>
   TUNED[theme][token] ?? (SPEC[theme] as Record<string, string>)[token];
+
+/**
+ * The tokens that the table of the spec does not have, for what the floating windows draw (the dictation panels and the recording bar):
+ * `warn` is the amber of a warning mark and text on a plain surface (the `warn-bg` and `warn-fg` pair is for a banner), and `raised` is the
+ * surface of a menu that opens over a panel (white in light; a step lighter than the panel in dark, where raised things are lighter).
+ */
+const FLOATING = {
+  light: { "--warn": "#9c5500", "--raised": "#ffffff" },
+  dark: { "--warn": "#ff9f0a", "--raised": "#2a2a2e" },
+} as const;
 
 /** The four places that the tokens of a theme are written: where each one is, for the same values to be in every one. */
 const contexts = {
@@ -75,6 +84,25 @@ describe("the Graphite palette", () => {
     const theme = themeOf(context);
     for (const token of Object.keys(SPEC[theme])) {
       expect(declared[token], `${token} in ${context}`).toBe(expected(theme, token));
+    }
+  });
+
+  test.each(Object.keys(contexts))("the tokens of the floating windows have their values in the %s block", (context) => {
+    const declared = contexts[context as keyof typeof contexts]();
+    const theme = themeOf(context);
+    for (const [token, value] of Object.entries(FLOATING[theme])) {
+      expect(declared[token], `${token} in ${context}`).toBe(value);
+    }
+  });
+
+  test("the_tints_under_the_pointer_are_the_ink_at_a_share_so_they_follow_every_theme", () => {
+    // Written once, with the tokens that do not change by name: `ink` is the one that changes, and a tint of it is light on dark and dark on light.
+    const root = contexts.light();
+    expect(root["--wash"]).toBe("color-mix(in srgb, var(--ink) 8%, transparent)");
+    expect(root["--hover"]).toBe("color-mix(in srgb, var(--ink) 14%, transparent)");
+    for (const context of ["dark, when the system is dark", "forced dark"] as const) {
+      expect(contexts[context](), context).not.toHaveProperty("--wash");
+      expect(contexts[context](), context).not.toHaveProperty("--hover");
     }
   });
 
@@ -154,6 +182,8 @@ describe("the Graphite palette", () => {
         ["--ts", "--bg"], ["--ts", "--panel"], ["--ts", "--hl"],
         ["--on-accent", "--accent"],
         ["--ok", "--panel"], ["--danger", "--panel"], ["--danger", "--bg"], ["--warn-fg", "--warn-bg"],
+        // The floating windows: the warning on a panel, and the text of a menu that opens over it.
+        ["--warn", "--panel"], ["--ink", "--raised"], ["--muted", "--raised"],
       ];
       for (const [front, back] of pairs) {
         expect(contrast(color(front), color(back)), `${front} on ${back} in ${context}`).toBeGreaterThanOrEqual(4.5);
@@ -251,6 +281,34 @@ describe("where the look is written", () => {
   });
 });
 
+describe("the theme in every window", () => {
+  const ENTRIES: [string, string][] = [
+    ["main.ts", "./lib/theme"],
+    ["meetings/main.ts", "../lib/theme"],
+    ["panel/main.ts", "../lib/theme"],
+    ["recorder/main.ts", "../lib/theme"],
+  ];
+
+  test.each(ENTRIES)("every_window_follows_the_theme_when_it_opens (%s)", (file, from) => {
+    const main = read(`app/ui/src/${file}`);
+    expect(main).toContain(`import { followTheme } from "${from}";`);
+    // Called before the app is mounted: the listener is there from the first moment, and the answer is applied as soon as it is in.
+    expect(main.indexOf("void followTheme();"), "followTheme() is called").toBeGreaterThan(-1);
+    expect(main.indexOf("void followTheme();")).toBeLessThan(main.indexOf("mount("));
+  });
+
+  test("the_floating_windows_take_the_tokens_and_not_the_rules_of_app_css", () => {
+    for (const [file, own] of [["panel/main.ts", "./panel.css"], ["recorder/main.ts", "./recorder.css"]]) {
+      const main = read(`app/ui/src/${file}`);
+      expect(main, file).toContain('import "../tokens.css";');
+      expect(main, file).toContain(`import "${own}";`);
+      expect(main, file).not.toContain("app.css");
+      // Tokens first: what the window writes itself comes after, so that it can use the tokens and overrule nothing by accident.
+      expect(main.indexOf("tokens.css"), file).toBeLessThan(main.indexOf(own));
+    }
+  });
+});
+
 // ---- The three weights of a button
 
 describe("the three weights of a button", () => {
@@ -333,18 +391,26 @@ function hardCodedColors(source: string): string[] {
       }
     }
   }
+  // A color in an attribute of the markup (`stroke="black"` of an icon): it is a color that no theme can change.
+  for (const match of source.matchAll(/\b(fill|stroke|stop-color|flood-color|color)=["']([a-zA-Z]+)["']/g)) {
+    if (NAMED.test(match[2])) found.push(`${match[1]}=${match[2]}`);
+  }
   return found;
 }
 
 describe("colors of the components", () => {
-  /** Every Svelte component of the settings and the meetings windows, with the root component. */
+  /** Every Svelte component of every window: the settings, the meetings, the dictation panels and the recording bar, with the root component. */
   function components(): string[] {
     const walk = (folder: string): string[] =>
       readdirSync(join(here, folder), { withFileTypes: true }).flatMap((entry) =>
         entry.isDirectory() ? walk(`${folder}/${entry.name}`) : entry.name.endsWith(".svelte") ? [`${folder}/${entry.name}`] : [],
       );
-    return [...walk("meetings"), ...walk("settings"), "App.svelte"];
+    return [...walk("meetings"), ...walk("settings"), ...walk("panel"), ...walk("recorder"), "App.svelte"];
   }
+
+  /** The style sheets of the floating windows, as a source that the scan reads like a component. */
+  const sheets = ["panel/panel.css", "recorder/recorder.css"];
+  const asComponent = (file: string) => `<style>\n${read(`app/ui/src/${file}`)}\n</style>`;
 
   test("the_scan_finds_a_color_that_a_component_wrote_and_passes_the_ones_that_it_may_use", () => {
     const style = (css: string) => `<div></div>\n<style>\n${css}\n</style>`;
@@ -354,13 +420,63 @@ describe("colors of the components", () => {
     expect(hardCodedColors(style("a { border: 1px solid white; }"))).toEqual(["border: white"]);
     expect(hardCodedColors(style("a { color: var(--ink); background: transparent; border-color: currentColor; white-space: nowrap; }"))).toEqual([]);
     expect(hardCodedColors(style("a { background: color-mix(in srgb, var(--bg) 85%, transparent); }"))).toEqual([]);
+    expect(hardCodedColors('<svg><path stroke="black" fill="none" /><circle fill="currentColor" /></svg>')).toEqual(["stroke=black"]);
+    expect(hardCodedColors('<span style:color="rgba(255, 255, 255, 0.6)"></span>')).toEqual(["rgba("]);
   });
 
-  test("no_hard_coded_colors_in_meetings_or_settings", () => {
+  test("no_hard_coded_colors", () => {
     const files = components();
-    expect(files.length).toBeGreaterThan(30);
-    const written = files.flatMap((file) => hardCodedColors(read(`app/ui/src/${file}`)).map((color) => `${file}: ${color}`));
+    expect(files.length).toBeGreaterThan(40);
+    // The floating windows are in it: their components and their style sheets have no color of their own either.
+    for (const folder of ["panel/", "recorder/"]) expect(files.some((file) => file.startsWith(folder)), folder).toBe(true);
+    const written = [
+      ...files.flatMap((file) => hardCodedColors(read(`app/ui/src/${file}`)).map((color) => `${file}: ${color}`)),
+      ...sheets.flatMap((file) => hardCodedColors(asComponent(file)).map((color) => `${file}: ${color}`)),
+    ];
     expect(written).toEqual([]);
+  });
+
+  test("a_token_is_written_in_all_four_blocks_when_it_changes_with_the_theme_and_in_root_alone_when_it_does_not", () => {
+    const declared = Object.fromEntries(Object.entries(contexts).map(([context, read]) => [context, read()]));
+    const names = new Set(Object.values(declared).flatMap((block) => Object.keys(block).filter((name) => name.startsWith("--"))));
+    for (const name of names) {
+      const where = Object.keys(declared).filter((context) => name in declared[context]);
+      expect([1, 4], `${name} is in: ${where.join(", ")}`).toContain(where.length);
+      if (where.length === 1) expect(where[0], name).toBe("light");
+    }
+  });
+
+  test("every_token_that_a_component_uses_is_one_that_tokens_css_has", () => {
+    const names = (rules: ReturnType<typeof parseCss>) => new Set(rules.flatMap((rule) => Object.keys(rule.declarations).filter((name) => name.startsWith("--"))));
+    const defined = names(tokens);
+    const used = new Set<string>();
+    for (const file of [...components(), ...sheets]) {
+      const source = file.endsWith(".css") ? asComponent(file) : read(`app/ui/src/${file}`);
+      // A property that the component declares itself (`--size`) is its own, and is not asked of the tokens.
+      const own = names(parseCss(styleOf(source)));
+      for (const match of source.matchAll(/var\((--[a-z0-9-]+)/g)) {
+        if (own.has(match[1])) continue;
+        used.add(match[1]);
+        expect(defined.has(match[1]), `${file} uses ${match[1]}`).toBe(true);
+      }
+    }
+    // The floating windows use the tokens of the theme (and the new ones), so the check above is about something.
+    for (const token of ["--panel", "--ink", "--muted", "--line", "--raised", "--warn", "--record", "--hover", "--ok", "--accent"]) {
+      expect(used.has(token), token).toBe(true);
+    }
+  });
+
+  test("no_component_has_a_monospace_stack_of_its_own", () => {
+    for (const file of components()) {
+      for (const rule of parseCss(styleOf(read(`app/ui/src/${file}`)))) {
+        for (const property of ["font", "font-family"]) {
+          const value = rule.declarations[property];
+          if (value && /monospace|ui-monospace|Menlo|Consolas/i.test(value)) {
+            expect(value, `${file}: ${rule.selectors.join(", ")}`).toMatch(/\bvar\(--mono\)/);
+          }
+        }
+      }
+    }
   });
 
   test("the_scrim_the_shadows_and_the_video_ground_are_the_tokens_of_app_css", () => {
@@ -369,5 +485,71 @@ describe("colors of the components", () => {
     expect(declarationsOf(component("meetings/Menu.svelte"), ".choices")["box-shadow"]).toBe("var(--shadow-pop)");
     expect(declarationsOf(component("meetings/ImportBar.svelte"), ".choices")["box-shadow"]).toBe("var(--shadow-pop)");
     expect(declarationsOf(component("meetings/Player.svelte"), "video").background).toBe("var(--video-bg)");
+  });
+});
+
+// ---- The floating windows
+
+describe("the dictation panels and the recording bar", () => {
+  const panelCss = parseCss(read("app/ui/src/panel/panel.css"));
+  const recorderCss = parseCss(read("app/ui/src/recorder/recorder.css"));
+
+  test("the_color_scheme_is_the_theme_s_and_not_dark_for_good", () => {
+    // tokens.css sets it for the theme that the page is in; a `color-scheme: dark` of their own would keep fields and scroll bars dark in light.
+    for (const [name, sheet] of [["panel.css", panelCss], ["recorder.css", recorderCss]] as const) {
+      for (const rule of sheet) expect(rule.declarations, `${name} ${rule.selectors.join(", ")}`).not.toHaveProperty("color-scheme");
+    }
+  });
+
+  test("the_text_and_the_focus_ring_are_the_ink_and_the_accent", () => {
+    expect(declarationsOf(panelCss, "body").color).toBe("var(--ink)");
+    expect(declarationsOf(recorderCss, "body").color).toBe("var(--ink)");
+    expect(declarationsOf(panelCss, "button:focus-visible").outline).toBe("2px solid var(--accent)");
+    expect(declarationsOf(recorderCss, "button:focus-visible").outline).toBe("2px solid var(--accent)");
+    // The windows are transparent: nothing but what the components draw has a background.
+    expect(declarationsOf(panelCss, "html").background).toBe("transparent");
+  });
+
+  test("a_floating_panel_keeps_its_translucency_as_a_mix_of_the_panel_color", () => {
+    const FLOATING_PANEL = "color-mix(in srgb, var(--panel) 96%, transparent)";
+    expect(declarationsOf(component("panel/Bubble.svelte"), ".bubble").background).toBe(FLOATING_PANEL);
+    expect(declarationsOf(component("panel/Chip.svelte"), ".chip").background).toBe(FLOATING_PANEL);
+    expect(declarationsOf(component("panel/Bubble.svelte"), ".bubble").border).toBe("1px solid var(--line)");
+  });
+
+  test("the_card_and_its_menus_are_surfaces_of_the_theme", () => {
+    const card = component("panel/Card.svelte");
+    expect(declarationsOf(card, ".card").background).toBe("var(--panel)");
+    expect(declarationsOf(card, ".menu").background).toBe("var(--raised)");
+    expect(declarationsOf(component("panel/ChipMenu.svelte"), ".menu").background).toBe("var(--raised)");
+    expect(declarationsOf(component("panel/LanguageMenu.svelte"), ".menu").background).toBe("var(--raised)");
+    // The box that the text is typed in is sunk into the card.
+    expect(declarationsOf(card, "textarea").background).toBe("var(--bg)");
+  });
+
+  test("record_is_the_record_red_in_the_dots_of_the_panels_and_of_the_bar", () => {
+    expect(declarationsOf(component("panel/Bubble.svelte"), ".dot").background).toBe("var(--record)");
+    expect(declarationsOf(component("panel/Pill.svelte"), ".dot").background).toBe("var(--record)");
+    expect(declarationsOf(component("recorder/RecorderApp.svelte"), ".dot").background).toBe("var(--record)");
+    // Off is the loud one of the bar: the record red with its own white.
+    const off = declarationsOf(component("recorder/RecorderApp.svelte"), ".note.off");
+    expect([off.color, off.background]).toEqual(["var(--on-record)", "var(--record)"]);
+  });
+
+  test("danger_ok_and_warn_keep_their_meaning", () => {
+    const bar = component("recorder/RecorderApp.svelte");
+    expect(declarationsOf(bar, ".bar.lit").background).toBe("var(--ok)");
+    expect(declarationsOf(bar, ".dot.paused").background).toBe("var(--warn)");
+    expect(declarationsOf(bar, ".trash:hover:not(:disabled)").color).toBe("var(--danger)");
+    expect(declarationsOf(component("panel/Chip.svelte"), ".mark").color).toBe("var(--ok)");
+    expect(declarationsOf(component("panel/Chip.svelte"), ".mark.warning").color).toBe("var(--warn)");
+    expect(declarationsOf(component("panel/Card.svelte"), ".dot").background).toBe("var(--ok)");
+  });
+
+  test("the_main_button_is_the_accent_in_the_card_the_pill_and_the_bar", () => {
+    for (const [file, selector] of [["panel/Card.svelte", ".primary"], ["panel/Pill.svelte", ".stop"], ["recorder/RecorderApp.svelte", ".stop"]]) {
+      const main = declarationsOf(component(file), selector);
+      expect([main.background, main.color], `${file} ${selector}`).toEqual(["var(--accent)", "var(--on-accent)"]);
+    }
   });
 });

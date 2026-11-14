@@ -27,6 +27,7 @@ import type { PanelState } from "./panel/state";
 export function fakeSettings(overrides: Partial<Settings> = {}): Settings {
   return {
     ui_language: "system",
+    theme: "system",
     dictation_language: "en-US",
     hotkey: "Ctrl+Alt+Space",
     push_to_talk: false,

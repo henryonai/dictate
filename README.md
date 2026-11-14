@@ -396,7 +396,7 @@ The library lives in your Documents folder, so on a Mac the first time macOS may
 
 Open Settings from the tray icon → *Settings…*.
 
-- **General:** the language of the interface, opening at login, the dictation language, the shortcut, press or hold mode, writing into the focused text field, saving dictations, the permissions (on a Mac), the shortcut of the recording, the meetings folder, and a link to the licenses.
+- **General:** the language of the interface, the theme (System, Light or Dark: every window follows it at once, the dictation panel and the recording bar too), opening at login, the dictation language, the shortcut, press or hold mode, writing into the focused text field, saving dictations, the permissions (on a Mac), the shortcut of the recording, the meetings folder, and a link to the licenses.
 - **Speech recognition:** the engine for dictation and for files (local Whisper or a transcription API), the transcription language, separating speakers, the Whisper models and the tools for links.
 - **AI editing & summaries:** the default editing style, editing automatically when you finish, the summary model and your custom vocabulary.
 - **Accounts & API keys:** the AI provider and the transcription service, each with a **Check** button.

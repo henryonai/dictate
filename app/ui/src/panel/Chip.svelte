@@ -60,9 +60,9 @@
 <div class="chip" role="group" aria-label={title} bind:this={root} onmouseenter={() => hover(true)} onmouseleave={() => hover(false)}>
   <span class="mark" class:warning data-mark={warning ? "warning" : "check"} aria-hidden="true">
     {#if warning}
-      <svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="7" fill="currentColor" /><path d="M7 3.6v4M7 9.6v.1" stroke="black" stroke-width="1.6" stroke-linecap="round" /></svg>
+      <svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="7" fill="currentColor" /><path class="glyph" d="M7 3.6v4M7 9.6v.1" stroke-width="1.6" stroke-linecap="round" /></svg>
     {:else}
-      <svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="7" fill="currentColor" /><path d="M4 7.2l2 2 4-4.2" fill="none" stroke="black" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" /></svg>
+      <svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="7" r="7" fill="currentColor" /><path class="glyph" d="M4 7.2l2 2 4-4.2" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" /></svg>
     {/if}
   </span>
   <span class="title" {title}>{title}</span>
@@ -87,11 +87,11 @@
     gap: 8px;
     height: 32px;
     padding: 0 6px 0 12px;
-    border: 1px solid rgb(255 255 255 / 0.08);
+    border: 1px solid var(--line);
     border-radius: 16px;
-    background: rgb(28 28 28 / 0.96);
-    box-shadow: 0 6px 12px rgb(0 0 0 / 0.28);
-    color: rgb(245 245 245);
+    background: color-mix(in srgb, var(--panel) 96%, transparent);
+    box-shadow: var(--shadow-pop);
+    color: var(--ink);
     font-size: 12px;
     font-weight: 500;
   }
@@ -99,11 +99,16 @@
   .mark {
     display: inline-flex;
     flex: none;
-    color: rgb(48 209 88);
+    color: var(--ok);
   }
 
   .mark.warning {
-    color: rgb(255 159 10);
+    color: var(--warn);
+  }
+
+  /* The mark inside the disc is cut out of it: the color of the panel. */
+  .glyph {
+    stroke: var(--panel);
   }
 
   .title {
@@ -123,13 +128,13 @@
     padding: 0;
     border: 0;
     border-radius: 11px;
-    background: rgb(59 59 59);
+    background: var(--hover);
     color: inherit;
     cursor: pointer;
   }
 
   .dots[aria-expanded="true"] {
-    background: rgb(84 84 84);
+    background: var(--selected);
   }
 
   .popup {

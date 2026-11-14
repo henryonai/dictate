@@ -396,7 +396,7 @@ Thư viện nằm trong thư mục Documents, nên trên Mac, lần đầu macOS
 
 Mở Cài đặt bằng icon trên khay → *Cài đặt…*.
 
-- **Chung:** ngôn ngữ giao diện, tự mở khi khởi động máy, ngôn ngữ đọc, phím tắt, chế độ bấm hoặc giữ, tự viết vào ô chữ đang chọn, lưu đoạn đọc, các quyền (trên Mac), phím tắt quay, thư mục cuộc họp, và liên kết tới trang giấy phép.
+- **Chung:** ngôn ngữ giao diện, chủ đề (Theo hệ thống, Sáng hoặc Tối: mọi cửa sổ đổi theo ngay, kể cả bảng đọc chính tả và thanh ghi âm), tự mở khi khởi động máy, ngôn ngữ đọc, phím tắt, chế độ bấm hoặc giữ, tự viết vào ô chữ đang chọn, lưu đoạn đọc, các quyền (trên Mac), phím tắt quay, thư mục cuộc họp, và liên kết tới trang giấy phép.
 - **Nhận dạng giọng nói:** engine cho đọc chính tả và cho file (Whisper trên máy hoặc API transcript), ngôn ngữ transcript, tách người nói, các model Whisper và các công cụ cho link.
 - **AI sửa & tóm tắt:** kiểu sửa mặc định, tự sửa khi nói xong, model tóm tắt và từ vựng riêng của bạn.
 - **Tài khoản & API key:** nhà cung cấp AI và dịch vụ transcript, mục nào cũng có nút **Kiểm tra**.

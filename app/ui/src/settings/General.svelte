@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { api, errorText } from "../lib/api";
-  import type { UiLanguage } from "../lib/api";
+  import type { Theme, UiLanguage } from "../lib/api";
   import { t } from "../lib/i18n";
   import { recordHotkey } from "../lib/recording";
   import type { SettingsStore } from "../lib/settings-store.svelte";
@@ -28,6 +28,7 @@
   const UPGRADE_URL = "https://github.com/henryonai/loah#upgrading-from-dictate";
 
   const UI_LANGUAGES: UiLanguage[] = ["system", "en", "vi"];
+  const THEMES: Theme[] = ["system", "light", "dark"];
   const DICTATION_LANGUAGES = ["en-US", "vi-VN", "ja-JP", "zh-CN", "ko-KR", "fr-FR", "de-DE", "es-ES"];
 
   let folderError = $state("");
@@ -101,6 +102,14 @@
     >
       {#each UI_LANGUAGES as language (language)}
         <option value={language}>{t(`general.ui_language.${language}`)}</option>
+      {/each}
+    </select>
+  </Field>
+  <!-- Saved here; Rust tells every window (`theme-changed`), this one too, and each applies it at once. -->
+  <Field label={t("general.theme")}>
+    <select value={view.theme} onchange={(event) => store.update({ theme: event.currentTarget.value as Theme })}>
+      {#each THEMES as theme (theme)}
+        <option value={theme}>{t(`general.theme.${theme}`)}</option>
       {/each}
     </select>
   </Field>

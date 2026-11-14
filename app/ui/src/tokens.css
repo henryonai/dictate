@@ -47,6 +47,11 @@
   --shadow-dialog: 0 10px 30px rgb(0 0 0 / 0.35);
   /* The ground of a video: black, as the picture of a screen is. */
   --video-bg: #000000;
+  /* The tints of the floating windows (the dictation panels and the recording bar): the ink at a share, so that the tint is light on dark and
+     dark on light with no value of its own in a theme. `wash` is the fill of a small control at rest, `hover` what is under the pointer
+     and the fill of the buttons that sit on a panel. */
+  --wash: color-mix(in srgb, var(--ink) 8%, transparent);
+  --hover: color-mix(in srgb, var(--ink) 14%, transparent);
 
   /* The names that the components had before the palette had names of its own: aliases, so they follow every theme. */
   --surface: var(--panel);
@@ -75,6 +80,10 @@
   --danger: #c4261d;
   --warn-bg: #fff4d6;
   --warn-fg: #6b4a00;
+  /* The floating windows. `warn` is the amber of a warning mark or text on a plain surface (4.9:1 on the panel); `raised` is a menu that
+     opens over a panel. */
+  --warn: #9c5500;
+  --raised: #ffffff;
 }
 
 :root {
@@ -104,6 +113,8 @@
     --danger: #ff7b72;
     --warn-bg: #3d3112;
     --warn-fg: #f1d68a;
+    --warn: #ff9f0a;
+    --raised: #2a2a2e;
   }
 }
 
@@ -124,4 +135,6 @@
   --danger: #ff7b72;
   --warn-bg: #3d3112;
   --warn-fg: #f1d68a;
+  --warn: #ff9f0a;
+  --raised: #2a2a2e;
 }

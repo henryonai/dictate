@@ -37,10 +37,22 @@ pub enum UiLanguage {
     Vi,
 }
 
+/// The look of every window: the Graphite theme in its light or its dark colors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    /// Follow the OS: light, or dark when the OS is.
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub ui_language: UiLanguage,
+    pub theme: Theme,
     /// BCP-47 locale for dictation, e.g. `en-US`.
     pub dictation_language: String,
     /// Global shortcut, e.g. `Ctrl+Alt+Space`.
@@ -91,6 +103,7 @@ impl Default for Settings {
         let model = preset.models().first().copied().unwrap_or("whisper-1");
         Settings {
             ui_language: UiLanguage::default(),
+            theme: Theme::default(),
             dictation_language: "en-US".into(),
             hotkey: "Ctrl+Alt+Space".into(),
             push_to_talk: false,
@@ -1118,6 +1131,62 @@ mod tests {
     }
 
     #[test]
+    fn an_old_settings_file_gets_the_system_theme() {
+        // A file from before the Theme setting has no `theme`: every window follows the system, and nothing is reported.
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("settings.json"),
+            r#"{"ui_language":"vi","vocabulary":"Loah"}"#,
+        )
+        .unwrap();
+
+        let (store, warning) = store_in(&dir);
+
+        assert!(warning.is_none());
+        let s = store.get();
+        assert_eq!(s.theme, Theme::System);
+        assert_eq!(Settings::default().theme, Theme::System);
+        assert_eq!(s.ui_language, UiLanguage::Vi);
+    }
+
+    #[test]
+    fn a_chosen_theme_is_kept_in_the_file_in_lowercase_and_read_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, _) = store_in(&dir);
+        for chosen in [Theme::Light, Theme::Dark, Theme::System] {
+            store.update(|s| s.theme = chosen).unwrap();
+            let json: serde_json::Value =
+                serde_json::from_slice(&fs::read(dir.path().join("settings.json")).unwrap())
+                    .unwrap();
+            let word = match chosen {
+                Theme::System => "system",
+                Theme::Light => "light",
+                Theme::Dark => "dark",
+            };
+            assert_eq!(json["theme"], word);
+            let (again, warning) = store_in(&dir);
+            assert!(warning.is_none());
+            assert_eq!(again.get().theme, chosen);
+        }
+    }
+
+    #[test]
+    fn a_theme_that_the_app_does_not_know_is_reset_and_reported_like_any_other_value() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("settings.json"),
+            r#"{"theme":"sepia","vocabulary":"Loah"}"#,
+        )
+        .unwrap();
+
+        let (store, warning) = store_in(&dir);
+
+        assert_eq!(store.get().theme, Theme::System);
+        assert_eq!(store.get().vocabulary, "Loah");
+        assert!(warning.expect("reported").message.contains("theme"));
+    }
+
+    #[test]
     fn an_old_settings_file_keeps_its_saved_provider_url_and_model() {
         let dir = tempfile::tempdir().unwrap();
         let original = r#"{"ai_provider":"anthropic","ai_base_url":"https://api.anthropic.com","ai_model":"claude-haiku-5-5"}"#;
@@ -1201,7 +1270,7 @@ mod tests {
     fn settings_file_never_contains_keys() {
         let json = serde_json::to_value(Settings::default()).unwrap();
         let fields = json.as_object().unwrap();
-        assert_eq!(fields.len(), 28);
+        assert_eq!(fields.len(), 29);
         for name in fields.keys() {
             // The one name with "token" in it is the handle that the ScreenCast portal gives for sharing the same screen
             // again without its dialog (the recorder keeps it): it opens no account and no service.

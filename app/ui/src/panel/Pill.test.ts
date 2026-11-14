@@ -85,11 +85,11 @@ test("the keys are not heard once the pill is gone", async () => {
   expect(api.dictationCancel).not.toHaveBeenCalled();
 });
 
-test("the live text is above the capsule, with the guess for the rest in grey 0.65", () => {
+test("the live text is above the capsule, with the guess for the rest in the muted color of the theme", () => {
   const { container } = render(Pill, { panel: pillState({ committed: "Hello there", partial: "how are" }) });
   expect(container.querySelector(".live")).toHaveTextContent("Hello there how are");
-  expect(screen.getByText("how are")).toHaveStyle({ color: "rgba(255, 255, 255, 0.65)" });
-  expect(screen.getByText("Hello there")).not.toHaveStyle({ color: "rgba(255, 255, 255, 0.65)" });
+  expect(screen.getByText("how are").style.getPropertyValue("color")).toBe("var(--muted)");
+  expect(screen.getByText("Hello there").style.getPropertyValue("color")).toBe("");
 });
 
 test("with no words yet there is no box for them", () => {

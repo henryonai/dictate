@@ -1,8 +1,5 @@
-/* The floating windows are transparent: nothing but what the components draw may have a background. */
-
-:root {
-  color-scheme: dark;
-}
+/* The floating windows are transparent: nothing but what the components draw may have a background. The colors are the tokens of
+   tokens.css (the Graphite theme, which main.ts loads before this file); the color scheme is the theme's, set there too. */
 
 * {
   box-sizing: border-box;
@@ -21,7 +18,7 @@ html {
 }
 
 body {
-  color: rgb(245 245 245);
+  color: var(--ink);
   font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
   /* A bubble is read, not selected, and the cursor stays an arrow where it can't type. */
   cursor: default;
@@ -34,6 +31,6 @@ button {
 }
 
 button:focus-visible {
-  outline: 2px solid rgb(76 154 255);
+  outline: 2px solid var(--accent);
   outline-offset: 1px;
 }

@@ -69,6 +69,7 @@ describe("each wrapper calls its command with the argument names the Rust side e
     ["panelState", "panel_state", undefined, () => api.panelState()],
     ["panelResized", "panel_resized", { label: "bubble", width: 428, height: 100 }, () => api.panelResized("bubble", 428, 100)],
     ["panelLanguage", "panel_language", undefined, () => api.panelLanguage()],
+    ["currentTheme", "current_theme", undefined, () => api.currentTheme()],
     ["meetingsList", "meetings_list", { query: "plan" }, () => api.meetingsList("plan")],
     ["meetingDetail", "meeting_detail", { id: "2026-03-02 10-00-00" }, () => api.meetingDetail("2026-03-02 10-00-00")],
     ["meetingsPickFiles", "meetings_pick_files", undefined, () => api.meetingsPickFiles()],
@@ -232,6 +233,19 @@ test("the settings-changed event brings the settings that changed, until it is r
 
   stop();
   await emit("settings-changed", { dictation_language: "en-US" });
+  expect(heard).toHaveLength(1);
+});
+
+test("the theme-changed event brings the word of the theme, until it is removed", async () => {
+  recordCalls();
+  const heard: unknown[] = [];
+  const stop = await api.onThemeChanged((theme) => heard.push(theme));
+
+  await emit("theme-changed", "dark");
+  expect(heard).toEqual(["dark"]);
+
+  stop();
+  await emit("theme-changed", "light");
   expect(heard).toHaveLength(1);
 });
 

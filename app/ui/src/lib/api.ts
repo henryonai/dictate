@@ -1,4 +1,4 @@
-// The commands of the Rust side and its events (`model-download`, `hotkey-status`, `settings-changed`, `meeting-job`,
+// The commands of the Rust side and its events (`model-download`, `hotkey-status`, `settings-changed`, `theme-changed`, `meeting-job`,
 // `meetings-changed`), with their types. Nothing else in the UI calls `invoke`: when a command changes, this is the one
 // place to follow it. Names and argument names mirror app/src-tauri/src/commands.rs and app/src-tauri/src/meetings/.
 import { invoke } from "@tauri-apps/api/core";
@@ -8,6 +8,8 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import type { PanelState } from "../panel/state";
 
 export type UiLanguage = "system" | "en" | "vi";
+/** The look of every window: "system" follows the OS, the others force the light or the dark colors. */
+export type Theme = "system" | "light" | "dark";
 export type Engine = "whisper" | "api";
 export type AiProvider = "anthropic" | "openai";
 export type TranscribePreset = "openrouter" | "openai" | "groq" | "custom";
@@ -19,6 +21,7 @@ export type SettingsTab = "general" | "speech" | "ai" | "accounts";
 /** The settings file. */
 export interface Settings {
   ui_language: UiLanguage;
+  theme: Theme;
   /** BCP-47, e.g. `en-US`. */
   dictation_language: string;
   hotkey: string;
@@ -565,6 +568,8 @@ export const api = {
     invoke<void>("panel_resized", { label, width, height }),
   /** The language of the UI the settings ask for, which the panels speak. */
   panelLanguage: () => invoke<"en" | "vi">("panel_language"),
+  /** The theme the settings ask for, for a window that has just opened (every window may ask): see `followTheme` in theme.ts. */
+  currentTheme: () => invoke<Theme>("current_theme"),
 
   /** Resolves with the function that stops listening. */
   onHotkeyStatus: (handler: (status: HotkeyStatus) => void) =>
@@ -572,6 +577,9 @@ export const api = {
   /** Settings that the Rust side changed without the window (the language menu of the dictation chip): only the ones that changed. */
   onSettingsChanged: (handler: (patch: Partial<Settings>) => void) =>
     listen<Partial<Settings>>("settings-changed", (event) => handler(event.payload)),
+  /** A theme was chosen in Settings (to every window): the word of the setting. Resolves with the function that stops listening. */
+  onThemeChanged: (handler: (theme: Theme) => void) =>
+    listen<Theme>("theme-changed", (event) => handler(event.payload)),
   /** The meetings window sends someone to a page of Settings (`meetings_open_settings`): show it. Resolves with the function that stops listening. */
   onSettingsTab: (handler: (tab: SettingsTab) => void) =>
     listen<SettingsTab>("settings-tab", (event) => handler(event.payload)),
