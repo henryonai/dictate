@@ -123,7 +123,11 @@ fn deb(root: &Path) {
 
 /// What the NSIS installer unpacks to: the program, its sidecars and the runtime of Visual C++ beside it.
 fn windows(root: &Path) {
-    write_program(&root.join("dictate.exe"), "MZ stand-in\n");
+    // The names in the import table of a real dictate.exe (it always has KERNEL32.dll): the check reads them from the bytes.
+    write_program(
+        &root.join("dictate.exe"),
+        "MZ stand-in\0KERNEL32.dll\0VCRUNTIME140.dll\0",
+    );
     write_program(&root.join("dictate-mcp.exe"), "MZ stand-in\n");
     write_program(&root.join("dictate-ffmpeg.exe"), &ffmpeg(PLAIN_BUILDCONF));
     for dll in VC_DLLS {
@@ -598,26 +602,57 @@ fn a_windows_tree_without_one_of_the_runtime_dlls_fails_and_says_which() {
 
 #[test]
 fn a_windows_program_that_asks_for_a_runtime_dll_that_is_not_beside_it_fails_and_names_both() {
-    // The first dry run's dictate.exe imported msvcp140_1.dll (std::pmr), and the installer had only the three that the list named then: a Windows without
-    // the runtime would not have started it. What a program asks for is read from its bytes, in the capitals of the import table.
+    // The first dry run's dictate.exe imported msvcp140_1.dll (std::pmr), and the installer had only the three that the list named then: a Windows
+    // without the runtime would not have started it. The list has the four now; what a program asks for is read from its bytes (in the capitals of
+    // the import table), and that is what finds the next one: msvcp140_2.dll is not in the list, so only the reading of the bytes can say it is
+    // missing, and its message ("asks for") is the one that the list does not have.
+    for dll in ["msvcp140_1.dll", "msvcp140_2.dll"] {
+        let imports = format!(
+            "MZ stand-in\0KERNEL32.dll\0MSVCP140.dll\0{}\0VCRUNTIME140.dll\0",
+            dll.to_uppercase().replace(".DLL", ".dll")
+        );
+        let root = tree(windows);
+        write_program(&root.path().join("dictate.exe"), &imports);
+        let _ = fs::remove_file(root.path().join(dll));
+        // A file that needs only what is there passes: the same program, with the DLL beside it.
+        let complete = tree(windows);
+        write_program(&complete.path().join("dictate.exe"), &imports);
+        write(&complete.path().join(dll), "MZ stand-in\n");
+
+        assert_fails(
+            &Tools::new().run(root.path()),
+            &[&format!(
+                "dictate.exe asks for {dll}, which is not next to it"
+            )],
+        );
+        assert_passes(&Tools::new().run(complete.path()));
+    }
+}
+
+#[test]
+fn a_windows_program_from_which_no_dll_name_can_be_read_is_not_a_pass() {
+    // The reading of the bytes finds nothing in a file that is not what it was taken for (a stub, a packed file, names in another coding):
+    // a dictate.exe that has no name of any DLL is not a clean one, it is one that was not checked. Every program of Windows has KERNEL32.dll.
     let root = tree(windows);
     write_program(
         &root.path().join("dictate.exe"),
-        "MZ stand-in\0KERNEL32.dll\0MSVCP140.dll\0MSVCP140_1.dll\0VCRUNTIME140.dll\0",
-    );
-    fs::remove_file(root.path().join("msvcp140_1.dll")).unwrap();
-    // A file that needs only what is there passes: the same program, with the DLL beside it.
-    let complete = tree(windows);
-    write_program(
-        &complete.path().join("dictate.exe"),
-        "MZ stand-in\0KERNEL32.dll\0MSVCP140.dll\0MSVCP140_1.dll\0VCRUNTIME140.dll\0",
+        "MZ stand-in\0nothing to read\0",
     );
 
     assert_fails(
         &Tools::new().run(root.path()),
-        &["dictate.exe", "msvcp140_1.dll"],
+        &["could not read any DLL name from dictate.exe"],
     );
-    assert_passes(&Tools::new().run(complete.path()));
+}
+
+#[test]
+fn the_ffmpeg_of_windows_is_not_asked_to_have_a_dll_name() {
+    // dictate-ffmpeg.exe is a mingw build that was checked by its own script; its stand-in has no name of a DLL, and the installer passes.
+    let root = tree(windows);
+    let ffmpeg_exe = fs::read_to_string(root.path().join("dictate-ffmpeg.exe")).unwrap();
+    assert!(!ffmpeg_exe.to_lowercase().contains(".dll"));
+
+    assert_passes(&Tools::new().run(root.path()));
 }
 
 #[test]

@@ -332,6 +332,12 @@ check_windows() {
   for dll in vcruntime140.dll vcruntime140_1.dll msvcp140.dll msvcp140_1.dll; do
     [ -f "$root/$dll" ] || problem "$dll is not next to dictate.exe: a Windows without the runtime of Visual C++ would not start it"
   done
+  # A dictate.exe from which no DLL name can be read (every program of Windows has KERNEL32.dll) is a file that this reading does not
+  # understand, and then what it found above is worth nothing: it is said, and it is not a pass. (Not for dictate-ffmpeg.exe, which a
+  # mingw build may keep free of names that look like these, and which check-ffmpeg-lgpl.sh reads its own way.)
+  if [ -f "$root/dictate.exe" ] && ! grep -a -q -i -E '[a-z0-9_.-]+\.dll' "$root/dictate.exe"; then
+    problem "could not read any DLL name from dictate.exe: what it asks for of the runtime of Visual C++ was not checked"
+  fi
   # What the programs and the DLLs ask for: the names are in the import table as plain text, in the capitals of the linker, and the files
   # of the installer are in small letters. (find -iname: a file system that tells the two apart is the one of the Linux that unpacks it.)
   for file in "$root"/*.exe "$root"/*.dll; do
