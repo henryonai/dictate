@@ -143,7 +143,7 @@
   "accounts.checking": "Đang kiểm tra…",
   "accounts.check_ai_ok": "Đã kết nối: {model} đã trả lời.",
   "accounts.check_transcribe_ok": "Đã kết nối: {model} đã nhận âm thanh thử.",
-  "accounts.ai_footer": "OpenRouter: chọn OpenAI-compatible, Base URL https://openrouter.ai/api/v1, model dạng anthropic/claude-haiku-5.5.",
+  "accounts.ai_footer": "OpenRouter là mặc định: lấy key tại openrouter.ai/keys. Model của OpenRouter có dạng deepseek/deepseek-v4.1-flash hoặc anthropic/claude-haiku-5.5.",
   "accounts.transcribe": "Transcript qua API",
   "accounts.service": "Dịch vụ",
   "service.openrouter": "OpenRouter",

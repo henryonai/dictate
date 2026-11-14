@@ -911,7 +911,10 @@ mod tests {
         assert!(!b.ai_ready() && !b.api_ready() && !b.whisper_ready());
 
         p.state.keys.set(Account::Ai, true);
-        assert!(b.ai_ready(), "a saved AI key is what Anthropic needs");
+        assert!(
+            b.ai_ready(),
+            "a saved AI key is what OpenRouter, the default, needs"
+        );
         p.state.keys.set(Account::Transcribe, true);
         assert!(b.api_ready());
 

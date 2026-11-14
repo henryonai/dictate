@@ -895,7 +895,7 @@ mod tests {
     fn view_has_the_settings_at_the_top_level() {
         let f = fixture();
         let json = serde_json::to_value(get_settings_view(&f.store, &f.keys)).unwrap();
-        assert_eq!(json["ai_model"], "claude-haiku-5-5");
+        assert_eq!(json["ai_model"], "deepseek/deepseek-v4.1-flash");
         assert_eq!(json["hotkey"], "Ctrl+Alt+Space");
         assert_eq!(json["has_ai_key"], false);
         assert_eq!(json["has_transcribe_key"], false);
@@ -919,8 +919,8 @@ mod tests {
         let f = fixture();
         f.keys.set(Account::Ai, true);
         let mut s = f.store.get();
+        // The AI part is on OpenRouter from the start: choosing it for transcription is all it takes.
         s.set_transcribe_preset(TranscribePreset::OpenRouter);
-        s.ai_base_url = "https://openrouter.ai/api/v1".into();
         f.store.save(&s).unwrap();
         assert!(get_settings_view(&f.store, &f.keys).shares_openrouter_key);
 
@@ -1272,10 +1272,14 @@ mod tests {
     #[test]
     fn switching_provider_follows_the_rules_and_is_saved() {
         let f = fixture();
-        let view = set_ai_provider_inner(&f.store, &f.keys, AiProvider::OpenAi).unwrap();
-        assert_eq!(view.settings.ai_provider, AiProvider::OpenAi);
-        assert_eq!(view.settings.ai_base_url, "http://localhost:8317/v1");
-        assert_eq!(f.store.get().ai_base_url, "http://localhost:8317/v1");
+        let view = set_ai_provider_inner(&f.store, &f.keys, AiProvider::Anthropic).unwrap();
+        assert_eq!(view.settings.ai_provider, AiProvider::Anthropic);
+        assert_eq!(view.settings.ai_base_url, "https://api.anthropic.com");
+        assert_eq!(view.settings.ai_model, "claude-haiku-5-5");
+        let saved = f.store.get();
+        assert_eq!(saved.ai_provider, AiProvider::Anthropic);
+        assert_eq!(saved.ai_base_url, "https://api.anthropic.com");
+        assert_eq!(saved.ai_model, "claude-haiku-5-5");
     }
 
     #[test]

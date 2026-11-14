@@ -154,9 +154,11 @@ What stays: your library (the `Dictate Meetings` folder in Documents has the sam
    Windows and Linux ask for nothing at install time: see [Dictation on each system](#dictation-on-each-system) for what each one needs.
 
 2. **Choose a Whisper model.** Settings → *Speech recognition* → *Whisper models*: click **Download** next to the one marked *Recommended* (it depends on the memory of the computer; **Tiny** and **Base** are weak for Vietnamese, **Small** and larger are better). The model is downloaded once, from Hugging Face, and speech is then recognized offline. Until a model is there, dictation says so.
-3. **Optional: set up an AI**, for the editing of dictation and for summaries. Settings → *Accounts & API keys* → *AI*, then click **Check**:
-   - **Anthropic:** base URL `https://api.anthropic.com`, a model such as `claude-haiku-5-5` (fast) or `claude-sonnet-5-5`, and your API key.
-   - **OpenAI-compatible:** OpenRouter (`https://openrouter.ai/api/v1`), OpenAI, or a local server such as Ollama (`http://localhost:11434/v1`), with a model that the endpoint has.
+3. **Optional: add an OpenRouter key**, for the editing of dictation and for summaries. Dictate uses [OpenRouter](https://openrouter.ai) with the model `deepseek/deepseek-v4.1-flash` by default, so there is no URL or model to type: create a key at [openrouter.ai/keys](https://openrouter.ai/keys), then Settings → *Accounts & API keys* → *AI*, paste it and click **Check**. Choosing OpenRouter for the *Transcription API* too needs no second key: it uses the same one.
+
+   To use another service, choose it under *Provider* and enter its base URL, a model it has and your key:
+   - **Anthropic:** base URL `https://api.anthropic.com`, a model such as `claude-haiku-5-5` (fast) or `claude-sonnet-5-5`.
+   - **OpenAI-compatible:** OpenRouter with another model (such as `anthropic/claude-haiku-5.5`), OpenAI, or a local server such as Ollama (`http://localhost:11434/v1`).
 
    API keys go to the credential store of your system (Keychain, Credential Manager, Secret Service), never to a file. Without an AI, dictation still works, the text is just not edited, and a recording gets a transcript and no summary.
 4. **Choose the language of your dictation:** Settings → *General* → *Dictation* → *Language* (it starts as English (US); choose *Tiếng Việt* to speak Vietnamese).
@@ -331,7 +333,7 @@ Where Dictate keeps things:
 Dictate has no account, analytics or telemetry. It only talks to the services you set up, to the site of a link you add (through yt-dlp), to Hugging Face and GitHub to download models (the Whisper models and the two speaker separation models) and, on a Windows 10 that has no WebView2, to Microsoft when the installer downloads it. The picture and the sound of a recording are played back by a small server inside the app that listens on `127.0.0.1` only, with a random token in the address.
 
 - **Stays on your computer:** recordings, transcripts and summaries (in the folders above), and Whisper, which recognizes the speech here. API keys are in the credential store of your system.
-- **Sent to your AI provider:** the text you dictate when it is edited or rewritten, and the transcript of a recording when it is summarized or you ask about it. A local endpoint such as Ollama keeps this on your computer too.
+- **Sent to your AI provider** (OpenRouter unless you chose another): the text you dictate when it is edited or rewritten, and the transcript of a recording when it is summarized or you ask about it. A local endpoint such as Ollama keeps this on your computer too.
 - **Sent to your transcription API,** only when you choose the API as the engine: the audio of a dictation or of a recording.
 - **Read by Claude,** through the MCP server: the content of a recording, when Claude reads it.
 

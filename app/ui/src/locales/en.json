@@ -143,7 +143,7 @@
   "accounts.checking": "Checking…",
   "accounts.check_ai_ok": "Connected: {model} answered.",
   "accounts.check_transcribe_ok": "Connected: {model} accepted the test audio.",
-  "accounts.ai_footer": "OpenRouter: choose OpenAI-compatible, base URL https://openrouter.ai/api/v1, models like anthropic/claude-haiku-5.5.",
+  "accounts.ai_footer": "OpenRouter is the default: get a key at openrouter.ai/keys. Its models look like deepseek/deepseek-v4.1-flash or anthropic/claude-haiku-5.5.",
   "accounts.transcribe": "Transcription API",
   "accounts.service": "Service",
   "service.openrouter": "OpenRouter",

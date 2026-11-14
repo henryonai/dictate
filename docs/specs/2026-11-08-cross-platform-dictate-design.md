@@ -77,7 +77,7 @@ Reference behavior is in this repo's `README.md` and `Sources/`. In short:
 - Speaker separation: today uses SpeakerKit (pyannote). Builder picks a cross-platform equivalent (e.g. pyannote/ONNX segmentation + embedding models run via ONNX Runtime, or sherpa-onnx diarization). Must work offline after a one-time model download.
 
 **Providers and settings**
-- AI: Anthropic, or any OpenAI-compatible endpoint (OpenRouter, OpenAI, CLIProxyAPI, Ollama…), each with a "Check" button.
+- AI: OpenRouter with `deepseek/deepseek-v4.1-flash` by default (an OpenAI-compatible endpoint, with its base URL and model already filled in), or Anthropic, or any other OpenAI-compatible endpoint (OpenAI, CLIProxyAPI, Ollama…), each with a "Check" button.
 - Transcription API: OpenRouter (Gemini via audio input), OpenAI, Groq, or a custom `/audio/transcriptions` endpoint; separate model choice for dictation vs files.
 - API keys stored in the OS credential store (macOS Keychain, Windows Credential Manager, Linux Secret Service), never in plain files. A Rust crate like `keyring` covers all three.
 - Launch at login, interface language (follows the OS by default).

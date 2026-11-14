@@ -6,9 +6,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AiProvider {
-    #[default]
     Anthropic,
-    /// OpenAI-compatible: CLIProxyAPI, OpenAI, Ollama, OpenRouter...
+    /// OpenAI-compatible: OpenRouter (the default), OpenAI, Ollama, CLIProxyAPI...
+    #[default]
     OpenAi,
 }
 
@@ -16,12 +16,15 @@ impl AiProvider {
     pub fn default_base_url(self) -> &'static str {
         match self {
             AiProvider::Anthropic => "https://api.anthropic.com",
-            AiProvider::OpenAi => "http://localhost:8317/v1",
+            AiProvider::OpenAi => "https://openrouter.ai/api/v1",
         }
     }
 
     pub fn default_model(self) -> &'static str {
-        "claude-haiku-5-5"
+        match self {
+            AiProvider::Anthropic => "claude-haiku-5-5",
+            AiProvider::OpenAi => "deepseek/deepseek-v4.1-flash",
+        }
     }
 }
 
@@ -191,18 +194,25 @@ mod tests {
     }
 
     #[test]
-    fn ai_provider_defaults_match_swift() {
+    fn the_default_provider_is_openai_compatible_on_openrouter() {
+        assert_eq!(AiProvider::default(), AiProvider::OpenAi);
+        assert_eq!(
+            AiProvider::OpenAi.default_base_url(),
+            "https://openrouter.ai/api/v1"
+        );
         assert_eq!(
             AiProvider::Anthropic.default_base_url(),
             "https://api.anthropic.com"
         );
-        assert_eq!(
-            AiProvider::OpenAi.default_base_url(),
-            "http://localhost:8317/v1"
-        );
+    }
+
+    #[test]
+    fn each_provider_has_its_own_default_model() {
         assert_eq!(AiProvider::Anthropic.default_model(), "claude-haiku-5-5");
-        assert_eq!(AiProvider::OpenAi.default_model(), "claude-haiku-5-5");
-        assert_eq!(AiProvider::default(), AiProvider::Anthropic);
+        assert_eq!(
+            AiProvider::OpenAi.default_model(),
+            "deepseek/deepseek-v4.1-flash"
+        );
     }
 
     #[test]
