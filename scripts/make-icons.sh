@@ -23,7 +23,7 @@
 # needs nothing but `pnpm --dir app install` (Node and pnpm; no ImageMagick, no rsvg-convert). `tauri icon` also makes the folders of
 # the iOS and Android icons, which the app has no use for: the files are made in a scratch folder and only the desktop ones are copied.
 #
-# After a change look at the PNGs at 16, 32, 128 and 1024 px (`pnpm --dir app tauri icon app/src-tauri/icons/source/loah.svg -p 16
+# After a change look at the PNGs at 16, 32, 128 and 1024 px (`pnpm --dir app tauri icon src-tauri/icons/source/loah.svg -p 16
 # -p 32 -p 128 -p 1024 -o SOME_FOLDER`): the three bars and the three lines must stay apart at 16 px.
 #
 # The tray images are in the program: tray.rs includes them when it is compiled (build.rs watches the folder), so build again after

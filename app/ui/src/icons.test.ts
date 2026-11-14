@@ -98,6 +98,13 @@ describe("the icon of the app", () => {
     expect(script).toContain("icons/source/loah-tray.svg");
   });
 
+  test("the_check_command_of_the_script_names_the_drawing_from_the_folder_that_pnpm_dir_app_runs_in", () => {
+    // `pnpm --dir app` runs the command with `app/` as its working folder: a path that starts with `app/` is not there.
+    const script = readText("scripts/make-icons.sh").replace(/\n#\s*/g, " ");
+    expect(script).toContain("pnpm --dir app tauri icon src-tauri/icons/source/loah.svg");
+    expect(script).not.toContain("pnpm --dir app tauri icon app/");
+  });
+
   test("every_icon_the_bundle_lists_is_there_in_its_size", () => {
     const config = JSON.parse(readText("app/src-tauri/tauri.conf.json"));
     const listed: string[] = config.bundle.icon;
