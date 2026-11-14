@@ -4,8 +4,8 @@
 //! ffmpeg, espeak-ng (GPL-3.0) in a library, a `/usr/bin/ffmpeg` that collides with the package of the distribution, or a program that
 //! cannot find its libraries must fail the release job instead of being published. These tests run the script on trees that look like what
 //! an installer unpacks to (it takes such a folder as well as an installer, for these tests), with stand-ins for the programs and the tools
-//! of the system that it asks: `readelf`, `plutil` and `codesign` (and `dpkg-deb`, `7z`, `hdiutil` and `ditto` for the part that unpacks
-//! an installer). The real tools are tried by the dry run of the release workflow, which checks real installers.
+//! of the system that it asks: `readelf`, `plutil`, `codesign`, `lipo` and `vtool` (and `dpkg-deb`, `7z`, `hdiutil` and `ditto` for the part
+//! that unpacks an installer). The real tools are tried by the dry run of the release workflow, which checks real installers.
 //!
 //! The scripts are for bash, which CI runs on every system: these tests run where `bash` is the real one.
 #![cfg(unix)]
@@ -124,18 +124,21 @@ fn mac(root: &Path) {
 
 // ---- the stand-ins for the tools of the system -------------------------------------------------------------------------------
 
-/// What `readelf -d` prints for a program that has the run path of the package.
+/// What `readelf -d` prints for a program that has the run path of the package, and only that (the release build is made with
+/// `DICTATE_RPATH_INSTALLED=1`).
 const RUNPATH_OF_THE_PACKAGE: &str = "Dynamic section at offset 0x4a1b20 contains 41 entries:
   Tag        Type                         Name/Value
  0x0000000000000001 (NEEDED)             Shared library: [libsherpa-onnx-c-api.so]
  0x0000000000000001 (NEEDED)             Shared library: [libpipewire-0.3.so.0]
- 0x000000000000001d (RUNPATH)            Library runpath: [$ORIGIN:$ORIGIN/..:$ORIGIN/../../../..:$ORIGIN/../lib/dictate]";
+ 0x000000000000001d (RUNPATH)            Library runpath: [$ORIGIN/../lib/dictate]";
 
 /// The folder with the stand-ins, put first in the PATH of the script, and what they are told through the environment.
 struct Tools {
     bin: tempfile::TempDir,
     log: PathBuf,
     vars: Vec<(String, String)>,
+    /// The variables that the script must not get, whatever the environment of the test has.
+    removed: Vec<String>,
 }
 
 impl Tools {
@@ -157,11 +160,36 @@ impl Tools {
             &bin.path().join("codesign"),
             "#!/bin/sh\nfor path; do :; done\necho \"codesign $*\" >> \"$FAKE_LOG\"\nfor name in $FAKE_CODESIGN_FAIL; do\n  [ \"$(basename \"$path\")\" = \"$name\" ] && { echo \"$path: invalid signature\" >&2; exit 1; }\ndone\nexit 0\n",
         );
+        // `lipo -archs FILE`: FAKE_LIPO is `name=arch` pairs (blank separated; `x86_64+arm64` is a universal file) for the files that have
+        // another architecture than FAKE_LIPO_DEFAULT (`arm64` unless a test says).
+        write_program(
+            &bin.path().join("lipo"),
+            "#!/bin/sh\nfor file; do :; done\nname=\"$(basename \"$file\")\"\nfor pair in $FAKE_LIPO; do\n  case \"$pair\" in \"$name\"=*) echo \"${pair#*=}\" | tr '+' ' '; exit 0 ;; esac\ndone\necho \"${FAKE_LIPO_DEFAULT:-arm64}\"\n",
+        );
+        // `vtool -show-build FILE` prints what vtool prints (the first line is the name of the file); FAKE_MINOS is `name=version` pairs
+        // for the files that have another minimum system than 13.0.
+        write_program(
+            &bin.path().join("vtool"),
+            "#!/bin/sh\nfor file; do :; done\nname=\"$(basename \"$file\")\"\nminos=13.0\nfor pair in $FAKE_MINOS; do\n  case \"$pair\" in \"$name\"=*) minos=\"${pair#*=}\" ;; esac\ndone\nprintf '%s:\\nLoad command 11\\n      cmd LC_BUILD_VERSION\\n  cmdsize 32\\n platform MACOS\\n    minos %s\\n      sdk 26.5\\n   ntools 1\\n     tool LD\\n  version 1267.0\\n' \"$file\" \"$minos\"\n",
+        );
         let vars = vec![
             ("FAKE_READELF".to_owned(), RUNPATH_OF_THE_PACKAGE.to_owned()),
             ("FAKE_LOG".to_owned(), log.display().to_string()),
+            // What a folder is checked for (a `.dmg` says it in its name).
+            ("DICTATE_ARTIFACT_ARCH".to_owned(), "arm64".to_owned()),
         ];
-        Tools { bin, log, vars }
+        Tools {
+            bin,
+            log,
+            vars,
+            removed: Vec::new(),
+        }
+    }
+
+    fn without(mut self, name: &str) -> Tools {
+        self.vars.retain(|(known, _)| known != name);
+        self.removed.push(name.to_owned());
+        self
     }
 
     fn with(mut self, name: &str, value: &str) -> Tools {
@@ -198,6 +226,40 @@ impl Tools {
             "{}:{}",
             self.bin.path().display(),
             std::env::var("PATH").unwrap_or_default()
+        );
+        let mut command = Command::new("bash");
+        command.arg(script()).arg(artifact).env("PATH", path);
+        for name in &self.removed {
+            command.env_remove(name);
+        }
+        for (name, value) in &self.vars {
+            command.env(name, value);
+        }
+        command.output().expect("bash runs the script")
+    }
+
+    /// Runs the script where `missing` is not to be found: the PATH is the stand-ins (except that one) and links to the ordinary tools that
+    /// the scripts need, so that the real `lipo` or `vtool` of a Mac is not there either.
+    fn run_without(&self, artifact: &Path, missing: &str) -> Output {
+        let ordinary = tempfile::tempdir().unwrap();
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        for name in [
+            "bash", "sh", "env", "cat", "cp", "rm", "mkdir", "mktemp", "ls", "head", "tail", "tr",
+            "sed", "grep", "awk", "cut", "sort", "wc", "find", "dirname", "basename", "od",
+            "uname", "mv", "chmod", "xargs", "tee", "readlink", "date", "expr", "test",
+        ] {
+            if let Some(found) = std::env::split_paths(&path)
+                .map(|dir| dir.join(name))
+                .find(|candidate| candidate.is_file())
+            {
+                std::os::unix::fs::symlink(found, ordinary.path().join(name)).unwrap();
+            }
+        }
+        let _ = fs::remove_file(self.bin.path().join(missing));
+        let path = format!(
+            "{}:{}",
+            self.bin.path().display(),
+            ordinary.path().display()
         );
         let mut command = Command::new("bash");
         command.arg(script()).arg(artifact).env("PATH", path);
@@ -394,6 +456,21 @@ fn a_deb_whose_program_has_no_run_path_to_the_libraries_fails() {
         let output = Tools::new().with("FAKE_READELF", dynamic).run(root.path());
 
         assert_fails(&output, &["$ORIGIN/../lib/dictate"]);
+    }
+}
+
+#[test]
+fn a_deb_whose_program_still_has_the_run_paths_of_a_build_in_the_source_tree_fails() {
+    // $ORIGIN/.. of /usr/bin/dictate is /usr, and $ORIGIN/../../../.. is /: a program that looks there loads a library that somebody put there.
+    for extra in ["$ORIGIN", "$ORIGIN/..", "$ORIGIN/../../../..", "/opt/other"] {
+        let root = tree(deb);
+        let dynamic = format!(
+            " 0x000000000000001d (RUNPATH)            Library runpath: [$ORIGIN/../lib/dictate:{extra}]"
+        );
+
+        let output = Tools::new().with("FAKE_READELF", &dynamic).run(root.path());
+
+        assert_fails(&output, &[extra, "only $ORIGIN/../lib/dictate"]);
     }
 }
 
@@ -668,6 +745,158 @@ fn a_dmg_is_mounted_read_only_checked_and_ejected_whatever_the_result_is() {
         "the image is not ejected after a failure:\n{}",
         failing.calls()
     );
+}
+
+#[test]
+fn the_programs_of_an_arm_mac_app_are_arm64_and_the_name_of_the_dmg_says_so() {
+    // `Dictate_<version>_aarch64.dmg` is for Apple silicon, `Dictate_<version>_x64.dmg` for Intel: the architecture is read from the name,
+    // and lipo says what each program is. An Intel row that bundled an arm64 sidecar would be an app that opens and cannot start its MCP server.
+    for (name, arch) in [
+        ("Dictate_2.0.0_aarch64.dmg", "arm64"),
+        ("Dictate_2.0.0_x64.dmg", "x86_64"),
+    ] {
+        let root = tree(mac);
+        let work = tempfile::tempdir().unwrap();
+        let image = work.path().join(name);
+        fs::write(&image, "dmg\n").unwrap();
+        // The folder variable is not what a `.dmg` is checked against: the name is.
+        let tools = Tools::new()
+            .unpacking(root.path())
+            .with("FAKE_LIPO_DEFAULT", arch)
+            .with("DICTATE_ARTIFACT_ARCH", "something-else");
+
+        assert_passes(&tools.run(&image));
+    }
+}
+
+#[test]
+fn a_mac_program_of_another_architecture_than_the_dmg_says_fails_and_names_it() {
+    for (name, wrong) in [
+        ("Dictate_2.0.0_aarch64.dmg", "x86_64"),
+        ("Dictate_2.0.0_x64.dmg", "arm64"),
+    ] {
+        for program in ["dictate", "dictate-mcp", "dictate-ffmpeg"] {
+            let root = tree(mac);
+            let work = tempfile::tempdir().unwrap();
+            let image = work.path().join(name);
+            fs::write(&image, "dmg\n").unwrap();
+            let expected = if wrong == "arm64" { "x86_64" } else { "arm64" };
+            let tools = Tools::new()
+                .unpacking(root.path())
+                .with("FAKE_LIPO_DEFAULT", expected)
+                .with("FAKE_LIPO", &format!("{program}={wrong}"));
+
+            let output = tools.run(&image);
+
+            assert_fails(&output, &[program, wrong, expected]);
+        }
+    }
+}
+
+#[test]
+fn a_universal_program_is_not_one_architecture() {
+    // `lipo -archs` of a fat file says both: it is not what an installer for one architecture ships.
+    let root = tree(mac);
+    let output = Tools::new()
+        .with("FAKE_LIPO", "dictate-mcp=x86_64+arm64")
+        .run(root.path());
+
+    assert_fails(&output, &["dictate-mcp", "x86_64 arm64"]);
+}
+
+#[test]
+fn a_folder_is_checked_for_the_architecture_that_the_variable_names() {
+    let root = tree(mac);
+
+    let output = Tools::new()
+        .with("DICTATE_ARTIFACT_ARCH", "x86_64")
+        .run(root.path());
+
+    // The stand-in lipo says arm64 for every program.
+    assert_fails(&output, &["dictate", "arm64", "x86_64"]);
+}
+
+#[test]
+fn a_mac_app_of_which_the_architecture_is_not_known_is_not_a_pass() {
+    // No name that says it (a folder, a `.dmg` that is neither aarch64 nor x64) and no variable: what to check against is not known, so
+    // the check has not been made.
+    let root = tree(mac);
+    let output = Tools::new()
+        .without("DICTATE_ARTIFACT_ARCH")
+        .run(root.path());
+    assert_eq!(code(&output), 2, "{}{}", stdout(&output), stderr(&output));
+    assert!(
+        stderr(&output).contains("architecture"),
+        "{}",
+        stderr(&output)
+    );
+
+    let work = tempfile::tempdir().unwrap();
+    let image = work.path().join("Dictate_2.0.0_universal.dmg");
+    fs::write(&image, "dmg\n").unwrap();
+    let tools = Tools::new()
+        .unpacking(root.path())
+        .without("DICTATE_ARTIFACT_ARCH");
+    let output = tools.run(&image);
+    assert_eq!(code(&output), 2, "{}{}", stdout(&output), stderr(&output));
+    assert!(
+        stderr(&output).contains("architecture"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn every_mac_program_must_run_on_macos_13() {
+    // The minimum system that the linker wrote into each program (LC_BUILD_VERSION, which vtool prints): the program of an app that says
+    // 13.0 in Info.plist is not to need a newer macOS to load. The libraries are built for the deployment target that the workflow sets;
+    // this is what shows whether they were.
+    for (program, minos) in [
+        ("dictate", "14.0"),
+        ("dictate-mcp", "15.0"),
+        ("dictate-ffmpeg", "26.0"),
+    ] {
+        let root = tree(mac);
+
+        let output = Tools::new()
+            .with("FAKE_MINOS", &format!("{program}={minos}"))
+            .run(root.path());
+
+        assert_fails(&output, &[program, minos, "13.0"]);
+    }
+}
+
+#[test]
+fn a_mac_program_without_a_minimum_system_is_not_a_pass() {
+    let root = tree(mac);
+    let tools = Tools::new();
+    // The tool prints nothing that says a minimum: the program has none that is known to be 13.0.
+    write_program(
+        &tools.bin.path().join("vtool"),
+        "#!/bin/sh\nfor file; do :; done\necho \"$file:\"\n",
+    );
+
+    let output = tools.run(root.path());
+
+    assert_fails(&output, &["dictate", "minos"]);
+}
+
+#[test]
+fn a_mac_check_without_lipo_or_vtool_has_not_been_made_and_says_so() {
+    // The tool is not there: not a pass, and not a failure of the installer either (exit 2, as for plutil and codesign).
+    for tool in ["lipo", "vtool"] {
+        let root = tree(mac);
+        let output = Tools::new().run_without(root.path(), tool);
+
+        assert_eq!(
+            code(&output),
+            2,
+            "{tool}: {}{}",
+            stdout(&output),
+            stderr(&output)
+        );
+        assert!(stderr(&output).contains(tool), "{}", stderr(&output));
+    }
 }
 
 // ---- what the script does with what it is given ------------------------------------------------------------------------------

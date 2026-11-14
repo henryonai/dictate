@@ -18,13 +18,16 @@
 # The package for Linux (deb):
 #   - no /usr/bin/ffmpeg: it would collide with the package `ffmpeg` of Debian and Ubuntu (the sidecar is called dictate-ffmpeg);
 #   - the two libraries of sherpa-onnx in /usr/lib/dictate, and the run path `$ORIGIN/../lib/dictate` in /usr/bin/dictate (readelf -d), which
-#     is how the program finds them;
+#     is how the program finds them, and no other entry in its RPATH or RUNPATH (the ones of a build in the source tree would make it look in
+#     /usr and in /);
 #   - a dependency on libpipewire in `Depends` (the program does not start without it).
 # The installer for Windows: the three DLLs of the runtime of Visual C++ (vcruntime140.dll, vcruntime140_1.dll, msvcp140.dll) next to the
 # program: a Windows that has no runtime would not start it.
 # The disk image for macOS: Info.plist has NSMicrophoneUsageDescription, NSScreenCaptureUsageDescription and LSMinimumSystemVersion 13.0,
-# and `codesign --verify --strict` passes on the app and on both sidecars (the signature of a sidecar that was written over is broken, and
-# macOS kills the program).
+# `codesign --verify --strict` passes on the app and on both sidecars (the signature of a sidecar that was written over is broken, and
+# macOS kills the program), and each of the three programs is of the architecture that the name of the image says (`lipo -archs`;
+# Dictate_<version>_aarch64.dmg is arm64, Dictate_<version>_x64.dmg is x86_64; for a folder, DICTATE_ARTIFACT_ARCH says it) and has 13.0 as
+# its minimum system (`vtool -show-build`, `minos`). An image whose architecture is not known is exit status 2, not a pass.
 #
 # Every problem is told, not only the first. Exit status: 0 when the installer is fine, 1 when it is not, 2 when it could not be looked at
 # (a file that is not there, a kind that it cannot unpack, a tool that unpacks it that is missing): a check that did not run is not a pass.
@@ -169,6 +172,21 @@ plist_value() {
 if [ "$kind" = macos ]; then
   command -v plutil >/dev/null 2>&1 || cannot "plutil is not installed: Info.plist cannot be read"
   command -v codesign >/dev/null 2>&1 || cannot "codesign is not installed: the signatures cannot be verified"
+  command -v lipo >/dev/null 2>&1 || cannot "lipo is not installed: the architecture of the programs cannot be checked"
+  command -v vtool >/dev/null 2>&1 || cannot "vtool is not installed: the minimum system of the programs cannot be checked"
+  # The architecture that the programs have to be: the name of the image says it, and a folder is told by the variable.
+  expected_arch=""
+  case "$(printf '%s' "$artifact" | tr 'A-Z' 'a-z')" in
+    *_aarch64.dmg) expected_arch=arm64 ;;
+    *_x64.dmg) expected_arch=x86_64 ;;
+    *)
+      if [ -d "$artifact" ]; then expected_arch="${DICTATE_ARTIFACT_ARCH:-}"; fi
+      ;;
+  esac
+  case "$expected_arch" in
+    arm64 | x86_64) ;;
+    *) cannot "do not know which architecture the programs of $artifact have to be: the name of an image ends in _aarch64.dmg (arm64) or _x64.dmg (x86_64), and for a folder DICTATE_ARTIFACT_ARCH is arm64 or x86_64" ;;
+  esac
   # The program is the one that Info.plist names (the app is `Dictate`, the program `dictate`).
   main_name="$(plist_value CFBundleExecutable)"
   main_name="${main_name:-dictate}"
@@ -255,6 +273,13 @@ check_deb() {
       if ! printf '%s\n' "$paths" | grep -q -x -F -e '$ORIGIN/../lib/dictate'; then
         problem '/usr/bin/dictate has no RPATH or RUNPATH with $ORIGIN/../lib/dictate: it would not find its libraries in /usr/lib/dictate (readelf -d says: '"$(printf '%s' "$paths" | tr '\n' ' ')"')'
       fi
+      # And no other: the entries of a build in the source tree ($ORIGIN, $ORIGIN/.., $ORIGIN/../../../..) are, from /usr/bin, /usr/bin, /usr
+      # and /: a program that looks there loads a library that somebody put there.
+      local others
+      others="$(printf '%s\n' "$paths" | grep -v -x -F -e '$ORIGIN/../lib/dictate' | grep -v '^$' | tr '\n' ' ' || true)"
+      if [ -n "$others" ]; then
+        problem '/usr/bin/dictate has other entries in its RPATH or RUNPATH than $ORIGIN/../lib/dictate: '"$others"'(the release is built with DICTATE_RPATH_INSTALLED=1, which gives only $ORIGIN/../lib/dictate)'
+      fi
     fi
   fi
 
@@ -291,6 +316,24 @@ check_macos() {
     if ! codesign --verify --strict "$path" 2>"$errors"; then
       problem "codesign --verify --strict fails on $(inside "$path"):
 $(cat "$errors")"
+    fi
+  done
+  # The architecture and the minimum system of each program: a sidecar of the other architecture is an app that opens and cannot start its
+  # MCP server, and a library built for a newer macOS than the one that Info.plist promises makes the program fail to load on macOS 13.
+  local archs minima one
+  for path in "$bin_dir/$main_name" "$bin_dir/dictate-mcp" "$bin_dir/dictate-ffmpeg"; do
+    [ -f "$path" ] || continue
+    archs="$(lipo -archs "$path" 2>/dev/null | tr -s ' \n' ' ' | sed 's/ $//')"
+    if [ "$archs" != "$expected_arch" ]; then
+      problem "$(inside "$path") is of the architecture '${archs:-none that lipo knows}', and this installer is for $expected_arch"
+    fi
+    minima="$(vtool -show-build "$path" 2>/dev/null | awk '$1 == "minos" { print $2 }')"
+    if [ -z "$minima" ]; then
+      problem "$(inside "$path") has no minos in its build version (vtool -show-build), so its minimum system is not known to be 13.0"
+    else
+      for one in $minima; do
+        [ "$one" = "13.0" ] || problem "$(inside "$path") has minos $one: it needs a newer macOS than the 13.0 of Info.plist"
+      done
     fi
   done
 }

@@ -86,6 +86,7 @@ describe("how the release workflow is started", () => {
     expect(workflow).toMatch(/^permissions:\n {2}contents: read\n/m);
     for (const name of ["build", "sources"]) expect(job(name), name).toMatch(/^ {4}permissions:\n {6}contents: write$/m);
     expect(job("ffmpeg-windows")).not.toContain("contents: write");
+    expect(job("preflight")).not.toContain("contents: write");
   });
 });
 
@@ -154,6 +155,15 @@ describe("the Tauri build", () => {
     expect(read("scripts/stage-sidecars.sh")).toContain('lib_dir="app/src-tauri/libs"');
   });
 
+  test("the_program_of_the_installer_gets_only_the_run_path_of_the_installed_package", () => {
+    // The entries for a build in the source tree ($ORIGIN/.., $ORIGIN/../../../..) would make /usr/bin/dictate look in /usr and in /.
+    const variable = /pub const INSTALLED_ONLY_VARIABLE: &str = "([A-Z_]+)";/.exec(read("app/src-tauri/build_rpath.rs"))?.[1];
+    expect(variable).toBe("DICTATE_RPATH_INSTALLED");
+    expect(build()).toContain(`${variable}: "1"`);
+    // Only the build of the installer: the stage of the sidecars and the tests are the builds of the source tree.
+    expect(workflow.match(new RegExp(`${variable}`, "g"))).toHaveLength(1);
+  });
+
   test("the_windows_runtime_goes_next_to_the_program_through_a_second_overlay_that_only_the_windows_row_gets", () => {
     // `bundle.resources` is read on every system, and the three DLLs exist only where stage-sidecars.sh staged them: in the file that
     // every row gets they would fail the macOS and Linux builds (a missing resource is an error).
@@ -206,7 +216,7 @@ describe("the ffmpeg of each installer", () => {
     expect(linux).toContain("bash scripts/check-ffmpeg-lgpl.sh target/ffmpeg/x86_64-pc-windows-msvc/dictate-ffmpeg.exe");
     expect(linux).toContain("name: dictate-ffmpeg-x86_64-pc-windows-msvc");
 
-    expect(job("build")).toMatch(/^ {4}needs: ffmpeg-windows$/m);
+    expect(job("build")).toMatch(/^ {4}needs: \[preflight, ffmpeg-windows\]$/m);
     const download = step("build", "actions/download-artifact@v4");
     expect(download).toContain("if: runner.os == 'Windows'");
     expect(download).toContain("name: dictate-ffmpeg-x86_64-pc-windows-msvc");
@@ -236,6 +246,80 @@ describe("the ffmpeg of each installer", () => {
     expect(check).toContain("target/ffmpeg/${{ matrix.target }}/dictate-ffmpeg${{ matrix.exe }}");
     expect(text.indexOf(check)).toBeGreaterThan(text.indexOf("bash scripts/build-ffmpeg.sh"));
     expect(text.indexOf(check)).toBeLessThan(text.indexOf("bash scripts/stage-sidecars.sh"));
+  });
+});
+
+describe("what the workflow builds, and what it is allowed to keep of its token", () => {
+  /** The `actions/checkout` steps of the whole workflow, each with its `with:` lines. */
+  const checkouts = () => workflow.match(/- uses: actions\/checkout@v4\n(?: {8}.*\n)*/g) ?? [];
+
+  test("every_job_builds_the_commit_of_the_tag_and_a_dry_run_builds_the_commit_it_was_started_on", () => {
+    // Started by hand on main with a tag (`gh workflow run release.yml --ref main -f tag=v2.0.0`), the default checkout is the tip of main, which
+    // may be a later commit than the tag: the installers of one commit would be attached to the release of another, with --clobber.
+    expect(checkouts()).toHaveLength(4);
+    for (const name of ["preflight", "ffmpeg-windows", "build", "sources"]) {
+      expect(stepsOf(name)[0], `${name}: the first step`).toContain("actions/checkout@v4");
+      expect(stepsOf(name)[0], name).toContain("ref: ${{ inputs.tag || github.sha }}");
+    }
+    for (const checkout of checkouts()) expect(checkout).toContain("ref: ${{ inputs.tag || github.sha }}");
+  });
+
+  test("no_checkout_leaves_the_token_in_the_git_config_of_the_runner", () => {
+    // The uploads take the token from GH_TOKEN: nothing that runs after a checkout (the build runs the scripts and the dependencies of the
+    // repository) can read it from .git/config.
+    for (const checkout of checkouts()) expect(checkout).toContain("persist-credentials: false");
+  });
+
+  test("the_version_in_the_name_of_the_installer_is_the_version_of_the_tag_or_the_row_fails", () => {
+    // The files are named from the version of Cargo.toml, which release-please sets in the release PR: a tag that is not that version
+    // would attach an installer with another number in its name.
+    const found = step("build", "id: installer");
+    expect(found).toContain("TAG: ${{ inputs.tag }}");
+    expect(found).toContain('version="$(basename "${files[0]}" | cut -d_ -f2)"');
+    expect(found).toMatch(/if \[ -n "\$TAG" \] && \[ "\$version" != "\$\{TAG#v\}" \]; then/);
+    expect(found).toMatch(/::error::[^\n]*\$version[^\n]*\$TAG/);
+    expect(found.indexOf('"$version" != "${TAG#v}"')).toBeLessThan(found.indexOf('echo "path='));
+  });
+});
+
+describe("the notices are checked before anything is built, when there is a tag", () => {
+  const preflight = () => job("preflight");
+
+  test("a_job_that_runs_first_fails_a_tag_without_the_notices_and_a_dry_run_goes_on", () => {
+    const check = step("preflight", "THIRD_PARTY_NOTICES.md");
+    expect(check).toContain("TAG: ${{ inputs.tag }}");
+    expect(check).toMatch(/if \[ -n "\$TAG" \] && \[ ! -f THIRD_PARTY_NOTICES\.md \]; then/);
+    expect(check).toMatch(/::error::[^\n]*THIRD_PARTY_NOTICES\.md/);
+    expect(check).toContain("exit 1");
+    // A dry run says so: the notices are written by a later task.
+    expect(check).toMatch(/::warning::[^\n]*dry run/);
+    // It has the files of the commit that is built.
+    expect(stepsOf("preflight")[0]).toContain("ref: ${{ inputs.tag || github.sha }}");
+    expect(preflight()).not.toMatch(/^ {4}needs:/m);
+  });
+
+  test("nothing_is_built_before_it_and_the_job_that_attaches_the_files_still_has_its_own_rule", () => {
+    expect(job("ffmpeg-windows")).toMatch(/^ {4}needs: preflight$/m);
+    expect(job("build")).toMatch(/^ {4}needs: \[preflight, ffmpeg-windows\]$/m);
+    // The later job copies the file and keeps the rule: it is the one that attaches it.
+    expect(step("sources", "THIRD_PARTY_NOTICES.md")).toMatch(/elif \[ -n "\$TAG" \]/);
+  });
+});
+
+describe("the ffmpeg job for Windows installs each package once", () => {
+  test("one_apt_get_update_and_the_objdump_of_mingw_in_one_step_the_compilers_only_when_the_build_is_not_cached", () => {
+    const text = job("ffmpeg-windows");
+    expect(text.match(/apt-get update/g)).toHaveLength(1);
+    expect(text.match(/binutils-mingw-w64-x86-64/g)).toHaveLength(1);
+    // What the check reads the program with: installed whether or not the build came from the cache.
+    const objdump = step("ffmpeg-windows", "binutils-mingw-w64-x86-64");
+    expect(objdump).not.toContain("cache-hit");
+    expect(objdump).toContain("apt-get update");
+    // What the build needs: only on a miss, after the update of the step above.
+    const compilers = step("ffmpeg-windows", "gcc-mingw-w64-x86-64-posix");
+    expect(compilers).toContain("if: steps.ffmpeg-build.outputs.cache-hit != 'true'");
+    expect(compilers).not.toContain("apt-get update");
+    expect(text.indexOf(objdump)).toBeLessThan(text.indexOf(compilers));
   });
 });
 
