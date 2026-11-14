@@ -546,6 +546,12 @@ describe("the dictation panels and the recording bar", () => {
     expect(declarationsOf(component("panel/Card.svelte"), ".dot").background).toBe("var(--ok)");
   });
 
+  test("a_control_that_is_open_or_a_bar_that_is_off_is_drawn_in_a_color_that_shows_in_light_too", () => {
+    // The `line` color is a hair of 1.2:1 on a light panel: what has to show on it is a tint of the ink or the accent.
+    expect(declarationsOf(component("panel/Chip.svelte"), '.dots[aria-expanded="true"]').background).toBe("var(--accent)");
+    expect(declarationsOf(component("recorder/RecorderApp.svelte"), ".bar").background).toBe("var(--hover)");
+  });
+
   test("the_main_button_is_the_accent_in_the_card_the_pill_and_the_bar", () => {
     for (const [file, selector] of [["panel/Card.svelte", ".primary"], ["panel/Pill.svelte", ".stop"], ["recorder/RecorderApp.svelte", ".stop"]]) {
       const main = declarationsOf(component(file), selector);

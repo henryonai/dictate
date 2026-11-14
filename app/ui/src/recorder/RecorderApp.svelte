@@ -351,7 +351,8 @@
   }
   .bar {
     width: 3px;
-    background: var(--line);
+    /* A bar that is not lit: the track of the meter, which has to show in light as well. */
+    background: var(--hover);
     border-radius: 1px;
     transition: background-color 0.08s linear;
   }

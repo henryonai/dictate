@@ -133,8 +133,10 @@
     cursor: pointer;
   }
 
+  /* Open: the accent, a step stronger than the tint of the button at rest, as the grey that it was. */
   .dots[aria-expanded="true"] {
-    background: var(--selected);
+    background: var(--accent);
+    color: var(--on-accent);
   }
 
   .popup {
