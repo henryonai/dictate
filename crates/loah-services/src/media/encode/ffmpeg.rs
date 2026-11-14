@@ -563,66 +563,80 @@ mod tests {
         found
     }
 
+    /// What one run of the hunt found.
+    #[cfg(windows)]
+    #[derive(Debug, Default)]
+    struct Found {
+        /// `late.txt` is there: the old oracle, written by the program's `cmd` after its `ping` ends.
+        old_late: bool,
+        /// `ping` itself went on to its end after the drop: it prints its statistics only then. A program that survived the kill.
+        ping_done: bool,
+        /// How many processes of the job were left when the drop returned.
+        left_after_drop: u32,
+        note: String,
+    }
+
     /// 1: the test as it is (`start /b` makes the program, and the test goes when the fake says it has started). 2: the same, and the
     /// test also waits for the program to say that it is running. 3: no `start`: the fake runs the program and waits for it, as a shim does.
+    /// In each the program is `echo up & ping -n 4 > ping.txt & echo late > late.txt`: `late.txt` is the old oracle, which a `cmd` that
+    /// outlives its `ping` by an instant (the job is ended one process after the other) writes too; `ping.txt` is finished only by a `ping`
+    /// that was not killed.
     #[cfg(windows)]
-    fn hunt_one(variant: u8, tag: &str) -> Result<(), String> {
+    fn hunt_one(variant: u8, tag: &str) -> Result<Found, String> {
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("audio.m4a");
         let late = dir.path().join("late.txt");
+        let pinged = dir.path().join("ping.txt");
         let started = dir.path().join("started.txt");
         let up = dir.path().join("up.txt");
-        let ping = "ping -n 4 127.0.0.1 >nul";
-        let (fake, waits) = match variant {
-            3 => {
-                let own = script(
-                    dir.path(),
-                    "own",
-                    "",
-                    &format!(
-                        "echo started> \"{}\" & echo up> \"{}\" & {ping} & echo late> \"{}\"",
-                        started.display(),
-                        up.display(),
-                        late.display()
-                    ),
-                );
-                let fake = script(
-                    dir.path(),
-                    "fake-ffmpeg",
-                    "",
-                    &format!("cmd /c \"{}\"", own.display()),
-                );
-                (fake, vec![started.clone(), up.clone()])
-            }
-            _ => {
-                let marker = if variant == 2 {
-                    format!("echo up> \"{}\" & ", up.display())
-                } else {
-                    String::new()
-                };
-                let own = script(
-                    dir.path(),
-                    "own",
-                    "",
-                    &format!("{marker}{ping} & echo late> \"{}\"", late.display()),
-                );
-                let fake = script(
-                    dir.path(),
-                    "fake-ffmpeg",
-                    "",
-                    &format!(
-                        "start \"\" /b cmd /c \"{}\" & echo started> \"{}\" & ping -n 60 127.0.0.1 >nul",
-                        own.display(),
-                        started.display()
-                    ),
-                );
-                let waits = if variant == 2 {
-                    vec![started.clone(), up.clone()]
-                } else {
-                    vec![started.clone()]
-                };
-                (fake, waits)
-            }
+        let ping = format!("ping -n 4 127.0.0.1 > \"{}\"", pinged.display());
+        let (fake, waits) = if variant == 3 {
+            let own = script(
+                dir.path(),
+                "own",
+                "",
+                &format!(
+                    "echo started> \"{}\" & echo up> \"{}\" & {ping} & echo late> \"{}\"",
+                    started.display(),
+                    up.display(),
+                    late.display()
+                ),
+            );
+            let fake = script(
+                dir.path(),
+                "fake-ffmpeg",
+                "",
+                &format!("cmd /c \"{}\"", own.display()),
+            );
+            (fake, vec![started.clone(), up.clone()])
+        } else {
+            let marker = if variant == 2 {
+                format!("echo up> \"{}\" & ", up.display())
+            } else {
+                String::new()
+            };
+            let own = script(
+                dir.path(),
+                "own",
+                "",
+                &format!("{marker}{ping} & echo late> \"{}\"", late.display()),
+            );
+            let fake = script(
+                dir.path(),
+                "fake-ffmpeg",
+                "",
+                &format!(
+                    "start \"\" /b cmd /c \"{}\" & echo started> \"{}\" & ping -n 60 127.0.0.1 >nul",
+                    own.display(),
+                    started.display()
+                ),
+            );
+            let waits = if variant == 2 {
+                vec![started.clone(), up.clone()]
+            } else {
+                vec![started.clone()]
+            };
+            (fake, waits)
         };
         let t0 = std::time::Instant::now();
         let sink = start(&out, &fake).map_err(|e| format!("{tag}: {e:?}"))?;
@@ -650,24 +664,39 @@ mod tests {
 
         drop(sink);
         let dropped_at = t0.elapsed().as_millis();
+        let left_after_drop = job
+            .as_ref()
+            .and_then(|job| job.active_processes().ok())
+            .unwrap_or(u32::MAX);
 
         std::thread::sleep(Duration::from_secs(1));
         let survivors = some_processes();
         std::thread::sleep(Duration::from_secs(5));
-        if late.exists() {
-            return Err(format!(
-                "{tag}: LATE. seen at +{seen_at}ms, dropped by +{dropped_at}ms\n  timeline: {timeline:?}\n  before: {before}\n  after: {}\n  1 s after the drop: {survivors:?}",
-                describe(&job)
-            ));
+        let ping_text = std::fs::read_to_string(&pinged).unwrap_or_default();
+        let found = Found {
+            old_late: late.exists(),
+            ping_done: ping_text.contains("statistics") || ping_text.lines().count() >= 8,
+            left_after_drop,
+            note: String::new(),
+        };
+        if found.old_late || found.ping_done || left_after_drop != 0 {
+            return Ok(Found {
+                note: format!(
+                    "{tag}: old_late {}, ping_done {}, left when the drop returned {left_after_drop}. seen at +{seen_at}ms, dropped by +{dropped_at}ms\n  timeline: {timeline:?}\n  before: {before}\n  1 s after the drop: {survivors:?}\n  ping.txt: {ping_text:?}",
+                    found.old_late, found.ping_done
+                ),
+                ..found
+            });
         }
-        Ok(())
+        Ok(found)
     }
 
     #[cfg(windows)]
     #[test]
     fn hunt_the_windows_flake() {
-        let mut counts = [[0usize; 2]; 3];
-        let mut failures: Vec<String> = Vec::new();
+        // Per variant: runs, old oracle, ping finished, job not empty when the drop returned.
+        let mut counts = [[0usize; 4]; 3];
+        let mut notes: Vec<String> = Vec::new();
         for round in 0..2 {
             let handles: Vec<_> = (0..30)
                 .map(|i| {
@@ -682,16 +711,28 @@ mod tests {
                 .collect();
             for handle in handles {
                 let (variant, result) = handle.join().unwrap();
-                counts[variant as usize - 1][0] += 1;
-                if let Err(message) = result {
-                    counts[variant as usize - 1][1] += 1;
-                    failures.push(message);
+                let row = &mut counts[variant as usize - 1];
+                row[0] += 1;
+                match result {
+                    Ok(found) => {
+                        row[1] += usize::from(found.old_late);
+                        row[2] += usize::from(found.ping_done);
+                        row[3] += usize::from(found.left_after_drop != 0);
+                        // The notes that are not about the old oracle alone are the ones to read.
+                        if found.ping_done
+                            || found.left_after_drop != 0
+                            || (notes.len() < 3 && !found.note.is_empty())
+                        {
+                            notes.push(found.note);
+                        }
+                    }
+                    Err(message) => notes.push(message),
                 }
             }
         }
         panic!(
-            "HUNT RESULT, [runs, failures] of each variant: {counts:?}\n{}",
-            failures.join("\n")
+            "HUNT RESULT, [runs, old oracle, ping finished, job not empty at the drop] per variant: {counts:?}\n{}",
+            notes.join("\n")
         );
     }
 }
