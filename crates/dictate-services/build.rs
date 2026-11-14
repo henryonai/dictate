@@ -12,8 +12,15 @@
 //! The folder that the libraries come from is SHERPA_ONNX_LIB_DIR, which Linux requires: the library that `sherpa-onnx-sys` would
 //! fetch by itself has espeak-ng (GPL-3.0) in it. `scripts/fetch-sherpa-onnx-no-tts.sh` fetches the one that has none.
 //!
-//! The run path: tests are built into `target/<profile>/deps`, hence `$ORIGIN/..`. A build script's link arguments
-//! reach only the binaries of its own package, so `sherpa-onnx-sys` cannot set this up for the packages that use it.
+//! The run path: tests are built into `target/<profile>/deps` until Cargo 1.99, hence `$ORIGIN/..`, and into
+//! `target/<profile>/build/<package>/<hash>/out` from Cargo 1.100, hence `$ORIGIN/../../../..` (`cargo test` also puts
+//! `target/<profile>` in `LD_LIBRARY_PATH`, which is what the run path is for when a test is started by hand). A build script's link
+//! arguments reach only the binaries of its own package, so `sherpa-onnx-sys` cannot set this up for the packages that use it.
+//!
+//! Where the profile folder is: `build_support::profile_dir` finds it from `OUT_DIR`, and what is between the two changed with Cargo
+//! 1.100. Counting folders up from `OUT_DIR`, as this script did, put the copies in `target/debug/build` on a CI runner that had
+//! got that Cargo, and the check of `target/debug/*.so` found nothing (the job of CI that runs `cargo build -p dictate-app` is
+//! where this is seen, since nothing else brings the files back after a cache restore).
 //!
 //! macOS only: the Swift bridge of ScreenCaptureKit needs two things of the build that its own build script gives only to its own
 //! binaries, of which a library has none. The folder of the Swift libraries is added to the search path of the linker
@@ -40,16 +47,20 @@ fn main() {
         println!("cargo::rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
     }
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
+        // The tests are in target/<profile>/deps (Cargo until 1.99) or in target/<profile>/build/<package>/<hash>/out (from 1.100).
         println!("cargo::rustc-link-arg=-Wl,-rpath,$ORIGIN/..");
+        println!("cargo::rustc-link-arg=-Wl,-rpath,$ORIGIN/../../../..");
         println!("cargo::rustc-link-arg=-Wl,-rpath,$ORIGIN");
         let out_dir =
             PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR is set for build scripts"));
-        // OUT_DIR is target/<profile>/build/dictate-services-<hash>/out.
-        let profile_dir = out_dir
-            .ancestors()
-            .nth(3)
-            .expect("OUT_DIR is inside target/<profile>");
-        copy_shared_libraries(&sherpa_lib_dir(), profile_dir);
+        // OUT_DIR is in target/<profile>/build; how far down depends on the Cargo (`build_support::profile_dir`).
+        let profile_dir = build_support::profile_dir(&out_dir).unwrap_or_else(|| {
+            panic!(
+                "OUT_DIR ({}) is not inside the `build` folder of a Cargo profile folder",
+                out_dir.display()
+            )
+        });
+        copy_shared_libraries(&sherpa_lib_dir(), &profile_dir);
     }
 }
 

@@ -1,0 +1,11 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "resources": {
+      "licenses/LICENSE": "Licenses/LICENSE",
+      "licenses/THIRD_PARTY_NOTICES.md": "Licenses/THIRD_PARTY_NOTICES.md",
+      "licenses/THIRD_PARTY_LICENSES.txt": "Licenses/THIRD_PARTY_LICENSES.txt",
+      "licenses/COPYING.LGPLv2.1": "Licenses/COPYING.LGPLv2.1"
+    }
+  }
+}

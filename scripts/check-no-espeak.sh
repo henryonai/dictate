@@ -30,7 +30,11 @@ found=0
 missing=0
 for file in "$@"; do
   if [ ! -f "$file" ]; then
-    echo "no such file: $file" >&2
+    case "$file" in
+      # The shell hands a pattern over as it is when no file matches it: what was meant to be there is not.
+      *[\*\?\[]*) echo "no file matches $file: the libraries that should be there are missing" >&2 ;;
+      *) echo "no such file: $file" >&2 ;;
+    esac
     missing=1
     continue
   fi

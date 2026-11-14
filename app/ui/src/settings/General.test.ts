@@ -263,3 +263,40 @@ test("the shortcut of the recording has words in Vietnamese", async () => {
 
   expect(screen.getByLabelText("Phím tắt quay màn hình")).toHaveValue("Ctrl+Alt+R");
 });
+
+const NOTICES = "https://github.com/henryonai/dictate/blob/main/THIRD_PARTY_NOTICES.md";
+
+test.each([
+  ["en", "Licenses"],
+  ["vi", "Giấy phép"],
+] as const)("the_licenses_link_opens_the_notices (%s)", async (language, label) => {
+  const user = userEvent.setup();
+  render(General, { store: await loadedStore({ ui_language: language }) });
+
+  const link = screen.getByRole("link", { name: label });
+  expect(link).toHaveAttribute("href", NOTICES);
+  await user.click(link);
+
+  // Through the opener command that the key pages of Accounts use: the page opens in the system browser.
+  expect(api.openUrl).toHaveBeenCalledExactlyOnceWith(NOTICES);
+});
+
+test("the Licenses link doesn't take the app's own window to another page", async () => {
+  render(General, { store: await loadedStore() });
+  const link = screen.getByRole("link", { name: "Licenses" });
+
+  const click = new MouseEvent("click", { bubbles: true, cancelable: true });
+  link.dispatchEvent(click);
+
+  expect(click.defaultPrevented).toBe(true);
+});
+
+test("says so when the page of the licenses can't be opened", async () => {
+  const user = userEvent.setup();
+  vi.mocked(api.openUrl).mockRejectedValue("not allowed: https://github.com/");
+  render(General, { store: await loadedStore() });
+
+  await user.click(screen.getByRole("link", { name: "Licenses" }));
+
+  expect(await screen.findByText("not allowed: https://github.com/")).toBeInTheDocument();
+});

@@ -1,9 +1,10 @@
-//! What `build.rs` says on Linux when the sherpa-onnx library is not where it is told to look. Its own file so that a test can
-//! read it (`tests/linux_sherpa_setup.rs` includes it): a build script has no tests of its own.
+//! What `build.rs` says on Linux when the sherpa-onnx library is not where it is told to look, and where it copies the library to.
+//! Its own file so that a test can read it (`tests/linux_sherpa_setup.rs` and `tests/build_profile_dir.rs` include it): a build
+//! script has no tests of its own.
 
 use std::ffi::OsStr;
 use std::fmt::Display;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// The release that `sherpa-onnx-sys` is pinned to (Cargo.toml).
 const RELEASE: &str = "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8";
@@ -55,4 +56,22 @@ pub fn unreadable_lib_dir_message(lib_dir: &Path, error: &dyn Display) -> String
          (scripts/fetch-sherpa-onnx-no-tts.sh prints it)",
         lib_dir.display()
     )
+}
+
+/// The profile folder of the build (`target/debug`, `target/release`, or `target/<triple>/<profile>` when building for a target): where
+/// the programs of the build are, and so where the shared libraries have to be copied. `out_dir` is the `OUT_DIR` of a build script,
+/// which Cargo makes inside the `build` folder of the profile folder, and what is between them depends on the Cargo:
+///
+///  - until 1.99: `target/debug/build/<package>-<hash>/out`
+///  - from 1.100: `target/debug/build/<package>/<hash>/out`
+///
+/// Counting folders up from `OUT_DIR` was right for the first and put the libraries in `target/debug/build` for the second, where
+/// nothing looks for them. The profile folder is the parent of the nearest `build` above `OUT_DIR` in both (a package is never called
+/// `build` here, and a `build` further up, in the path of the checkout, is not the nearest). `None` when there is none.
+pub fn profile_dir(out_dir: &Path) -> Option<PathBuf> {
+    out_dir
+        .ancestors()
+        .find(|dir| dir.file_name() == Some(OsStr::new("build")))
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
 }

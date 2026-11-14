@@ -32,7 +32,10 @@ pub fn link_is_valid(url: &str) -> bool {
 ///
 /// The link comes after `--`, so that nothing in it can be taken for an option; the folder is one argument
 /// however its name is spelled.
-pub fn args(url: &str, folder: &Path) -> Vec<OsString> {
+///
+/// `ffmpeg` is the program that the app found (see `Tools::find`), which yt-dlp is told about with `--ffmpeg-location`:
+/// it looks for ffmpeg in the PATH only, and the one that ships with the app is called `dictate-ffmpeg` and is not in any PATH.
+pub fn args(url: &str, folder: &Path, ffmpeg: Option<&Path>) -> Vec<OsString> {
     let mut args: Vec<OsString> = [
         "-f",
         "bestaudio[ext=m4a]/bestaudio/best",
@@ -51,10 +54,13 @@ pub fn args(url: &str, folder: &Path) -> Vec<OsString> {
         "before_dl:TITLE:%(title)s",
         "--print",
         "after_move:FILE:%(filepath)s",
-        "-o",
     ]
     .map(OsString::from)
     .into();
+    if let Some(ffmpeg) = ffmpeg {
+        args.extend(["--ffmpeg-location".into(), ffmpeg.as_os_str().to_owned()]);
+    }
+    args.push("-o".into());
     args.push(output_template(folder).into_os_string());
     args.push("--".into());
     args.push(url.trim().into());
@@ -127,13 +133,14 @@ impl fmt::Display for LinkError {
 
 impl std::error::Error for LinkError {}
 
-/// Downloads the audio of `url` into `folder`.
+/// Downloads the audio of `url` into `folder`, with the ffmpeg at `ffmpeg` when there is one (`args`).
 ///
 /// `on_progress` gets the share done (0 to 1) as yt-dlp reports it, and `on_line` every line it prints, the
 /// progress lines too. The first `TITLE:` line is the title; the download counts only with exit code 0 and a
 /// `FILE:` line, the last one of which is the file.
 pub async fn download(
     yt_dlp: &Path,
+    ffmpeg: Option<&Path>,
     url: &str,
     folder: &Path,
     cancel: &CancellationToken,
@@ -143,7 +150,7 @@ pub async fn download(
     let mut title: Option<String> = None;
     let mut file: Option<PathBuf> = None;
 
-    let result = tools::run(yt_dlp, &args(url, folder), cancel, |line| {
+    let result = tools::run(yt_dlp, &args(url, folder, ffmpeg), cancel, |line| {
         on_line(line);
         if let Some(share) = progress(line) {
             on_progress(share);
@@ -224,7 +231,7 @@ mod tests {
     #[test]
     fn ytdlp_args_end_with_double_dash_and_url() {
         let folder = Path::new("/lib/Cuộc họp tháng 11/2026-11-08 10-00-00");
-        let args = strings(&args("https://youtu.be/x", folder));
+        let args = strings(&args("https://youtu.be/x", folder, None));
 
         assert_eq!(args[args.len() - 2..], ["--", "https://youtu.be/x"]);
         // The folder is one argument, spaces and Vietnamese letters and all.
@@ -235,7 +242,7 @@ mod tests {
 
     #[test]
     fn ytdlp_args_are_the_documented_command_line() {
-        let args = strings(&args("https://youtu.be/x", Path::new("/lib/f")));
+        let args = strings(&args("https://youtu.be/x", Path::new("/lib/f"), None));
         let template = Path::new("/lib/f").join("source.%(ext)s");
 
         // `--print` makes yt-dlp quiet, which also stops its progress lines: `--progress` brings them back. On
@@ -267,15 +274,55 @@ mod tests {
     }
 
     #[test]
+    fn the_known_ffmpeg_is_given_to_yt_dlp() {
+        // yt-dlp looks for ffmpeg in the PATH only, and the one that ships is called `dictate-ffmpeg` and is not in any
+        // PATH: it is told where it is. It takes the path of the program itself, whatever the file is called.
+        let ffmpeg = Path::new("/app/Contents/MacOS/dictate-ffmpeg");
+        let args = strings(&args(
+            "https://youtu.be/x",
+            Path::new("/lib/f"),
+            Some(ffmpeg),
+        ));
+
+        let at = args.iter().position(|a| a == "--ffmpeg-location").unwrap();
+        assert_eq!(Path::new(&args[at + 1]), ffmpeg);
+        // Before the `--` that ends the options: after it the words are the links.
+        assert!(at + 1 < args.iter().position(|a| a == "--").unwrap());
+        assert_eq!(args.iter().filter(|a| *a == "--ffmpeg-location").count(), 1);
+        // The rest of the command line is the one that it is without.
+        let mut without = args.clone();
+        without.drain(at..at + 2);
+        assert_eq!(
+            without,
+            strings(&super::args(
+                "https://youtu.be/x",
+                Path::new("/lib/f"),
+                None
+            ))
+        );
+    }
+
+    #[test]
+    fn without_a_known_ffmpeg_yt_dlp_is_left_to_find_one() {
+        let args = strings(&args("https://youtu.be/x", Path::new("/lib/f"), None));
+
+        assert!(!args.iter().any(|a| a == "--ffmpeg-location"), "{args:?}");
+    }
+
+    #[test]
     fn ytdlp_args_trim_the_link() {
-        let args = strings(&args("  https://youtu.be/x \n", Path::new("/lib/f")));
+        let args = strings(&args("  https://youtu.be/x \n", Path::new("/lib/f"), None));
 
         assert_eq!(args.last().unwrap(), "https://youtu.be/x");
     }
 
     #[test]
     fn ytdlp_args_keep_a_percent_in_the_folder_from_being_a_template_field() {
-        let args = strings(&args("https://youtu.be/x", Path::new("/lib/100% done")));
+        let args = strings(&args(
+            "https://youtu.be/x",
+            Path::new("/lib/100% done"),
+            None,
+        ));
         let template = &args[args.iter().position(|a| a == "-o").unwrap() + 1];
 
         assert_eq!(
@@ -330,6 +377,7 @@ mod tests {
 
         let got = download(
             &yt_dlp,
+            None,
             "https://youtu.be/x",
             dir.path(),
             &CancellationToken::new(),
@@ -350,6 +398,36 @@ mod tests {
         assert_eq!(lines.len(), 3, "every line goes to on_line: {lines:?}");
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn download_tells_yt_dlp_where_ffmpeg_is() {
+        let dir = tempfile::tempdir().unwrap();
+        // The title is what the fake was given, so that the test reads it back.
+        let yt_dlp = fake_yt_dlp(
+            dir.path(),
+            "echo \"TITLE:$*\"\necho FILE:/a/one.m4a\nexit 0",
+            "",
+        );
+
+        let got = download(
+            &yt_dlp,
+            Some(Path::new("/app/dictate-ffmpeg")),
+            "https://youtu.be/x",
+            dir.path(),
+            &CancellationToken::new(),
+            |_| {},
+            |_| {},
+        )
+        .await
+        .unwrap();
+
+        let given = got.title.unwrap();
+        assert!(
+            given.contains("--ffmpeg-location /app/dictate-ffmpeg "),
+            "{given}"
+        );
+    }
+
     #[tokio::test]
     async fn download_takes_the_first_title_and_the_last_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -361,6 +439,7 @@ mod tests {
 
         let got = download(
             &yt_dlp,
+            None,
             "https://youtu.be/x",
             dir.path(),
             &CancellationToken::new(),
@@ -385,6 +464,7 @@ mod tests {
 
         let got = download(
             &yt_dlp,
+            None,
             "https://youtu.be/x",
             dir.path(),
             &CancellationToken::new(),
@@ -408,6 +488,7 @@ mod tests {
 
         let result = download(
             &yt_dlp,
+            None,
             "https://youtu.be/x",
             dir.path(),
             &CancellationToken::new(),
@@ -436,6 +517,7 @@ mod tests {
 
         let result = download(
             &yt_dlp,
+            None,
             "https://youtu.be/x",
             dir.path(),
             &CancellationToken::new(),
@@ -464,6 +546,7 @@ mod tests {
 
         let result = download(
             &yt_dlp,
+            None,
             "https://youtu.be/x",
             dir.path(),
             &CancellationToken::new(),
@@ -487,6 +570,7 @@ mod tests {
 
         let result = download(
             &yt_dlp,
+            None,
             "https://youtu.be/x",
             dir.path(),
             &cancel,
@@ -504,6 +588,7 @@ mod tests {
 
         let result = download(
             &dir.path().join("missing"),
+            None,
             "https://youtu.be/x",
             dir.path(),
             &CancellationToken::new(),

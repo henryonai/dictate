@@ -20,10 +20,14 @@
   // Where the desktop owns the shortcut, or offers none, changing it here would do nothing.
   const hotkeyChangeable = $derived(hotkey?.backend !== "portal" && hotkey?.error !== "hotkey.wayland_unavailable");
 
+  // THIRD_PARTY_NOTICES.md of the repository: Dictate's licenses, and those of what it includes (FFmpeg and the others).
+  const NOTICES_URL = "https://github.com/henryonai/dictate/blob/main/THIRD_PARTY_NOTICES.md";
+
   const UI_LANGUAGES: UiLanguage[] = ["system", "en", "vi"];
   const DICTATION_LANGUAGES = ["en-US", "vi-VN", "ja-JP", "zh-CN", "ko-KR", "fr-FR", "de-DE", "es-ES"];
 
   let folderError = $state("");
+  let licensesError = $state("");
 
   const dictationLanguages = () => DICTATION_LANGUAGES.map((code) => ({ value: code, label: t(`lang.${code}`) }));
 
@@ -31,6 +35,14 @@
   // recorder works as well; the pause ends there by itself.
   function pauseHotkey(active: boolean) {
     api.hotkeyRecording(active).catch(() => {});
+  }
+
+  // The notices of third-party licenses are a page of the repository: they open in the system browser, and the app's own window
+  // stays where it is.
+  function openLicenses(event: MouseEvent) {
+    event.preventDefault();
+    licensesError = "";
+    api.openUrl(NOTICES_URL).catch((e: unknown) => (licensesError = errorText(e)));
   }
 
   async function openMeetingsFolder() {
@@ -122,5 +134,14 @@
   <button type="button" onclick={openMeetingsFolder}>{t("general.open_meetings")}</button>
   {#if folderError}
     <p class="error">{folderError}</p>
+  {/if}
+</section>
+
+<section class="group" aria-labelledby="general-about">
+  <h2 id="general-about">{t("general.about")}</h2>
+  <p class="hint">{t("general.about_hint")}</p>
+  <a href={NOTICES_URL} onclick={openLicenses}>{t("general.licenses")}</a>
+  {#if licensesError}
+    <p class="error">{licensesError}</p>
   {/if}
 </section>

@@ -142,6 +142,23 @@ fn a_file_that_is_not_there_is_an_error_and_not_a_pass() {
 }
 
 #[test]
+fn a_pattern_that_matches_nothing_says_so() {
+    // The shell hands a pattern such as `target/debug/*.so` over as it is when no file matches it: the libraries that
+    // should be beside the program are not there, and the message has to say that and not name a file that was never meant.
+    let dir = tempfile::tempdir().unwrap();
+    let pattern = dir.path().join("*.so");
+
+    let output = run(&[&pattern]);
+
+    assert_eq!(code(&output), 2, "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("no file matches"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
 fn a_missing_file_is_an_error_even_when_another_one_has_espeak_ng() {
     let dir = tempfile::tempdir().unwrap();
     let dirty = binary(dir.path(), "dirty", b"ESPEAK_DATA_PATH");

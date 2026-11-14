@@ -239,7 +239,16 @@ impl MeetingBackend for AppBackend {
         let Some(yt_dlp) = tools.yt_dlp else {
             return Err(LinkError::Spawn("yt-dlp was not found.".into()));
         };
-        download_with(&yt_dlp, url, folder, cancel, on_progress, log).await
+        download_with(
+            &yt_dlp,
+            tools.ffmpeg.as_deref(),
+            url,
+            folder,
+            cancel,
+            on_progress,
+            log,
+        )
+        .await
     }
 
     async fn prepare_audio(
@@ -509,10 +518,12 @@ fn run_share(downloaded: bool, fraction: f32) -> f32 {
     }
 }
 
-/// Downloads with the yt-dlp at `yt_dlp`. yt-dlp's `DL <bytes> <total> <estimate>` lines (the progress template) tell the
-/// progress and only that: there would be hundreds of them in the log. Every other line it prints goes to the log.
+/// Downloads with the yt-dlp at `yt_dlp`, which is told where `ffmpeg` is when it is known. yt-dlp's
+/// `DL <bytes> <total> <estimate>` lines (the progress template) tell the progress and only that: there would be hundreds
+/// of them in the log. Every other line it prints goes to the log.
 async fn download_with(
     yt_dlp: &Path,
+    ffmpeg: Option<&Path>,
     url: &str,
     folder: &Path,
     cancel: &CancellationToken,
@@ -522,6 +533,7 @@ async fn download_with(
     let throttle = Throttle::new();
     ytdlp::download(
         yt_dlp,
+        ffmpeg,
         url,
         folder,
         cancel,
@@ -1024,6 +1036,7 @@ mod tests {
 
         let got = download_with(
             &tool,
+            None,
             "https://youtu.be/x",
             dir.path(),
             &CancellationToken::new(),
@@ -1089,6 +1102,47 @@ mod tests {
         assert_eq!(lock(&logged).len(), 3);
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_backend_tells_yt_dlp_where_the_ffmpeg_it_found_is() {
+        // yt-dlp looks for ffmpeg in the PATH, and the one that ships is not in it.
+        let dir = tempfile::tempdir().unwrap();
+        // It says what it was given as the title.
+        let tool = script(
+            dir.path(),
+            "yt-dlp",
+            "echo \"TITLE:$*\"\necho FILE:source.m4a",
+            "",
+        );
+        let ffmpeg = dir.path().join("dictate-ffmpeg");
+        let mut p = parts();
+        p.backend = p.backend.with_tools({
+            let ffmpeg = ffmpeg.clone();
+            move || Tools {
+                ffmpeg: Some(ffmpeg.clone()),
+                yt_dlp: Some(tool.clone()),
+            }
+        });
+
+        let got = p
+            .backend
+            .download(
+                "https://youtu.be/x",
+                dir.path(),
+                &CancellationToken::new(),
+                &|_| {},
+                &|_| {},
+            )
+            .await
+            .unwrap();
+
+        let given = got.title.unwrap();
+        assert!(
+            given.contains(&format!("--ffmpeg-location {} ", ffmpeg.display())),
+            "{given}"
+        );
+    }
+
     #[tokio::test]
     async fn only_a_yt_dlp_that_is_missing_is_a_spawn_error() {
         let p = parts();
@@ -1120,6 +1174,7 @@ mod tests {
         );
         let error = download_with(
             &failing,
+            None,
             "https://youtu.be/x",
             dir.path(),
             &CancellationToken::new(),

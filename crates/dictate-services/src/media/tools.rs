@@ -130,6 +130,12 @@ fn search_path_from(
     joined
 }
 
+/// The variable that names the ffmpeg to use in place of the one that ships with the app: a path to a program, or the name
+/// of one in the search path. The ffmpeg of the installers is under the LGPL, which lets anyone replace it with their own
+/// build; this is how it is done without touching the installed files (on a Mac a changed file in a signed app breaks its
+/// signature).
+pub const FFMPEG_VARIABLE: &str = "DICTATE_FFMPEG";
+
 /// An external program the app can use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tool {
@@ -145,6 +151,16 @@ impl Tool {
             Tool::YtDlp => "yt-dlp",
         }
     }
+
+    /// The name of the file of this tool that ships with the app, next to its executable, without the `.exe`. The ffmpeg
+    /// of the installers is not called `ffmpeg`: a `.deb` puts its programs in /usr/bin, where the one of the
+    /// distribution is, and the two must not be mixed up.
+    fn bundled(self) -> &'static str {
+        match self {
+            Tool::Ffmpeg => "dictate-ffmpeg",
+            Tool::YtDlp => "yt-dlp",
+        }
+    }
 }
 
 /// Where each tool is, when it is installed.
@@ -155,43 +171,51 @@ pub struct Tools {
 }
 
 impl Tools {
-    /// Looks for the tools next to the program (a build of the app that has its own ffmpeg keeps it there), and then
-    /// in `search_path()`.
+    /// Looks for the tools where the app is told to look, then next to the program (the installers put the ffmpeg
+    /// of the app there, as `dictate-ffmpeg`), and then in `search_path()`.
+    ///
+    /// For ffmpeg: the program that `DICTATE_FFMPEG` names, then `dictate-ffmpeg` next to the executable, then `ffmpeg` in
+    /// the search path. For yt-dlp: next to the executable, then the search path.
     pub fn find() -> Tools {
         let path = search_path();
         let exe_dir = std::env::current_exe()
             .ok()
             .and_then(|exe| exe.parent().map(Path::to_path_buf));
-        match exe_dir {
-            Some(exe_dir) => Tools::find_with(&exe_dir, &path),
-            None => Tools::find_in(&path),
-        }
+        Tools::find_with(
+            std::env::var_os(FFMPEG_VARIABLE).as_deref(),
+            exe_dir.as_deref(),
+            &path,
+        )
     }
 
-    /// Each tool is the one in `exe_dir` if there is one there, and else the first one in `search_path`.
-    fn find_with(exe_dir: &Path, search_path: &OsStr) -> Tools {
+    /// `find` for a given value of `DICTATE_FFMPEG`, folder of the executable and search path.
+    ///
+    /// A `DICTATE_FFMPEG` that is empty, or names no program that can be run, is left out: the app still has the ffmpeg
+    /// that ships with it.
+    fn find_with(
+        ffmpeg_variable: Option<&OsStr>,
+        exe_dir: Option<&Path>,
+        search_path: &OsStr,
+    ) -> Tools {
         let cwd = std::env::current_dir().unwrap_or_default();
-        let locate = |tool: Tool| {
-            locate_in(tool, exe_dir.as_os_str(), &cwd)
-                .or_else(|| locate_in(tool, search_path, &cwd))
-        };
+        let next_to_the_exe =
+            |tool: Tool| exe_dir.and_then(|dir| locate_in(tool.bundled(), dir.as_os_str(), &cwd));
+        let in_the_path = |tool: Tool| locate_in(tool.program(), search_path, &cwd);
+        let from_the_variable = ffmpeg_variable
+            .filter(|name| !name.is_empty())
+            .and_then(|name| locate_in(name, search_path, &cwd));
         Tools {
-            ffmpeg: locate(Tool::Ffmpeg),
-            yt_dlp: locate(Tool::YtDlp),
-        }
-    }
-
-    fn find_in(search_path: &OsStr) -> Tools {
-        let cwd = std::env::current_dir().unwrap_or_default();
-        Tools {
-            ffmpeg: locate_in(Tool::Ffmpeg, search_path, &cwd),
-            yt_dlp: locate_in(Tool::YtDlp, search_path, &cwd),
+            ffmpeg: from_the_variable
+                .or_else(|| next_to_the_exe(Tool::Ffmpeg))
+                .or_else(|| in_the_path(Tool::Ffmpeg)),
+            yt_dlp: next_to_the_exe(Tool::YtDlp).or_else(|| in_the_path(Tool::YtDlp)),
         }
     }
 }
 
-fn locate_in(tool: Tool, search_path: &OsStr, cwd: &Path) -> Option<PathBuf> {
-    which::which_in(tool.program(), Some(search_path), cwd).ok()
+/// The program called `name` (a name, or a path) in the folders of `search_path`.
+fn locate_in(name: impl AsRef<OsStr>, search_path: &OsStr, cwd: &Path) -> Option<PathBuf> {
+    which::which_in(name, Some(search_path), cwd).ok()
 }
 
 /// The command that installs a tool with the usual package manager of this system, to show to the user.
@@ -651,7 +675,7 @@ mod tests {
             std::fs::set_permissions(&ffmpeg, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
 
-        let found = Tools::find_in(dir.path().as_os_str());
+        let found = Tools::find_with(None, None, dir.path().as_os_str());
 
         // Windows gives the extension as PATHEXT spells it (`.EXE`), so the case is left out of the comparison.
         let lower = |p: &Path| p.to_string_lossy().to_lowercase();
@@ -659,39 +683,135 @@ mod tests {
         assert_eq!(found.yt_dlp, None);
     }
 
-    #[test]
-    fn ffmpeg_next_to_the_executable_wins() {
+    /// An executable file `stem` (`stem.exe` on Windows) in `dir`: empty, which is enough to be found.
+    fn program(dir: &Path, stem: &str) -> PathBuf {
         let name = if cfg!(windows) {
-            "ffmpeg.exe"
+            format!("{stem}.exe")
         } else {
-            "ffmpeg"
+            stem.to_owned()
         };
-        let program = |dir: &Path| {
-            let program = dir.join(name);
-            std::fs::write(&program, b"").unwrap();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
-            }
-            program
-        };
+        let program = dir.join(name);
+        std::fs::write(&program, b"").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        program
+    }
+
+    /// Windows gives the extension as PATHEXT spells it (`.EXE`), so the case is left out of the comparison.
+    fn lower(path: &Path) -> String {
+        path.to_string_lossy().to_lowercase()
+    }
+
+    #[test]
+    fn ffmpeg_from_the_environment_wins() {
+        // The user's own ffmpeg replaces the one that ships (the LGPL asks that it can be replaced), whatever the
+        // file is called and wherever it is.
         let exe_dir = tempfile::tempdir().unwrap();
         let path_dir = tempfile::tempdir().unwrap();
-        let next_to_it = program(exe_dir.path());
-        let on_the_path = program(path_dir.path());
+        let theirs_dir = tempfile::tempdir().unwrap();
+        program(exe_dir.path(), "dictate-ffmpeg");
+        program(path_dir.path(), "ffmpeg");
+        let theirs = program(theirs_dir.path(), "my-own-ffmpeg");
 
-        let found = Tools::find_with(exe_dir.path(), path_dir.path().as_os_str());
+        let found = Tools::find_with(
+            Some(theirs.as_os_str()),
+            Some(exe_dir.path()),
+            path_dir.path().as_os_str(),
+        );
 
-        let lower = |p: &Path| p.to_string_lossy().to_lowercase();
+        assert_eq!(found.ffmpeg.as_deref().map(lower), Some(lower(&theirs)));
+    }
+
+    #[test]
+    fn an_environment_ffmpeg_that_is_not_there_or_is_empty_is_left_out() {
+        let exe_dir = tempfile::tempdir().unwrap();
+        let path_dir = tempfile::tempdir().unwrap();
+        let bundled = program(exe_dir.path(), "dictate-ffmpeg");
+        let nowhere = exe_dir.path().join("no-such-ffmpeg");
+
+        for value in [nowhere.as_os_str(), OsStr::new("")] {
+            let found = Tools::find_with(
+                Some(value),
+                Some(exe_dir.path()),
+                path_dir.path().as_os_str(),
+            );
+
+            assert_eq!(
+                found.ffmpeg.as_deref().map(lower),
+                Some(lower(&bundled)),
+                "{value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_bundled_dictate_ffmpeg_comes_before_the_path() {
+        // The installers put `dictate-ffmpeg` next to the program (it is not called `ffmpeg`: a .deb would put that in
+        // /usr/bin, where the ffmpeg of the distribution is).
+        let exe_dir = tempfile::tempdir().unwrap();
+        let path_dir = tempfile::tempdir().unwrap();
+        let next_to_it = program(exe_dir.path(), "dictate-ffmpeg");
+        program(path_dir.path(), "ffmpeg");
+
+        let found = Tools::find_with(None, Some(exe_dir.path()), path_dir.path().as_os_str());
+
         assert_eq!(found.ffmpeg.as_deref().map(lower), Some(lower(&next_to_it)));
-        // Without one next to the executable the path is looked in, as before.
-        let elsewhere = tempfile::tempdir().unwrap();
-        let found = Tools::find_with(elsewhere.path(), path_dir.path().as_os_str());
+    }
+
+    #[test]
+    fn without_either_the_path_is_searched() {
+        let exe_dir = tempfile::tempdir().unwrap();
+        let path_dir = tempfile::tempdir().unwrap();
+        let on_the_path = program(path_dir.path(), "ffmpeg");
+
+        let found = Tools::find_with(None, Some(exe_dir.path()), path_dir.path().as_os_str());
+
         assert_eq!(
             found.ffmpeg.as_deref().map(lower),
             Some(lower(&on_the_path))
         );
+        // And with nothing anywhere there is no ffmpeg.
+        let empty = tempfile::tempdir().unwrap();
+        assert_eq!(
+            Tools::find_with(None, Some(exe_dir.path()), empty.path().as_os_str()).ffmpeg,
+            None
+        );
+    }
+
+    #[test]
+    fn with_dictate_ffmpeg_set_in_the_environment_find_gives_that_program() {
+        // CI sets DICTATE_FFMPEG to the ffmpeg that it built, to run the tests with it: a `find` that does not give that program
+        // (it is not a file, it is not run, the lookup went on to the path) would run them with the ffmpeg of the runner instead,
+        // and nothing else would say so.
+        let Some(set) = std::env::var_os(FFMPEG_VARIABLE).filter(|value| !value.is_empty()) else {
+            return;
+        };
+        let canonical =
+            |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+
+        let found = Tools::find().ffmpeg;
+
+        let found = found.expect("DICTATE_FFMPEG is set, and find gives no ffmpeg");
+        assert_eq!(
+            canonical(&found),
+            canonical(Path::new(&set)),
+            "DICTATE_FFMPEG is {set:?}"
+        );
+    }
+
+    #[test]
+    fn yt_dlp_is_still_looked_for_next_to_the_executable_first() {
+        let exe_dir = tempfile::tempdir().unwrap();
+        let path_dir = tempfile::tempdir().unwrap();
+        let next_to_it = program(exe_dir.path(), "yt-dlp");
+        program(path_dir.path(), "yt-dlp");
+
+        let found = Tools::find_with(None, Some(exe_dir.path()), path_dir.path().as_os_str());
+
+        assert_eq!(found.yt_dlp.as_deref().map(lower), Some(lower(&next_to_it)));
     }
 
     #[test]

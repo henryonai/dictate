@@ -14,6 +14,11 @@
 #      into a temporary package whose Package.swift has no WhisperKit and no Dictate app target (dictate-mcp
 #      needs only DictateCore), and build that. Nothing in the Swift repository is touched.
 #
+# The Swift server still says "Dictate is the user's macOS app for recording meetings, calls and videos." in its
+# `instructions`; the Rust server says "Dictate is an app for macOS, Windows and Linux that records the user's
+# meetings, calls and videos." (see the top of crates/dictate-mcp/tests/golden.rs). After regenerating, put the
+# Rust sentence back in every `initialize` reply of expected.jsonl, or the golden test fails on it.
+#
 # The server runs with TZ=Asia/Ho_Chi_Minh, so the dates in the replies do not depend on this machine's zone.
 # Replies are written with sorted keys (one JSON object per line, as the server writes them): Swift orders the keys
 # of an object differently on every run, and sorted keys keep a regenerated file diffable. The test compares

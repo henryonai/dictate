@@ -249,7 +249,7 @@ pub(crate) mod test_support {
     pub fn codec_of(ffmpeg: &Path) -> VideoCodec {
         let codec = pick_codec(ffmpeg)
             .expect("this ffmpeg has none of the encoders in ENCODER_ORDER that work");
-        eprintln!("encoder: {}", codec.encoder);
+        eprintln!("encoder: {}", codec.label());
         codec
     }
 

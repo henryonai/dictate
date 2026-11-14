@@ -4,6 +4,9 @@ resolver = "3"
 members = ["crates/*", "app/src-tauri"]
 
 [workspace.package]
+# The one version of the app and of every crate. release-please bumps it together with app/ui/package.json, version.txt
+# and the crates in Cargo.lock (release-please-config.json lists the files).
+version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT"
