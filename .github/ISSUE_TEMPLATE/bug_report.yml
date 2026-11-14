@@ -84,7 +84,7 @@ body:
     id: log
     attributes:
       label: Log
-      description: For a recording, in the library click ⋯ → View log → Copy, and paste it here. For anything else, start Dictate from a terminal with RUST_LOG=dictate=debug and paste what it prints.
+      description: For a recording, in the library click ⋯ → View log → Copy, and paste it here. For anything else, start Dictate from a terminal with RUST_LOG=loah=debug and paste what it prints.
       render: text
   - type: checkboxes
     id: privacy

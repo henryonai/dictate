@@ -1,5 +1,5 @@
 // The names that speakers are given in the rename sheet, cleaned as the Rust side cleans them
-// (`dictate_core::meetings::speakers::clean`): the sheet says what will happen before it is asked for.
+// (`loah_core::meetings::speakers::clean`): the sheet says what will happen before it is asked for.
 
 /** The longest name a transcript line still reads as a speaker. */
 export const MAX_NAME_LENGTH = 24;

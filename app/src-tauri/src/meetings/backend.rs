@@ -16,23 +16,23 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use dictate_core::meetings::library::files;
-use dictate_core::text::segments::Segment;
-use dictate_core::text::whisper::Turn;
-use dictate_services::audio::resample::StreamResampler;
-use dictate_services::diarize::{self, Diarizer};
-use dictate_services::media::decode::{DecodeError, MonoDecoder};
-use dictate_services::media::encode::{self, EncodeError, M4aSink, M4A_RATE};
-use dictate_services::media::tools::Tools;
-use dictate_services::media::ytdlp::{self, Downloaded, LinkError};
-use dictate_services::meetings::{MeetingBackend, Prepared};
-use dictate_services::secrets::{Account, SecretStore};
-use dictate_services::settings::{self, Engine, Settings, SettingsStore};
-use dictate_services::summary::{self, SummaryProgress};
-use dictate_services::system;
-use dictate_services::transcribe_api::{self, ApiProgress, BoxFuture, LongApiError};
-use dictate_services::whisper::local::{LocalWhisper, TimedTranscript};
-use dictate_services::whisper::models::{self, ModelDir};
+use loah_core::meetings::library::files;
+use loah_core::text::segments::Segment;
+use loah_core::text::whisper::Turn;
+use loah_services::audio::resample::StreamResampler;
+use loah_services::diarize::{self, Diarizer};
+use loah_services::media::decode::{DecodeError, MonoDecoder};
+use loah_services::media::encode::{self, EncodeError, M4aSink, M4A_RATE};
+use loah_services::media::tools::Tools;
+use loah_services::media::ytdlp::{self, Downloaded, LinkError};
+use loah_services::meetings::{MeetingBackend, Prepared};
+use loah_services::secrets::{Account, SecretStore};
+use loah_services::settings::{self, Engine, Settings, SettingsStore};
+use loah_services::summary::{self, SummaryProgress};
+use loah_services::system;
+use loah_services::transcribe_api::{self, ApiProgress, BoxFuture, LongApiError};
+use loah_services::whisper::local::{LocalWhisper, TimedTranscript};
+use loah_services::whisper::models::{self, ModelDir};
 use tokio_util::sync::CancellationToken;
 
 use crate::commands::api_error_text;
@@ -672,10 +672,10 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize};
     use std::sync::mpsc;
 
-    use dictate_services::media::tools::Tools;
-    use dictate_services::meetings::MeetingError;
-    use dictate_services::presets::TranscribePreset;
-    use dictate_services::whisper::models::RemoteFile;
+    use loah_services::media::tools::Tools;
+    use loah_services::meetings::MeetingError;
+    use loah_services::presets::TranscribePreset;
+    use loah_services::whisper::models::RemoteFile;
 
     use super::*;
     use crate::test_support::{script, CountingStore};
@@ -1117,7 +1117,7 @@ mod tests {
             "echo \"TITLE:$*\"\necho FILE:source.m4a",
             "",
         );
-        let ffmpeg = dir.path().join("dictate-ffmpeg");
+        let ffmpeg = dir.path().join("loah-ffmpeg");
         let mut p = parts();
         p.backend = p.backend.with_tools({
             let ffmpeg = ffmpeg.clone();

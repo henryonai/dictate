@@ -10,7 +10,7 @@ Open an [issue](https://github.com/henryonai/dictate/issues/new/choose) with the
 
 - what you did, what you expected and what happened;
 - your Dictate version (the number in the name of the installer, or the commit you built), your operating system and how you installed Dictate (`.dmg`, `.exe`, `.deb` or a build from source);
-- for a recording, its log: in the library, ⋯ → **View log** → **Copy** (remove anything private first). For anything else, start Dictate from a terminal with `RUST_LOG=dictate=debug` and paste what it prints.
+- for a recording, its log: in the library, ⋯ → **View log** → **Copy** (remove anything private first). For anything else, start Dictate from a terminal with `RUST_LOG=loah=debug` and paste what it prints.
 
 ## Building and running
 
@@ -27,7 +27,7 @@ The app is a [Tauri 2](https://tauri.app) program: a Rust shell in `app/src-taur
     libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
   ```
 
-On **Windows and Linux** the speaker separation library (sherpa-onnx) has to be the build without text to speech, because the one that a build would download has espeak-ng (GPL-3.0) in it, and you name it with `SHERPA_ONNX_LIB_DIR`. [app/README.md](app/README.md) has the steps for both systems, the details of each system's prerequisites, and the variables that the tests use (`DICTATE_MEETINGS_DIR`, `DICTATE_FFMPEG`, `DICTATE_TEST_SCREEN` and the others). On macOS the build downloads the library by itself.
+On **Windows and Linux** the speaker separation library (sherpa-onnx) has to be the build without text to speech, because the one that a build would download has espeak-ng (GPL-3.0) in it, and you name it with `SHERPA_ONNX_LIB_DIR`. [app/README.md](app/README.md) has the steps for both systems, the details of each system's prerequisites, and the variables that the tests use (`DICTATE_MEETINGS_DIR`, `DICTATE_FFMPEG`, `LOAH_TEST_SCREEN` and the others). On macOS the build downloads the library by itself.
 
 Then, from the `app` folder:
 
@@ -58,13 +58,13 @@ Some tests read files of the repository as text, so that a change in one place c
 
 | Folder | Contents |
 |---|---|
-| `crates/dictate-core/` | Plain logic shared by the app and the MCP server: the library's file format (`meetings/`), summaries, transcripts, speaker names, timestamps, diacritic-insensitive search, the MCP protocol and its tools |
-| `crates/dictate-services/` | Everything that talks to the system or to a service: audio capture, Whisper and speaker separation, the AI and transcription clients, the pipeline of a meeting, recording (`record/`), finding ffmpeg and yt-dlp |
-| `crates/dictate-mcp/` | The `dictate-mcp` program |
+| `crates/loah-core/` | Plain logic shared by the app and the MCP server: the library's file format (`meetings/`), summaries, transcripts, speaker names, timestamps, diacritic-insensitive search, the MCP protocol and its tools |
+| `crates/loah-services/` | Everything that talks to the system or to a service: audio capture, Whisper and speaker separation, the AI and transcription clients, the pipeline of a meeting, recording (`record/`), finding ffmpeg and yt-dlp |
+| `crates/loah-mcp/` | The `loah-mcp` program |
 | `app/src-tauri/` | The Tauri shell: the tray, the windows, the commands, the dictation controller, the recorder, the settings of the system |
 | `app/ui/` | The interface (Svelte 5, Vite, Vitest): `settings/`, `meetings/`, `panel/` (the floating dictation windows), `recorder/` (the recording bar), `locales/` |
 | `scripts/` | What CI and the release use: the ffmpeg build, the checks of an installer, fetching sherpa-onnx, the golden comparison with the Swift MCP server |
-| `tests/golden/` | The outputs of the Swift MCP server that `dictate-mcp` has to match byte for byte |
+| `tests/golden/` | The outputs of the Swift MCP server that `loah-mcp` has to match byte for byte |
 | `docs/` | The design spec and the plans |
 
 ## Translating the interface

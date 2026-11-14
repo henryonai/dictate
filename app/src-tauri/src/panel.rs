@@ -15,9 +15,9 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use dictate_services::dictation::lang::{FAVOURITES, OTHERS};
-use dictate_services::dictation::machine::Phase;
-use dictate_services::dictation::pipeline::Notice;
+use loah_services::dictation::lang::{FAVOURITES, OTHERS};
+use loah_services::dictation::machine::Phase;
+use loah_services::dictation::pipeline::Notice;
 use serde::Serialize;
 use tauri::{
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, PhysicalPosition, PhysicalSize,
@@ -1084,7 +1084,7 @@ pub async fn dictation_open_settings(dictation: State<'_, DictationHandle>) -> R
 
 #[cfg(test)]
 mod tests {
-    use dictate_services::dictation::pipeline::NoticeKey;
+    use loah_services::dictation::pipeline::NoticeKey;
     use serde_json::{json, Value};
 
     use super::*;

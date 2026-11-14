@@ -211,7 +211,7 @@ export function fakePanelState(overrides: Partial<PanelState> = {}): PanelState 
   };
 }
 
-/** The 8 favourites and 24 others of `dictate_services::dictation::lang`. */
+/** The 8 favourites and 24 others of `loah_services::dictation::lang`. */
 export const FAVOURITE_LANGUAGES = ["en-US", "vi-VN", "en-GB", "ja-JP", "ko-KR", "zh-CN", "fr-FR", "de-DE"];
 export const OTHER_LANGUAGES = [
   "es-ES", "it-IT", "pt-BR", "pt-PT", "nl-NL", "pl-PL", "ru-RU", "uk-UA", "tr-TR", "id-ID", "ms-MY", "th-TH",

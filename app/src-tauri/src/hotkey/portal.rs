@@ -3,7 +3,7 @@
 //! compositor says when the shortcut goes down and up.
 //!
 //! KDE Plasma, GNOME 48 and later and Hyprland have the portal; Sway and the other wlroots compositors don't. That
-//! ends here as a failure, which Settings explains with `dictate --toggle` and `dictate --record`.
+//! ends here as a failure, which Settings explains with `loah --toggle` and `loah --record`.
 //!
 //! Two shortcuts are bound in one session: the one that dictates, and the one that starts and stops a recording. Each has an id,
 //! which the compositor keeps the binding the user chose under.

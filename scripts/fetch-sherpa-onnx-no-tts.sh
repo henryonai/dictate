@@ -7,7 +7,7 @@
 # Why: the speech synthesis of sherpa-onnx has espeak-ng in it, which is GPL-3.0 and which Dictate has no use for. The official
 # Linux library is a shared one that has all of its own code in it, so the ordinary archive ships espeak-ng with the app; this one
 # is the same release built with the synthesis off (scripts/check-no-espeak.sh is what finds out). The build script of
-# `sherpa-onnx-sys` takes the library from SHERPA_ONNX_LIB_DIR when it is set, and `crates/dictate-services/build.rs` makes sure it
+# `sherpa-onnx-sys` takes the library from SHERPA_ONNX_LIB_DIR when it is set, and `crates/loah-services/build.rs` makes sure it
 # is on Linux.
 #
 # It prints the folder to put in SHERPA_ONNX_LIB_DIR (DEST/lib, as an absolute path) on stdout, and nothing else there; the rest

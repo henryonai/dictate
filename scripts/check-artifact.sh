@@ -11,17 +11,17 @@
 #             package, `*.exe` at the top is Windows.
 #
 # What it requires of every installer:
-#   - `dictate-mcp` and `dictate-ffmpeg` (with `.exe` on Windows) next to the main program: Contents/MacOS, usr/bin, the install folder;
+#   - `loah-mcp` and `loah-ffmpeg` (with `.exe` on Windows) next to the main program: Contents/MacOS, usr/bin, the install folder;
 #     and, on macOS and Linux, executable (upload-artifact and download-artifact drop the permission bits of a file).
 #   - no espeak-ng (GPL-3.0) in the main program, in the two sidecars or in any .so, .dylib or .dll: scripts/check-no-espeak.sh.
-#   - `dictate-ffmpeg` is a plain LGPL ffmpeg: scripts/check-ffmpeg-lgpl.sh.
+#   - `loah-ffmpeg` is a plain LGPL ffmpeg: scripts/check-ffmpeg-lgpl.sh.
 #   - the license files: LICENSE, THIRD_PARTY_NOTICES.md, THIRD_PARTY_LICENSES.txt and COPYING.LGPLv2.1, not empty, where the system keeps
 #     them (macOS Contents/Resources/Licenses, Windows `Licenses` next to the program, the package /usr/share/doc/dictate). The MIT, BSD,
 #     Apache and LGPL licenses of what is inside ask that their texts go with the binary.
 # The package for Linux (deb):
 #   - a `copyright` file next to the license files, which is where the tools of Debian look for it;
-#   - no /usr/bin/ffmpeg: it would collide with the package `ffmpeg` of Debian and Ubuntu (the sidecar is called dictate-ffmpeg);
-#   - the two libraries of sherpa-onnx in /usr/lib/dictate, and the run path `$ORIGIN/../lib/dictate` in /usr/bin/dictate (readelf -d), which
+#   - no /usr/bin/ffmpeg: it would collide with the package `ffmpeg` of Debian and Ubuntu (the sidecar is called loah-ffmpeg);
+#   - the two libraries of sherpa-onnx in /usr/lib/dictate, and the run path `$ORIGIN/../lib/dictate` in /usr/bin/loah (readelf -d), which
 #     is how the program finds them, and no other entry in its RPATH or RUNPATH (the ones of a build in the source tree would make it look in
 #     /usr and in /);
 #   - a dependency on libpipewire in `Depends` (the program does not start without it).
@@ -32,7 +32,7 @@
 # The disk image for macOS: Info.plist has NSMicrophoneUsageDescription, NSScreenCaptureUsageDescription and LSMinimumSystemVersion 13.0,
 # `codesign --verify --strict` passes on the app and on both sidecars (the signature of a sidecar that was written over is broken, and
 # macOS kills the program), and each of the three programs is of the architecture that the name of the image says (`lipo -archs`;
-# Dictate_<version>_aarch64.dmg is arm64, Dictate_<version>_x64.dmg is x86_64; for a folder, DICTATE_ARTIFACT_ARCH says it) and has 13.0 as
+# Dictate_<version>_aarch64.dmg is arm64, Dictate_<version>_x64.dmg is x86_64; for a folder, LOAH_ARTIFACT_ARCH says it) and has 13.0 as
 # its minimum system (`vtool -show-build`, `minos`). An image whose architecture is not known is exit status 2, not a pass.
 #
 # Every problem is told, not only the first. Exit status: 0 when the installer is fine, 1 when it is not, 2 when it could not be looked at
@@ -186,18 +186,18 @@ if [ "$kind" = macos ]; then
     *_aarch64.dmg) expected_arch=arm64 ;;
     *_x64.dmg) expected_arch=x86_64 ;;
     *)
-      if [ -d "$artifact" ]; then expected_arch="${DICTATE_ARTIFACT_ARCH:-}"; fi
+      if [ -d "$artifact" ]; then expected_arch="${LOAH_ARTIFACT_ARCH:-}"; fi
       ;;
   esac
   case "$expected_arch" in
     arm64 | x86_64) ;;
-    *) cannot "do not know which architecture the programs of $artifact have to be: the name of an image ends in _aarch64.dmg (arm64) or _x64.dmg (x86_64), and for a folder DICTATE_ARTIFACT_ARCH is arm64 or x86_64" ;;
+    *) cannot "do not know which architecture the programs of $artifact have to be: the name of an image ends in _aarch64.dmg (arm64) or _x64.dmg (x86_64), and for a folder LOAH_ARTIFACT_ARCH is arm64 or x86_64" ;;
   esac
-  # The program is the one that Info.plist names (the app is `Dictate`, the program `dictate`).
+  # The program is the one that Info.plist names (the app is `Dictate`, the program `loah`).
   main_name="$(plist_value CFBundleExecutable)"
-  main_name="${main_name:-dictate}"
+  main_name="${main_name:-loah}"
 else
-  main_name="dictate$exe"
+  main_name="loah$exe"
 fi
 
 # What the folder is called in what is told, for a person: the path inside the installer.
@@ -226,8 +226,8 @@ require_program() {
 }
 
 require_program "$bin_dir/$main_name"
-require_program "$bin_dir/dictate-mcp$exe"
-require_program "$bin_dir/dictate-ffmpeg$exe"
+require_program "$bin_dir/loah-mcp$exe"
+require_program "$bin_dir/loah-ffmpeg$exe"
 
 # ---- no espeak-ng ------------------------------------------------------------------------------------------------------------
 
@@ -251,9 +251,9 @@ fi
 
 # ---- ffmpeg ------------------------------------------------------------------------------------------------------------------
 
-if [ -f "$bin_dir/dictate-ffmpeg$exe" ]; then
-  if ! bash "$here/check-ffmpeg-lgpl.sh" "$bin_dir/dictate-ffmpeg$exe" 2>"$errors"; then
-    problem "$(inside "$bin_dir/dictate-ffmpeg$exe") is not a plain LGPL ffmpeg:
+if [ -f "$bin_dir/loah-ffmpeg$exe" ]; then
+  if ! bash "$here/check-ffmpeg-lgpl.sh" "$bin_dir/loah-ffmpeg$exe" 2>"$errors"; then
+    problem "$(inside "$bin_dir/loah-ffmpeg$exe") is not a plain LGPL ffmpeg:
 $(cat "$errors")"
   fi
 fi
@@ -287,29 +287,29 @@ check_licenses
 
 check_deb() {
   if [ -e "$root/usr/bin/ffmpeg" ]; then
-    problem "the package has /usr/bin/ffmpeg: it would collide with the package ffmpeg of Debian and Ubuntu (dpkg refuses to overwrite it); the sidecar is dictate-ffmpeg"
+    problem "the package has /usr/bin/ffmpeg: it would collide with the package ffmpeg of Debian and Ubuntu (dpkg refuses to overwrite it); the sidecar is loah-ffmpeg"
   fi
   local library
   for library in libsherpa-onnx-c-api.so libonnxruntime.so; do
     [ -f "$root/usr/lib/dictate/$library" ] || problem "/usr/lib/dictate/$library is not in the package: the program would not start"
   done
 
-  # The run path that finds those libraries from /usr/bin/dictate: a whole entry of the RPATH or the RUNPATH.
+  # The run path that finds those libraries from /usr/bin/loah: a whole entry of the RPATH or the RUNPATH.
   if [ -f "$bin_dir/$main_name" ]; then
     if ! command -v readelf >/dev/null 2>&1; then
-      problem "readelf is not installed: the run path of /usr/bin/dictate cannot be checked"
+      problem "readelf is not installed: the run path of /usr/bin/loah cannot be checked"
     else
       local paths
       paths="$(readelf -d "$bin_dir/$main_name" 2>/dev/null | sed -n -E 's/.*\((RPATH|RUNPATH)\).*\[(.*)\].*/\2/p' | tr ':' '\n')"
       if ! printf '%s\n' "$paths" | grep -q -x -F -e '$ORIGIN/../lib/dictate'; then
-        problem '/usr/bin/dictate has no RPATH or RUNPATH with $ORIGIN/../lib/dictate: it would not find its libraries in /usr/lib/dictate (readelf -d says: '"$(printf '%s' "$paths" | tr '\n' ' ')"')'
+        problem '/usr/bin/loah has no RPATH or RUNPATH with $ORIGIN/../lib/dictate: it would not find its libraries in /usr/lib/dictate (readelf -d says: '"$(printf '%s' "$paths" | tr '\n' ' ')"')'
       fi
       # And no other: the entries of a build in the source tree ($ORIGIN, $ORIGIN/.., $ORIGIN/../../../..) are, from /usr/bin, /usr/bin, /usr
       # and /: a program that looks there loads a library that somebody put there.
       local others
       others="$(printf '%s\n' "$paths" | grep -v -x -F -e '$ORIGIN/../lib/dictate' | grep -v '^$' | tr '\n' ' ' || true)"
       if [ -n "$others" ]; then
-        problem '/usr/bin/dictate has other entries in its RPATH or RUNPATH than $ORIGIN/../lib/dictate: '"$others"'(the release is built with DICTATE_RPATH_INSTALLED=1, which gives only $ORIGIN/../lib/dictate)'
+        problem '/usr/bin/loah has other entries in its RPATH or RUNPATH than $ORIGIN/../lib/dictate: '"$others"'(the release is built with LOAH_RPATH_INSTALLED=1, which gives only $ORIGIN/../lib/dictate)'
       fi
     fi
   fi
@@ -330,13 +330,13 @@ check_deb() {
 check_windows() {
   local dll file name
   for dll in vcruntime140.dll vcruntime140_1.dll msvcp140.dll msvcp140_1.dll; do
-    [ -f "$root/$dll" ] || problem "$dll is not next to dictate.exe: a Windows without the runtime of Visual C++ would not start it"
+    [ -f "$root/$dll" ] || problem "$dll is not next to loah.exe: a Windows without the runtime of Visual C++ would not start it"
   done
-  # A dictate.exe from which no DLL name can be read (every program of Windows has KERNEL32.dll) is a file that this reading does not
-  # understand, and then what it found above is worth nothing: it is said, and it is not a pass. (Not for dictate-ffmpeg.exe, which a
+  # A loah.exe from which no DLL name can be read (every program of Windows has KERNEL32.dll) is a file that this reading does not
+  # understand, and then what it found above is worth nothing: it is said, and it is not a pass. (Not for loah-ffmpeg.exe, which a
   # mingw build may keep free of names that look like these, and which check-ffmpeg-lgpl.sh reads its own way.)
-  if [ -f "$root/dictate.exe" ] && ! grep -a -q -i -E '[a-z0-9_.-]+\.dll' "$root/dictate.exe"; then
-    problem "could not read any DLL name from dictate.exe: what it asks for of the runtime of Visual C++ was not checked"
+  if [ -f "$root/loah.exe" ] && ! grep -a -q -i -E '[a-z0-9_.-]+\.dll' "$root/loah.exe"; then
+    problem "could not read any DLL name from loah.exe: what it asks for of the runtime of Visual C++ was not checked"
   fi
   # What the programs and the DLLs ask for: the names are in the import table as plain text, in the capitals of the linker, and the files
   # of the installer are in small letters. (find -iname: a file system that tells the two apart is the one of the Linux that unpacks it.)
@@ -358,7 +358,7 @@ check_macos() {
   done
   minimum="$(plist_value LSMinimumSystemVersion)"
   [ "$minimum" = "13.0" ] || problem "LSMinimumSystemVersion in Info.plist is '${minimum}', not 13.0"
-  for path in "$app" "$bin_dir/dictate-mcp" "$bin_dir/dictate-ffmpeg"; do
+  for path in "$app" "$bin_dir/loah-mcp" "$bin_dir/loah-ffmpeg"; do
     [ -e "$path" ] || continue
     if ! codesign --verify --strict "$path" 2>"$errors"; then
       problem "codesign --verify --strict fails on $(inside "$path"):
@@ -368,7 +368,7 @@ $(cat "$errors")"
   # The architecture and the minimum system of each program: a sidecar of the other architecture is an app that opens and cannot start its
   # MCP server, and a library built for a newer macOS than the one that Info.plist promises makes the program fail to load on macOS 13.
   local archs minima one
-  for path in "$bin_dir/$main_name" "$bin_dir/dictate-mcp" "$bin_dir/dictate-ffmpeg"; do
+  for path in "$bin_dir/$main_name" "$bin_dir/loah-mcp" "$bin_dir/loah-ffmpeg"; do
     [ -f "$path" ] || continue
     archs="$(lipo -archs "$path" 2>/dev/null | tr -s ' \n' ' ' | sed 's/ $//')"
     if [ "$archs" != "$expected_arch" ]; then

@@ -3,8 +3,8 @@
 
 use std::sync::Mutex;
 
-use dictate_services::dictation::lang::display_hotkey;
-use dictate_services::settings::{Settings, UiLanguage};
+use loah_services::dictation::lang::display_hotkey;
+use loah_services::settings::{Settings, UiLanguage};
 use serde::Serialize;
 use tauri::menu::{IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
@@ -115,7 +115,7 @@ pub fn title(view: &RecordingView) -> Option<String> {
         Phase::Paused => "⏸",
         Phase::Idle | Phase::Starting | Phase::Finishing => return None,
     };
-    let time = dictate_core::text::timestamp::format(view.elapsed_ms as f64 / 1000.0);
+    let time = loah_core::text::timestamp::format(view.elapsed_ms as f64 / 1000.0);
     Some(format!("{mark} {time}"))
 }
 

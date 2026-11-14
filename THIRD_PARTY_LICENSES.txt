@@ -20,7 +20,7 @@ PART 1. NATIVE COMPONENTS
 ====================================================================================================
 
 ====================================================================================================
-FFmpeg 9.0.2 (the program dictate-ffmpeg)
+FFmpeg 9.0.2 (the program loah-ffmpeg)
 LGPL-2.1-or-later: the text is COPYING.LGPLv2.1, next to this file. This is what FFmpeg says of the license of its files.
 ====================================================================================================
 
@@ -156,7 +156,7 @@ compatible with the LGPL.
 
 
 ====================================================================================================
-libvpx 1.14.0 (inside dictate-ffmpeg on Linux)
+libvpx 1.14.0 (inside loah-ffmpeg on Linux)
 BSD-3-Clause, and the additional IP rights grant of the WebM project.
 ====================================================================================================
 
@@ -222,7 +222,7 @@ litigation is filed.
 
 
 ====================================================================================================
-libopus 1.4 (inside dictate-ffmpeg on Linux)
+libopus 1.4 (inside loah-ffmpeg on Linux)
 BSD-3-Clause.
 ====================================================================================================
 
@@ -275,7 +275,7 @@ https://datatracker.ietf.org/ipr/1526/
 
 
 ====================================================================================================
-zlib (inside dictate-ffmpeg on Linux)
+zlib (inside loah-ffmpeg on Linux)
 The zlib license.
 ====================================================================================================
 
@@ -306,12 +306,12 @@ Copyright notice:
 
 
 ====================================================================================================
-glibc 2.39 (inside dictate-ffmpeg on Linux)
+glibc 2.39 (inside loah-ffmpeg on Linux)
 LGPL-2.1-or-later: the text is COPYING.LGPLv2.1, next to this file.
 ====================================================================================================
 
 ====================================================================================================
-libgcc, the runtime of GCC 13 (inside dictate-ffmpeg on Linux and on Windows)
+libgcc, the runtime of GCC 13 (inside loah-ffmpeg on Linux and on Windows)
 GPL-3.0-or-later with the GCC Runtime Library Exception 3.1.
 ====================================================================================================
 
@@ -1070,7 +1070,7 @@ Public License instead of this License.  But first, please read
 
 
 ====================================================================================================
-mingw-w64 runtime and winpthreads (inside dictate-ffmpeg on Windows)
+mingw-w64 runtime and winpthreads (inside loah-ffmpeg on Windows)
 Public domain and permissive licenses; the notices that the runtime asks for.
 ====================================================================================================
 

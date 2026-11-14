@@ -8,14 +8,14 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
-use dictate_core::meetings::library::{files, Kind, MeetingRecord};
-use dictate_core::meetings::speakers::speakers_in;
-use dictate_core::meetings::summary::{
+use loah_core::meetings::library::{files, Kind, MeetingRecord};
+use loah_core::meetings::speakers::speakers_in;
+use loah_core::meetings::summary::{
     ACTION_NAMES, DECISION_NAMES, KEY_POINT_NAMES, QUESTION_NAMES, SUMMARY_NAMES, TIMELINE_NAMES,
 };
-use dictate_core::meetings::{SummaryDoc, TranscriptLine};
-use dictate_core::text::search::TextSearch;
-use dictate_services::meetings::{startup_status, ErrorKind, MeetingError, Outcome, Step};
+use loah_core::meetings::{SummaryDoc, TranscriptLine};
+use loah_core::text::search::TextSearch;
+use loah_services::meetings::{startup_status, ErrorKind, MeetingError, Outcome, Step};
 use serde::Serialize;
 
 /// The step a job is in. Sent as `"download"`, `"audio"`, `"transcript"` or `"summary"`.
@@ -545,7 +545,7 @@ fn mentions(search: &TextSearch, record: &MeetingRecord) -> bool {
 mod tests {
     use super::*;
     use crate::meetings::test_fixture::{Fixture, FILE, LINK, SCREEN, SUMMARY, TRANSCRIPT};
-    use dictate_core::meetings::library::Meta;
+    use loah_core::meetings::library::Meta;
     use serde_json::json;
 
     fn record(f: &Fixture, id: &str) -> MeetingRecord {
@@ -637,7 +637,7 @@ mod tests {
         );
 
         let ytdlp = view(MeetingError::from_link(
-            dictate_services::media::ytdlp::LinkError::Spawn("not found".into()),
+            loah_services::media::ytdlp::LinkError::Spawn("not found".into()),
         ));
         assert_eq!(ytdlp.kind, "MissingTool");
         assert_eq!(ytdlp.key, "meetings.error.ytdlp_missing");
@@ -647,7 +647,7 @@ mod tests {
             .is_some_and(|c| c.contains("yt-dlp")));
 
         let ffmpeg = view(MeetingError::from_decode(
-            dictate_services::media::decode::DecodeError::Unsupported {
+            loah_services::media::decode::DecodeError::Unsupported {
                 what: "ac3".into(),
                 ffmpeg_hint: "brew install ffmpeg",
             },
@@ -679,7 +679,7 @@ mod tests {
         let view = ErrorView::other("é".repeat(10_000));
         assert_eq!(
             view.detail.unwrap().chars().count(),
-            dictate_services::meetings::error::DETAIL_LIMIT + 1
+            loah_services::meetings::error::DETAIL_LIMIT + 1
         );
     }
 
@@ -973,10 +973,7 @@ mod tests {
         );
         assert!(TRANSCRIPT.contains(&detail.speakers[0].sample.text));
         // A screen recording is named by the window itself.
-        assert_eq!(
-            detail.source,
-            dictate_core::meetings::library::SCREEN_SOURCE
-        );
+        assert_eq!(detail.source, loah_core::meetings::library::SCREEN_SOURCE);
         assert_eq!(detail.source_label, "");
     }
 

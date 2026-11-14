@@ -33,7 +33,7 @@ TARGETS = [
     "x86_64-unknown-linux-gnu",
 ]
 # The programs of the installers: the app and the MCP server.
-PACKAGES = ["dictate-app", "dictate-mcp"]
+PACKAGES = ["loah-app", "loah-mcp"]
 # What the bundle of the interface has in it (app/ui/package.json has the first two; the others are what the runtime of Svelte uses).
 NPM_PACKAGES = ["svelte", "clsx", "esm-env", "@tauri-apps/api", "@tauri-apps/plugin-opener"]
 LICENSE_FILE = re.compile(r"^(LICEN[CS]E|COPYING|NOTICE|UNLICENSE|COPYRIGHT)([._-].*)?$", re.IGNORECASE)
@@ -42,13 +42,13 @@ FALLBACK_ORDER = ["MIT", "Apache-2.0", "BSD-3-Clause", "BSD-2-Clause", "Zlib", "
 
 # The native components, in the order of the file: (title, what it is, the files of licenses/native).
 NATIVE = [
-    ("FFmpeg 9.0.2 (the program dictate-ffmpeg)", "LGPL-2.1-or-later: the text is COPYING.LGPLv2.1, next to this file. This is what FFmpeg says of the license of its files.", ["ffmpeg-LICENSE.md"]),
-    ("libvpx 1.14.0 (inside dictate-ffmpeg on Linux)", "BSD-3-Clause, and the additional IP rights grant of the WebM project.", ["libvpx-LICENSE.txt", "libvpx-PATENTS.txt"]),
-    ("libopus 1.4 (inside dictate-ffmpeg on Linux)", "BSD-3-Clause.", ["opus-COPYING.txt"]),
-    ("zlib (inside dictate-ffmpeg on Linux)", "The zlib license.", ["zlib-LICENSE.txt"]),
-    ("glibc 2.39 (inside dictate-ffmpeg on Linux)", "LGPL-2.1-or-later: the text is COPYING.LGPLv2.1, next to this file.", []),
-    ("libgcc, the runtime of GCC 13 (inside dictate-ffmpeg on Linux and on Windows)", "GPL-3.0-or-later with the GCC Runtime Library Exception 3.1.", ["gcc-COPYING.RUNTIME.txt", "gcc-COPYING3.txt"]),
-    ("mingw-w64 runtime and winpthreads (inside dictate-ffmpeg on Windows)", "Public domain and permissive licenses; the notices that the runtime asks for.", ["mingw-w64-runtime-COPYING.txt", "mingw-w64-COPYING.txt", "winpthreads-COPYING.txt"]),
+    ("FFmpeg 9.0.2 (the program loah-ffmpeg)", "LGPL-2.1-or-later: the text is COPYING.LGPLv2.1, next to this file. This is what FFmpeg says of the license of its files.", ["ffmpeg-LICENSE.md"]),
+    ("libvpx 1.14.0 (inside loah-ffmpeg on Linux)", "BSD-3-Clause, and the additional IP rights grant of the WebM project.", ["libvpx-LICENSE.txt", "libvpx-PATENTS.txt"]),
+    ("libopus 1.4 (inside loah-ffmpeg on Linux)", "BSD-3-Clause.", ["opus-COPYING.txt"]),
+    ("zlib (inside loah-ffmpeg on Linux)", "The zlib license.", ["zlib-LICENSE.txt"]),
+    ("glibc 2.39 (inside loah-ffmpeg on Linux)", "LGPL-2.1-or-later: the text is COPYING.LGPLv2.1, next to this file.", []),
+    ("libgcc, the runtime of GCC 13 (inside loah-ffmpeg on Linux and on Windows)", "GPL-3.0-or-later with the GCC Runtime Library Exception 3.1.", ["gcc-COPYING.RUNTIME.txt", "gcc-COPYING3.txt"]),
+    ("mingw-w64 runtime and winpthreads (inside loah-ffmpeg on Windows)", "Public domain and permissive licenses; the notices that the runtime asks for.", ["mingw-w64-runtime-COPYING.txt", "mingw-w64-COPYING.txt", "winpthreads-COPYING.txt"]),
     ("nv-codec-headers n12.1.14.0 (headers the Windows ffmpeg was compiled with)", "MIT.", ["nv-codec-headers-NOTICE.txt"]),
     ("AMF headers v1.5.3 (headers the Windows ffmpeg was compiled with)", "MIT.", ["amf-LICENSE.txt"]),
     ("whisper.cpp and ggml (linked into the program)", "MIT.", ["whisper.cpp-LICENSE.txt"]),

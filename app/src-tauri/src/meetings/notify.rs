@@ -7,8 +7,8 @@
 
 use std::sync::Arc;
 
-use dictate_services::meetings::{ErrorKind, MeetingError};
-use dictate_services::settings::SettingsStore;
+use loah_services::meetings::{ErrorKind, MeetingError};
+use loah_services::settings::SettingsStore;
 use tauri::AppHandle;
 use tauri_plugin_notification::NotificationExt;
 
@@ -396,7 +396,7 @@ fn count(lang: Lang, n: usize, one: &str, many: &str) -> Option<String> {
 mod tests {
     use std::collections::BTreeSet;
 
-    use dictate_services::meetings::error::key;
+    use loah_services::meetings::error::key;
     use serde_json::Value;
 
     use super::*;
@@ -564,7 +564,7 @@ mod tests {
 
     #[test]
     fn a_message_has_its_command_and_falls_back_when_it_has_nothing_to_say() {
-        let missing = MeetingError::from_link(dictate_services::media::ytdlp::LinkError::Spawn(
+        let missing = MeetingError::from_link(loah_services::media::ytdlp::LinkError::Spawn(
             "not found".into(),
         ));
         let message = error_message(Lang::En, &missing);
@@ -596,7 +596,7 @@ mod tests {
             MeetingError::invalid_link(),
             MeetingError::other("It broke"),
             MeetingError::summary_failed("API error 401"),
-            MeetingError::from_decode(dictate_services::media::decode::DecodeError::Unsupported {
+            MeetingError::from_decode(loah_services::media::decode::DecodeError::Unsupported {
                 what: "ac3".into(),
                 ffmpeg_hint: "brew install ffmpeg",
             }),

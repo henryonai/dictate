@@ -9,10 +9,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
-use dictate_services::secrets::{Account, SecretStore};
-use dictate_services::settings::{LoadWarning, SettingsStore};
-use dictate_services::whisper::local::LocalWhisper;
-use dictate_services::whisper::models::ModelDir;
+use loah_services::secrets::{Account, SecretStore};
+use loah_services::settings::{LoadWarning, SettingsStore};
+use loah_services::whisper::local::LocalWhisper;
+use loah_services::whisper::models::ModelDir;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::saved_key;
@@ -310,7 +310,7 @@ pub fn open_model_dir(base_dir: &Path) -> io::Result<ModelDir> {
     Ok(ModelDir::new(root))
 }
 
-/// The folder of the speaker separation models (`dictate_services::diarize::DIARIZE_MODELS`) below `base_dir`, created
+/// The folder of the speaker separation models (`loah_services::diarize::DIARIZE_MODELS`) below `base_dir`, created
 /// when it is missing. It is a folder of its own, not the Whisper models': neither list of files may take the other's
 /// for its own.
 pub fn open_diarize_dir(base_dir: &Path) -> io::Result<PathBuf> {
@@ -323,7 +323,7 @@ pub fn open_diarize_dir(base_dir: &Path) -> io::Result<PathBuf> {
 mod tests {
     use super::*;
     use crate::test_support::{CountingStore, NoKeyring};
-    use dictate_services::secrets::MemoryStore;
+    use loah_services::secrets::MemoryStore;
     use std::sync::atomic::AtomicUsize;
     use std::thread;
 

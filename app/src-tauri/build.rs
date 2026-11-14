@@ -86,10 +86,10 @@ mod build_rpath;
 
 fn main() {
     // The run path of the program and its tests (`build_rpath.rs` says what each part is for). Linux: the shared sherpa-onnx libraries,
-    // which `sherpa-onnx-sys` and the build script of `dictate-services` copy into `target/<profile>` (the program is built there, the
+    // which `sherpa-onnx-sys` and the build script of `loah-services` copy into `target/<profile>` (the program is built there, the
     // tests in its `deps`), and which the installed package has in `/usr/lib/dictate`. macOS: the Swift runtime of the system, for the
-    // ScreenCaptureKit bridge that `dictate-services` links (the bridge's own build script gives this run path only to the binaries of its
-    // own package, which has none, and neither does the one of `dictate-services` reach this package). A build script's link arguments
+    // ScreenCaptureKit bridge that `loah-services` links (the bridge's own build script gives this run path only to the binaries of its
+    // own package, which has none, and neither does the one of `loah-services` reach this package). A build script's link arguments
     // reach only the binaries of its own package, so the libraries' build scripts cannot set this up for them.
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     // The release build asks for the run path of the installed package only (`build_rpath::INSTALLED_ONLY_VARIABLE`); a change of the

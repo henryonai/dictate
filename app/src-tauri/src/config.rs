@@ -5,13 +5,13 @@
 
 use std::path::PathBuf;
 
-use dictate_services::ai::AiConfig;
-use dictate_services::dictation::pipeline::ApiPlan;
-use dictate_services::presets::AiProvider;
-use dictate_services::secrets::{Account, SecretStore};
-use dictate_services::settings::{self, Engine, Settings, SettingsStore};
-use dictate_services::transcribe_api::TranscribeConfig;
-use dictate_services::whisper::models::{self, ModelDir};
+use loah_services::ai::AiConfig;
+use loah_services::dictation::pipeline::ApiPlan;
+use loah_services::presets::AiProvider;
+use loah_services::secrets::{Account, SecretStore};
+use loah_services::settings::{self, Engine, Settings, SettingsStore};
+use loah_services::transcribe_api::TranscribeConfig;
+use loah_services::whisper::models::{self, ModelDir};
 
 /// How many characters of the vocabulary go to the transcription API as its prompt.
 const PROMPT_LIMIT: usize = 800;
@@ -169,8 +169,8 @@ pub fn local_model(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dictate_services::presets::TranscribePreset;
-    use dictate_services::secrets::MemoryStore;
+    use loah_services::presets::TranscribePreset;
+    use loah_services::secrets::MemoryStore;
 
     const AI_KEY: &str = "sk-ai-secret-123";
     const STT_KEY: &str = "sk-stt-secret-456";

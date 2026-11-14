@@ -9,9 +9,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use dictate_core::meetings::library::{files, Meta};
-use dictate_core::meetings::SummaryDoc;
-use dictate_services::meetings::{
+use loah_core::meetings::library::{files, Meta};
+use loah_core::meetings::SummaryDoc;
+use loah_services::meetings::{
     pipeline, ErrorKind, JobEvent, JobSpec, LocalLock, MeetingBackend, MeetingError, Outcome,
     StartAt,
 };
@@ -363,8 +363,8 @@ mod tests {
     use std::sync::atomic::Ordering;
     use std::sync::mpsc;
 
-    use dictate_core::meetings::library::SCREEN_SOURCE;
-    use dictate_services::meetings::fakes::{gate, FakeBackend, GateControl};
+    use loah_core::meetings::library::SCREEN_SOURCE;
+    use loah_services::meetings::fakes::{gate, FakeBackend, GateControl};
     use serde_json::json;
 
     use super::*;

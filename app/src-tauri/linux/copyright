@@ -7,7 +7,7 @@ Files: *
 Copyright: 2026 Henry Hoang
 License: MIT
 
-Files: usr/bin/dictate-ffmpeg
+Files: usr/bin/loah-ffmpeg
 Copyright: the FFmpeg developers, and the authors of the libraries linked into it
 License: LGPL-2.1+
 Comment: FFmpeg 9.0.2, built without --enable-gpl, --enable-nonfree and --enable-version3, with libvpx, libopus and zlib and the glibc and
@@ -18,7 +18,7 @@ Files: usr/lib/dictate/*
 Copyright: the k2-fsa authors (sherpa-onnx), Microsoft Corporation (ONNX Runtime)
 License: Apache-2.0 and MIT
 
-Files: usr/bin/dictate usr/bin/dictate-mcp
+Files: usr/bin/loah usr/bin/loah-mcp
 Copyright: 2026 Henry Hoang, and the authors of the Rust crates and of the interface that are linked into them
 License: MIT and others
 Comment: The licenses and the copyright lines of every component, of every Rust crate and of every npm package are in

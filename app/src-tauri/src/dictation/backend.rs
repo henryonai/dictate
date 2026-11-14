@@ -5,11 +5,11 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use dictate_services::ai::{self, AiConfig};
-use dictate_services::dictation::pipeline::Backend;
-use dictate_services::secrets::{Account, SecretStore};
-use dictate_services::settings::{self, SettingsStore};
-use dictate_services::transcribe_api::{self, TranscribeConfig};
+use loah_services::ai::{self, AiConfig};
+use loah_services::dictation::pipeline::Backend;
+use loah_services::secrets::{Account, SecretStore};
+use loah_services::settings::{self, SettingsStore};
+use loah_services::transcribe_api::{self, TranscribeConfig};
 
 use crate::commands::{api_error_text, transcribe_error_text};
 use crate::config::{dictation_transcribe_config, saved_key};
@@ -112,7 +112,7 @@ mod tests {
     use std::sync::mpsc;
     use std::thread;
 
-    use dictate_services::presets::{AiProvider, TranscribePreset};
+    use loah_services::presets::{AiProvider, TranscribePreset};
 
     use super::*;
     use crate::test_support::CountingStore;
@@ -182,7 +182,7 @@ mod tests {
 
     fn a_recording(dir: &tempfile::TempDir) -> std::path::PathBuf {
         let path = dir.path().join("take.wav");
-        dictate_services::audio::wav::write_16k_mono(&path, &[0.1; 1600]).unwrap();
+        loah_services::audio::wav::write_16k_mono(&path, &[0.1; 1600]).unwrap();
         path
     }
 

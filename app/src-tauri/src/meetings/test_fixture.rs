@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use dictate_core::meetings::library::{files, MeetingLibrary, SCREEN_SOURCE};
+use loah_core::meetings::library::{files, MeetingLibrary, SCREEN_SOURCE};
 use serde_json::{json, Value};
 
 /// The summary of the screen recording "Họp kế hoạch refactor": a decision, 2 action items and a 2-mark timeline.

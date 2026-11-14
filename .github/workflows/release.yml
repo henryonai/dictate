@@ -10,7 +10,7 @@ name: Release build
 # release. That is how a change to the installers is tried before there is a release to put them in.
 #
 # What it makes, one installer for each system: a .dmg for each Mac (Apple silicon and Intel), the NSIS installer for Windows (for the user
-# who runs it, no administrator) and a .deb. All unsigned. Each carries the MCP server and ffmpeg (`dictate-mcp` and `dictate-ffmpeg`, next
+# who runs it, no administrator) and a .deb. All unsigned. Each carries the MCP server and ffmpeg (`loah-mcp` and `loah-ffmpeg`, next
 # to the program; ffmpeg is built from source as LGPL v2.1 or later by scripts/build-ffmpeg.sh), and the .deb and the Windows installer carry
 # the libraries that the program needs (scripts/stage-sidecars.sh puts everything where the bundler looks for it, and
 # app/src-tauri/tauri.release.conf.json names it: an ordinary build does not need these files, so the ordinary configuration does not).
@@ -103,12 +103,12 @@ jobs:
         if: steps.ffmpeg-build.outputs.cache-hit != 'true'
         run: bash scripts/build-ffmpeg.sh x86_64-pc-windows-msvc target/ffmpeg/x86_64-pc-windows-msvc
       - name: Check that it is a plain LGPL ffmpeg
-        run: bash scripts/check-ffmpeg-lgpl.sh target/ffmpeg/x86_64-pc-windows-msvc/dictate-ffmpeg.exe
+        run: bash scripts/check-ffmpeg-lgpl.sh target/ffmpeg/x86_64-pc-windows-msvc/loah-ffmpeg.exe
       - uses: actions/upload-artifact@v4
         with:
-          name: dictate-ffmpeg-x86_64-pc-windows-msvc
+          name: loah-ffmpeg-x86_64-pc-windows-msvc
           path: |
-            target/ffmpeg/x86_64-pc-windows-msvc/dictate-ffmpeg.exe
+            target/ffmpeg/x86_64-pc-windows-msvc/loah-ffmpeg.exe
             target/ffmpeg/x86_64-pc-windows-msvc/BUILDCONF-x86_64-pc-windows-msvc.txt
           if-no-files-found: error
           retention-days: 7
@@ -168,7 +168,7 @@ jobs:
           persist-credentials: false
       # Rust 1.99, and not the latest: tauri-build 2.6.3 (the one of Tauri 2.11) takes the folder of the program to be three levels above
       # OUT_DIR, which is where Cargo until 1.99 builds it. Cargo 1.100 builds it in build/<package>/<hash>/out, so the sidecars would be
-      # copied into target/<target>/release/build, and the copy stops on the folder that Cargo made there for dictate-mcp ("Is a directory").
+      # copied into target/<target>/release/build, and the copy stops on the folder that Cargo made there for loah-mcp ("Is a directory").
       # tauri-build 2.7 (Tauri 2.12) walks up to the `build` folder: move to the latest Rust together with it. RUSTUP_TOOLCHAIN beats the
       # `stable` of rust-toolchain.toml for every command of the job; MSRV and the tests of ci.yml stay on the ones they are on.
       - name: Install Rust 1.99 for the target of the row
@@ -244,7 +244,7 @@ jobs:
       - uses: actions/download-artifact@v4
         if: runner.os == 'Windows'
         with:
-          name: dictate-ffmpeg-x86_64-pc-windows-msvc
+          name: loah-ffmpeg-x86_64-pc-windows-msvc
           path: target/ffmpeg/x86_64-pc-windows-msvc
       - uses: actions/cache@v4
         id: ffmpeg-build
@@ -262,7 +262,7 @@ jobs:
         if: runner.os != 'Windows' && steps.ffmpeg-build.outputs.cache-hit != 'true'
         run: bash scripts/build-ffmpeg.sh ${{ matrix.target }} target/ffmpeg/${{ matrix.target }}
       - name: Check that it is a plain LGPL ffmpeg
-        run: bash scripts/check-ffmpeg-lgpl.sh target/ffmpeg/${{ matrix.target }}/dictate-ffmpeg${{ matrix.exe }}
+        run: bash scripts/check-ffmpeg-lgpl.sh target/ffmpeg/${{ matrix.target }}/loah-ffmpeg${{ matrix.exe }}
       # The MCP server (built for the target, so in target/<target>/release, which is not the folder of the binary that the tests of the
       # MCP server run), ffmpeg and the libraries, where the bundler looks for them.
       - name: Put the MCP server, ffmpeg and the libraries where the bundler looks for them
@@ -281,11 +281,11 @@ jobs:
       # overlay names the sidecars and the libraries; the identity "-" signs the Mac app (and its sidecars) ad hoc, which is what applies
       # the entitlements. The bundler is not given a tag or a release.
       # The program of the installer gets only the run path of the installed package (build.rs): the ones of a build in the source tree
-      # would make /usr/bin/dictate look in /usr and in /.
+      # would make /usr/bin/loah look in /usr and in /.
       - name: Build the installer
         env:
           APPLE_SIGNING_IDENTITY: "-"
-          DICTATE_RPATH_INSTALLED: "1"
+          LOAH_RPATH_INSTALLED: "1"
         run: pnpm --dir app tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} --config src-tauri/tauri.release.conf.json ${{ matrix.extra_config }}
       - name: Find the installer
         id: installer

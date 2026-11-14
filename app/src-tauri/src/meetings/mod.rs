@@ -16,8 +16,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use dictate_core::meetings::library::MeetingLibrary;
-use dictate_services::media::tools::Tools;
+use loah_core::meetings::library::MeetingLibrary;
+use loah_services::media::tools::Tools;
 use tauri::{AppHandle, Manager};
 use tokio::time::MissedTickBehavior;
 
@@ -134,9 +134,9 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc;
 
-    use dictate_services::secrets::Account;
-    use dictate_services::settings::SettingsStore;
-    use dictate_services::whisper::models::ModelDir;
+    use loah_services::secrets::Account;
+    use loah_services::settings::SettingsStore;
+    use loah_services::whisper::models::ModelDir;
 
     use super::*;
     use crate::state::ModelCache;

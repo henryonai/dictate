@@ -175,7 +175,7 @@ describe("the two READMEs", () => {
       expect(text).toContain("sudo apt remove dictate");
     }
     // The names of the credentials are the ones of the code (service `Dictate`, accounts `default` and `transcribe`).
-    const secrets = read("crates/dictate-services/src/secrets.rs");
+    const secrets = read("crates/loah-services/src/secrets.rs");
     expect(secrets).toContain('pub const SERVICE: &str = "Dictate";');
     expect(secrets).toContain('Account::Ai => "default"');
     expect(secrets).toContain('Account::Transcribe => "transcribe"');
@@ -445,7 +445,7 @@ describe("the developer guide", () => {
 
   test("app_readme_says_where_ffmpeg_comes_from_and_the_order_of_the_encoders_of_windows", () => {
     expect(appReadme).toContain("DICTATE_FFMPEG");
-    expect(appReadme).toContain("dictate-ffmpeg");
+    expect(appReadme).toContain("loah-ffmpeg");
     expect(appReadme).toMatch(/h264_mf[^.]*hardware[^.]*h264_mf[^.]*software[^.]*h264_nvenc[^.]*h264_amf[^.]*libopenh264[^.]*libx264[^.]*mpeg4/s);
   });
 

@@ -3,13 +3,13 @@
 #
 # Usage: scripts/stage-sidecars.sh [--dry-run] TARGET [FFMPEG_DIR]
 #   TARGET      a Rust target triple: aarch64-apple-darwin, x86_64-apple-darwin, x86_64-unknown-linux-gnu or x86_64-pc-windows-msvc
-#   FFMPEG_DIR  where scripts/build-ffmpeg.sh wrote `dictate-ffmpeg[.exe]` for TARGET (target/ffmpeg/TARGET unless it is given)
+#   FFMPEG_DIR  where scripts/build-ffmpeg.sh wrote `loah-ffmpeg[.exe]` for TARGET (target/ffmpeg/TARGET unless it is given)
 #   --dry-run   says what it would do, in the lines of a real run, and does nothing (it needs none of the files)
 #
 # What it makes, from the root of the repository:
-#   - the MCP server: `cargo build -p dictate-mcp --release --locked --target TARGET`, copied to
-#     app/src-tauri/binaries/dictate-mcp-TARGET[.exe]
-#   - the ffmpeg: app/src-tauri/binaries/dictate-ffmpeg-TARGET[.exe]
+#   - the MCP server: `cargo build -p loah-mcp --release --locked --target TARGET`, copied to
+#     app/src-tauri/binaries/loah-mcp-TARGET[.exe]
+#   - the ffmpeg: app/src-tauri/binaries/loah-ffmpeg-TARGET[.exe]
 #   - Linux: the two libraries of sherpa-onnx (libsherpa-onnx-c-api.so, libonnxruntime.so) in app/src-tauri/libs/, from
 #     SHERPA_ONNX_LIB_DIR (scripts/fetch-sherpa-onnx-no-tts.sh prints it; target/sherpa-onnx-no-tts/lib unless it is set)
 #   - Windows: the runtime of Visual C++ (vcruntime140.dll, vcruntime140_1.dll, msvcp140.dll, msvcp140_1.dll) in app/src-tauri/libs/,
@@ -55,9 +55,9 @@ lib_dir="app/src-tauri/libs"
 licenses_dir="app/src-tauri/licenses"
 
 # What there is to copy, as "source -> destination" pairs, in the order of the copies.
-mcp_from="target/$target/release/dictate-mcp$exe"
-ffmpeg_from="$ffmpeg_dir/dictate-ffmpeg$exe"
-copies=("$mcp_from -> $bin_dir/dictate-mcp-$target$exe" "$ffmpeg_from -> $bin_dir/dictate-ffmpeg-$target$exe")
+mcp_from="target/$target/release/loah-mcp$exe"
+ffmpeg_from="$ffmpeg_dir/loah-ffmpeg$exe"
+copies=("$mcp_from -> $bin_dir/loah-mcp-$target$exe" "$ffmpeg_from -> $bin_dir/loah-ffmpeg-$target$exe")
 # What has to be there before the build starts.
 needed=("$ffmpeg_from")
 hints=("run scripts/build-ffmpeg.sh $target $ffmpeg_dir first")
@@ -108,9 +108,9 @@ if [ "$dry_run" -eq 0 ]; then
   done
 fi
 
-echo "cargo build -p dictate-mcp --release --locked --target $target"
+echo "cargo build -p loah-mcp --release --locked --target $target"
 if [ "$dry_run" -eq 0 ]; then
-  cargo build -p dictate-mcp --release --locked --target "$target"
+  cargo build -p loah-mcp --release --locked --target "$target"
   [ -f "$mcp_from" ] || fail "no such file: $mcp_from: the build did not make the MCP server"
 fi
 

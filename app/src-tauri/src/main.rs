@@ -20,8 +20,8 @@ mod tray;
 use std::sync::Arc;
 use std::time::Duration;
 
-use dictate_services::secrets::KeyringStore;
-use dictate_services::settings::SettingsStore;
+use loah_services::secrets::KeyringStore;
+use loah_services::settings::SettingsStore;
 use tauri::{Manager, RunEvent, WindowEvent};
 use tauri_plugin_autostart::MacosLauncher;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
@@ -44,12 +44,12 @@ fn main() {
     let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
         .try_init();
 
-    // What the shortcut and `dictate --toggle` hear goes down this channel, to the dictation controller.
+    // What the shortcut and `loah --toggle` hear goes down this channel, to the dictation controller.
     let (hotkey_tx, hotkey_rx) = unbounded_channel();
     let toggle_tx = hotkey_tx.clone();
 
     let builder = tauri::Builder::default()
-        // A second launch ends here: `dictate --toggle` toggles dictation, `dictate --record` starts or stops a recording, anything
+        // A second launch ends here: `loah --toggle` toggles dictation, `loah --record` starts or stops a recording, anything
         // else shows the window of the first. This plugin must come first.
         .plugin(tauri_plugin_single_instance::init(
             move |app, args, _cwd| {
@@ -263,7 +263,7 @@ fn setup(
         None => log::info!("The shortcut is {} ({:?})", status.label, status.backend),
         Some(error) => log::warn!("The shortcut {} does not work: {error}", status.label),
     }
-    // What the shortcut, the tray and `dictate --toggle` say goes to the controller as soon as there is one; until then it
+    // What the shortcut, the tray and `loah --toggle` say goes to the controller as soon as there is one; until then it
     // waits in the channel, `--toggle` of this very launch included.
     dictation::system::start(app.handle().clone(), startup, dictation, hotkey_rx);
     let args = std::env::args().collect::<Vec<_>>();

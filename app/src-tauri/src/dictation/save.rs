@@ -6,7 +6,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use chrono::NaiveDateTime;
-use dictate_services::audio::wav;
+use loah_services::audio::wav;
 
 /// The prefix of the temporary files of a dictation that isn't saved: `dictate-<stamp>.wav`.
 const TEMP_PREFIX: &str = "dictate-";
@@ -191,7 +191,7 @@ fn is_temporary_file(name: &str) -> bool {
 mod tests {
     use super::*;
     use chrono::NaiveDate;
-    use dictate_services::whisper::local::read_wav_16k_mono;
+    use loah_services::whisper::local::read_wav_16k_mono;
 
     fn at(h: u32, m: u32, s: u32) -> NaiveDateTime {
         NaiveDate::from_ymd_opt(2026, 11, 9)

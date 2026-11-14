@@ -143,7 +143,7 @@ describe("the Tauri build", () => {
     expect(read("app/src-tauri/tauri.conf.json")).not.toMatch(/"resources"/);
     expect(read("app/src-tauri/tauri.conf.json")).not.toMatch(/"files"/);
     const overlay = readJson("app/src-tauri/tauri.release.conf.json");
-    expect(overlay.bundle.externalBin).toEqual(["binaries/dictate-mcp", "binaries/dictate-ffmpeg"]);
+    expect(overlay.bundle.externalBin).toEqual(["binaries/loah-mcp", "binaries/loah-ffmpeg"]);
   });
 
   test("the_deb_puts_the_two_sherpa_libraries_where_the_run_path_of_the_program_looks_and_the_licenses_in_the_doc_folder", () => {
@@ -167,7 +167,7 @@ describe("the Tauri build", () => {
   test("the_program_of_the_installer_gets_only_the_run_path_of_the_installed_package", () => {
     // The entries for a build in the source tree ($ORIGIN/.., $ORIGIN/../../../..) would make /usr/bin/dictate look in /usr and in /.
     const variable = /pub const INSTALLED_ONLY_VARIABLE: &str = "([A-Z_]+)";/.exec(read("app/src-tauri/build_rpath.rs"))?.[1];
-    expect(variable).toBe("DICTATE_RPATH_INSTALLED");
+    expect(variable).toBe("LOAH_RPATH_INSTALLED");
     expect(build()).toContain(`${variable}: "1"`);
     // Only the build of the installer: the stage of the sidecars and the tests are the builds of the source tree.
     expect(workflow.match(new RegExp(`${variable}`, "g"))).toHaveLength(1);
@@ -222,11 +222,11 @@ describe("the Tauri build", () => {
   });
 
   test("the_sidecars_are_built_for_the_target_into_its_own_folder_so_that_they_cannot_replace_the_binary_that_the_tests_run", () => {
-    // The Tauri bundler copies the staged dictate-mcp to target/<target>/release/dictate-mcp. The tests of the MCP server run
-    // target/debug/dictate-mcp, which is another folder as long as the release build is for a target.
+    // The Tauri bundler copies the staged loah-mcp to target/<target>/release/loah-mcp. The tests of the MCP server run
+    // target/debug/loah-mcp, which is another folder as long as the release build is for a target.
     const stage = step("build", "scripts/stage-sidecars.sh");
     expect(stage).toContain("bash scripts/stage-sidecars.sh ${{ matrix.target }}");
-    expect(read("scripts/stage-sidecars.sh")).toContain("cargo build -p dictate-mcp --release --locked --target");
+    expect(read("scripts/stage-sidecars.sh")).toContain("cargo build -p loah-mcp --release --locked --target");
     expect(workflow).not.toMatch(/tauri build(?!.*--target)/);
   });
 
@@ -247,13 +247,13 @@ describe("the ffmpeg of each installer", () => {
     expect(linux).toContain("runs-on: ubuntu-24.04");
     expect(linux).toContain("bash scripts/build-ffmpeg.sh x86_64-pc-windows-msvc target/ffmpeg/x86_64-pc-windows-msvc");
     expect(linux).toContain("gcc-mingw-w64-x86-64-posix");
-    expect(linux).toContain("bash scripts/check-ffmpeg-lgpl.sh target/ffmpeg/x86_64-pc-windows-msvc/dictate-ffmpeg.exe");
-    expect(linux).toContain("name: dictate-ffmpeg-x86_64-pc-windows-msvc");
+    expect(linux).toContain("bash scripts/check-ffmpeg-lgpl.sh target/ffmpeg/x86_64-pc-windows-msvc/loah-ffmpeg.exe");
+    expect(linux).toContain("name: loah-ffmpeg-x86_64-pc-windows-msvc");
 
     expect(job("build")).toMatch(/^ {4}needs: \[preflight, ffmpeg-windows\]$/m);
     const download = step("build", "actions/download-artifact@v4");
     expect(download).toContain("if: runner.os == 'Windows'");
-    expect(download).toContain("name: dictate-ffmpeg-x86_64-pc-windows-msvc");
+    expect(download).toContain("name: loah-ffmpeg-x86_64-pc-windows-msvc");
     expect(download).toContain("path: target/ffmpeg/x86_64-pc-windows-msvc");
     // The other rows build their own: on their own system.
     const build = step("build", "bash scripts/build-ffmpeg.sh ${{ matrix.target }}");
@@ -281,7 +281,7 @@ describe("the ffmpeg of each installer", () => {
   test("each_ffmpeg_is_checked_to_be_a_plain_lgpl_build_before_it_is_used", () => {
     const text = job("build");
     const check = step("build", "bash scripts/check-ffmpeg-lgpl.sh");
-    expect(check).toContain("target/ffmpeg/${{ matrix.target }}/dictate-ffmpeg${{ matrix.exe }}");
+    expect(check).toContain("target/ffmpeg/${{ matrix.target }}/loah-ffmpeg${{ matrix.exe }}");
     expect(text.indexOf(check)).toBeGreaterThan(text.indexOf("bash scripts/build-ffmpeg.sh"));
     expect(text.indexOf(check)).toBeLessThan(text.indexOf("bash scripts/stage-sidecars.sh"));
   });
@@ -420,7 +420,7 @@ describe("the same pins as ci.yml, so that a bump of one cannot leave the other 
   test("the_rust_is_1_99_with_the_target_of_the_row_and_it_beats_the_stable_of_rust_toolchain_toml", () => {
     // tauri-build 2.6.3 (Tauri 2.11) takes the folder of the program to be three levels above OUT_DIR, which is where Cargo until 1.99 builds
     // it. Cargo 1.100 builds it in build/<package>/<hash>/out, so the sidecars are copied into target/<target>/release/build, where the
-    // folder that Cargo made for dictate-mcp stops the copy. tauri-build 2.7 (Tauri 2.12) walks up to `build`: the pin goes with that bump.
+    // folder that Cargo made for loah-mcp stops the copy. tauri-build 2.7 (Tauri 2.12) walks up to `build`: the pin goes with that bump.
     const rust = step("build", "- name: Install Rust 1.99");
     expect(rust).toContain("rustup toolchain install 1.99.1 --profile minimal --target ${{ matrix.target }}");
     expect(rust).toContain('echo "RUSTUP_TOOLCHAIN=1.99.1" >> "$GITHUB_ENV"');

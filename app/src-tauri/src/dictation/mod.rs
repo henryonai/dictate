@@ -10,8 +10,8 @@ pub mod stt;
 pub mod system;
 pub mod target;
 
-use dictate_core::text::segments::Segment;
-use dictate_services::dictation::live::join;
+use loah_core::text::segments::Segment;
+use loah_services::dictation::live::join;
 
 /// The words of the segments of a transcript, one after the other, joined as the language joins words: with a space, or with
 /// none for Japanese and Chinese.

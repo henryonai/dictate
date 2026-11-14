@@ -1,11 +1,11 @@
 //! What the recorder tells the windows, and what it answers them with: the state of the recording, the choices of the
 //! picker, and the errors as keys of the texts (`recording.error.*`) that the window translates.
 
-use dictate_services::media::tools::{install_command, Tool};
-use dictate_services::record::capture::SourceInfo;
-use dictate_services::record::session::{Levels, TrackNote};
-use dictate_services::record::{EndReason, Mode, RecordOptions, StartError};
-use dictate_services::settings::Settings;
+use loah_services::media::tools::{install_command, Tool};
+use loah_services::record::capture::SourceInfo;
+use loah_services::record::session::{Levels, TrackNote};
+use loah_services::record::{EndReason, Mode, RecordOptions, StartError};
+use loah_services::settings::Settings;
 use serde::Serialize;
 
 use crate::meetings::views::ErrorView;
@@ -206,9 +206,9 @@ pub fn expected_media(mode: &Mode) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use dictate_services::record::quality::Quality;
-    use dictate_services::record::session::TrackNote;
-    use dictate_services::record::{Note, Track};
+    use loah_services::record::quality::Quality;
+    use loah_services::record::session::TrackNote;
+    use loah_services::record::{Note, Track};
     use serde_json::json;
 
     use super::*;

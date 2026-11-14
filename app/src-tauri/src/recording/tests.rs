@@ -7,19 +7,19 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use dictate_core::meetings::library::{files, MeetingLibrary, Meta, SCREEN_SOURCE};
-use dictate_services::media::tools::Tools;
-use dictate_services::meetings::fakes::{gate, FakeBackend, GateControl};
-use dictate_services::record::capture::{SourceInfo, Sources};
-use dictate_services::record::fakes::FakeCapturer;
-use dictate_services::record::marker::{Marker, MARKER};
-use dictate_services::record::quality::Quality;
-use dictate_services::record::session::Levels;
-use dictate_services::record::stem::StemWriter;
-use dictate_services::record::{
+use loah_core::meetings::library::{files, MeetingLibrary, Meta, SCREEN_SOURCE};
+use loah_services::media::tools::Tools;
+use loah_services::meetings::fakes::{gate, FakeBackend, GateControl};
+use loah_services::record::capture::{SourceInfo, Sources};
+use loah_services::record::fakes::FakeCapturer;
+use loah_services::record::marker::{Marker, MARKER};
+use loah_services::record::quality::Quality;
+use loah_services::record::session::Levels;
+use loah_services::record::stem::StemWriter;
+use loah_services::record::{
     Capturer, EndReason, Mode, Note, RecordOptions, RunningSource, SourceEvent, StartError, Track,
 };
-use dictate_services::settings::{SettingsStore, UiLanguage};
+use loah_services::settings::{SettingsStore, UiLanguage};
 use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
 use tauri::{Listener, Manager};
 
@@ -345,9 +345,7 @@ fn no_ffmpeg_means_audio_only() {
     assert_eq!(sources.screen, ScreenAvailability::NeedsFfmpeg);
     assert_eq!(
         sources.ffmpeg_command,
-        dictate_services::media::tools::install_command(
-            dictate_services::media::tools::Tool::Ffmpeg
-        )
+        loah_services::media::tools::install_command(loah_services::media::tools::Tool::Ffmpeg)
     );
     let error = rig.recorder.start(screen()).unwrap_err();
     assert_eq!(error.key, "recording.error.needs_ffmpeg");
@@ -1376,7 +1374,7 @@ fn cut_off_recording(library: &Path, name: &str) -> PathBuf {
     .write(&folder)
     .unwrap();
     let mut stem = StemWriter::create(&folder.join("mic.wav"), 48_000).unwrap();
-    let tone = dictate_services::record::fakes::sine(440.0, 48_000, 0, 48_000);
+    let tone = loah_services::record::fakes::sine(440.0, 48_000, 0, 48_000);
     stem.push(Duration::ZERO, &tone).unwrap();
     stem.finish().unwrap();
     folder
@@ -1502,7 +1500,7 @@ fn the_recovery_does_not_hold_the_place_of_a_recording_it_has_finished() {
 /// A stem of a second of tone in `folder`.
 fn write_stem(folder: &Path, name: &str) {
     let mut stem = StemWriter::create(&folder.join(name), 48_000).unwrap();
-    let tone = dictate_services::record::fakes::sine(440.0, 48_000, 0, 48_000);
+    let tone = loah_services::record::fakes::sine(440.0, 48_000, 0, 48_000);
     stem.push(Duration::ZERO, &tone).unwrap();
     stem.finish().unwrap();
 }
@@ -1606,7 +1604,7 @@ fn saving_the_token_does_not_wait_for_the_disk() {
         let _ = gate.lock().unwrap().recv();
         let _ = written.send(token.to_owned());
     });
-    use dictate_services::record::capture::TokenStore;
+    use loah_services::record::capture::TokenStore;
 
     assert_eq!(tokens.load().as_deref(), Some("display:old"));
     tokens.save("display:new");
@@ -1635,7 +1633,7 @@ fn of_tokens_that_come_while_one_is_being_written_the_last_is_what_is_kept() {
         let _ = gate.lock().unwrap().recv();
         let _ = written.send(token.to_owned());
     });
-    use dictate_services::record::capture::TokenStore;
+    use loah_services::record::capture::TokenStore;
 
     tokens.save("display:one");
     // The writer has the first, and is held at the gate.
@@ -1656,7 +1654,7 @@ fn the_token_is_written_to_the_settings_and_read_back_from_them_at_the_next_star
     let path = dir.path().join("settings.json");
     let (store, _) = SettingsStore::open(path.clone());
     let store = Arc::new(store);
-    use dictate_services::record::capture::TokenStore;
+    use loah_services::record::capture::TokenStore;
     let tokens = token::for_settings(store.clone());
     assert_eq!(tokens.load(), None);
 
@@ -1706,7 +1704,7 @@ fn a_state_that_only_goes_on_is_told_at_most_every_50_ms_and_a_change_at_once() 
     assert!(shown.change(paused, true, at(101)));
     let noted = RecordingView {
         phase: Phase::Paused,
-        notes: vec![dictate_services::record::session::TrackNote {
+        notes: vec![loah_services::record::session::TrackNote {
             track: Track::Mic,
             note: Note::Silent,
         }],
