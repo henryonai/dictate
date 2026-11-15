@@ -2959,7 +2959,7 @@ checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 
 [[package]]
 name = "loah-app"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "arboard",
  "ashpd",
@@ -3005,7 +3005,7 @@ dependencies = [
 
 [[package]]
 name = "loah-core"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "chrono",
  "dirs 7.0.0",
@@ -3019,7 +3019,7 @@ dependencies = [
 
 [[package]]
 name = "loah-mcp"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "loah-core",
  "serde_json",
@@ -3028,7 +3028,7 @@ dependencies = [
 
 [[package]]
 name = "loah-services"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "ashpd",
  "async-trait",
