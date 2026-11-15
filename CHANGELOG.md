@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.0](https://github.com/henryonai/dictate/compare/v2.0.0...v2.1.0) (2026-11-15)
+
+
+### Features
+
+* rename Dictate to Loah, with the Graphite theme and a calmer meetings window ([1dfa19c](https://github.com/henryonai/dictate/commit/1dfa19cc0df44dc54fff534c29ba9d3342ed57f7))
+
 ## [2.0.0](https://github.com/henryonai/dictate/compare/v0.1.0...v2.0.0) (2026-11-14)
 
 
