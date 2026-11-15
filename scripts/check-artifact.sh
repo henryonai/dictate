@@ -26,8 +26,9 @@
 #     /usr and in /);
 #   - a dependency on libpipewire in `Depends` (the program does not start without it);
 #   - the package is called `loah`, and it takes the place of the `dictate` package of 2.0.0: `Provides`, `Conflicts` and `Replaces` name `dictate`;
-#   - /usr/bin/dictate and /usr/bin/dictate-mcp, the commands of Dictate 2.0.0 that MCP clients and shortcuts still run: executable, and
-#     each one `exec`s the new program (loah, loah-mcp) with the same arguments. The bundler copies the mode of the file of the repository.
+#   - /usr/bin/dictate and /usr/bin/dictate-mcp, the commands of Dictate 2.0.0 that MCP clients and shortcuts still run: executable, a script
+#     that starts with a `#!` line, and each one `exec`s the new program (loah, loah-mcp) with the same arguments. The bundler copies the mode
+#     of the file of the repository.
 # The installer for Windows: the four DLLs of the runtime of Visual C++ (vcruntime140.dll, vcruntime140_1.dll, msvcp140.dll, msvcp140_1.dll)
 # next to the program: a Windows that has no runtime would not start it. And every DLL of that family that a program or a DLL of the
 # installer asks for by name (read from its bytes: msvcp, vcruntime, concrt, vcomp or vccorlib and a number, such as MSVCP140_1.dll) is
@@ -356,6 +357,8 @@ check_deb() {
       continue
     fi
     [ -x "$root/usr/bin/$wrapper" ] || problem "/usr/bin/$wrapper is not executable (the bundler keeps the mode of the file in app/src-tauri/linux)"
+    # The kernel runs a script through the interpreter that its first line names: without `#!` the command cannot be run without a shell.
+    [ "$(head -c 2 "$root/usr/bin/$wrapper")" = '#!' ] || problem "/usr/bin/$wrapper does not start with a #! line: it is not a script that the system can run as a command"
     if ! grep -q -x -F "exec $target \"\$@\"" "$root/usr/bin/$wrapper"; then
       problem "/usr/bin/$wrapper does not run $target with its arguments: it needs the line exec $target \"\$@\""
     fi

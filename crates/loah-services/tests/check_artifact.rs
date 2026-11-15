@@ -605,6 +605,31 @@ fn a_wrapper_that_is_not_executable_fails() {
 }
 
 #[test]
+fn a_wrapper_that_does_not_start_with_a_shebang_fails() {
+    // The kernel runs a script through the interpreter named on its first line: without `#!` an `execve` of the wrapper fails (ENOEXEC), and
+    // so does a program that runs the command without a shell, as an MCP client does. The `exec` line alone is not enough.
+    for (wrapper, target) in [("dictate", "loah"), ("dictate-mcp", "loah-mcp")] {
+        let root = tree(deb);
+        write_program(
+            &root.path().join("usr/bin").join(wrapper),
+            &format!("exec /usr/bin/{target} \"$@\"\n"),
+        );
+
+        assert_fails(
+            &Tools::new().run(root.path()),
+            &[&format!("/usr/bin/{wrapper}"), "#!"],
+        );
+    }
+    // A shebang that is not on the first line is no shebang.
+    let root = tree(deb);
+    write_program(
+        &root.path().join("usr/bin/dictate"),
+        "\n#!/bin/sh\nexec /usr/bin/loah \"$@\"\n",
+    );
+    assert_fails(&Tools::new().run(root.path()), &["/usr/bin/dictate", "#!"]);
+}
+
+#[test]
 fn a_wrapper_that_hands_over_to_the_wrong_program_fails() {
     // dictate-mcp has to run loah-mcp: a copy-and-paste that ran `loah` would start the app, and the MCP client would read its silence.
     let root = tree(deb);
