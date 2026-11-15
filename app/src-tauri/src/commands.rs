@@ -376,7 +376,16 @@ pub(crate) fn native_theme(theme: Theme) -> Option<tauri::Theme> {
 /// of its own, which on Windows would overrule this one. Called at the start with the saved theme; `save_settings` gives `theme_chosen` the
 /// same call when the theme changes.
 pub(crate) fn set_native_theme(app: &AppHandle, theme: Theme) {
-    app.set_theme(native_theme(theme));
+    native_theme_at_start(theme, |native| app.set_theme(native));
+}
+
+/// What the start tells the title bars (`set_native`): the theme if it is forced, and nothing for `System`. `set_theme(None)` is not a no-op
+/// on Linux, where it sets GTK's `prefer-dark` to false and so overrules the dark preference of the desktop, and at the start there is nothing
+/// to give back to the OS: only a change made while the app runs (`theme_chosen`) has to.
+pub(crate) fn native_theme_at_start(theme: Theme, set_native: impl Fn(Option<tauri::Theme>)) {
+    if theme != Theme::System {
+        set_native(native_theme(theme));
+    }
 }
 
 /// A theme was chosen and saved: the title bars take it (`set_native`) and every window is told (`THEME_EVENT`), so that the pages and
@@ -1218,6 +1227,23 @@ mod tests {
         assert_eq!(native_theme(Theme::System), None);
         assert_eq!(native_theme(Theme::Light), Some(tauri::Theme::Light));
         assert_eq!(native_theme(Theme::Dark), Some(tauri::Theme::Dark));
+    }
+
+    #[test]
+    fn at_the_start_a_theme_of_the_system_is_not_told_to_the_title_bars_at_all() {
+        // `set_theme(None)` is not a no-op where the OS has a preference of its own: on Linux it sets GTK's prefer-dark to false, over the
+        // desktop's dark preference. A theme that follows the system has nothing to say at the start, when nothing has been set yet.
+        let (native, set_native) = native_theme_recorder();
+        native_theme_at_start(Theme::System, &set_native);
+        assert!(native.lock().unwrap().is_empty());
+
+        // The two others are forced, as ever.
+        native_theme_at_start(Theme::Dark, &set_native);
+        native_theme_at_start(Theme::Light, &set_native);
+        assert_eq!(
+            *native.lock().unwrap(),
+            [Some(tauri::Theme::Dark), Some(tauri::Theme::Light)]
+        );
     }
 
     #[test]

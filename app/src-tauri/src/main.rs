@@ -277,7 +277,8 @@ fn setup(
     );
     let startup = state.clone();
     app.manage(state);
-    // The title bars of the windows follow the saved theme from the start (the pages ask for it themselves, `current_theme`).
+    // The title bars of the windows follow the saved theme from the start, when it is a forced one: `System` is left to the OS, which
+    // `set_theme(None)` would overrule on Linux (the pages ask for the theme themselves, `current_theme`).
     commands::set_native_theme(app.handle(), theme);
     // One platform layer for the whole app. What the system says about the permissions is read now, to know whether
     // the person needs the guide in Settings (macOS only: the other systems have no permission to grant).
