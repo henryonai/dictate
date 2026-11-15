@@ -129,6 +129,10 @@ pub struct KeyringStore {
     /// The accounts for which Dictate's entry was asked in this run and gave no key. Asking again would, on a Mac, show
     /// the Keychain's prompt again (for an entry another app made) after the person refused it.
     legacy_asked: Mutex<HashSet<Account>>,
+    /// Held while Loah's own entry is written: by a key that is saved, and by the copy of Dictate's key (which looks at the entry
+    /// again before it writes). Not held while Dictate's entry is read, which can wait a long time for a prompt: a key that is
+    /// saved then must not wait for it, and must not be overwritten by it either.
+    writing: Mutex<()>,
 }
 
 impl fmt::Debug for KeyringStore {
@@ -153,6 +157,7 @@ impl KeyringStore {
         KeyringStore {
             vault,
             legacy_asked: Mutex::new(HashSet::new()),
+            writing: Mutex::new(()),
         }
     }
 
@@ -179,6 +184,17 @@ impl KeyringStore {
         let Some(key) = found? else {
             return Ok(None);
         };
+        // The read of Dictate's entry may have waited for the person (the prompt of the Keychain), who may have saved a key in
+        // Loah or removed it meanwhile. That is not undone by a copy of Dictate's key: Loah's entry is written only if it is still
+        // empty, and nobody else writes it between the look and the write.
+        let _writing = self.writing.lock().unwrap_or_else(PoisonError::into_inner);
+        match self.vault.read(SERVICE, a.name()) {
+            Ok(Some(removed)) if removed == REMOVED => return Ok(None),
+            Ok(Some(saved)) => return Ok(Some(saved)),
+            Ok(None) => {}
+            // Loah's entry can't be looked at: Dictate's key is used, and copied when it can.
+            Err(_) => return Ok(Some(key)),
+        }
         // A key that can't be saved under Loah now is still used, and copied the next time.
         let _ = self.vault.write(SERVICE, a.name(), &key);
         Ok(Some(key))
@@ -195,6 +211,8 @@ impl SecretStore for KeyringStore {
     }
 
     fn set(&self, a: Account, v: &str) -> Result<(), SecretError> {
+        // Not while the copy of Dictate's key looks at Loah's entry and writes it: that would be written over this key.
+        let _writing = self.writing.lock().unwrap_or_else(PoisonError::into_inner);
         self.vault.write(SERVICE, a.name(), v)
     }
 
@@ -244,7 +262,7 @@ impl SecretStore for MemoryStore {
 mod tests {
     use super::*;
     use std::io;
-    use std::sync::Arc;
+    use std::sync::{mpsc, Arc};
 
     fn platform_error(msg: &str) -> Box<dyn std::error::Error + Send + Sync> {
         Box::new(io::Error::other(msg.to_string()))
@@ -341,6 +359,9 @@ mod tests {
         unwritable: Mutex<Vec<String>>,
         /// A service whose first read sees nothing, as a read that was made just before another thread saved the entry.
         stale_first_read: Mutex<Option<String>>,
+        /// The prompt of the Keychain: the first read of Dictate's entry says that it is waiting (`opened`), and goes on when
+        /// the person answers (`answered`).
+        prompt: Mutex<Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>>,
     }
 
     impl MemoryVault {
@@ -381,6 +402,14 @@ mod tests {
             if stale.as_deref() == Some(service) {
                 *stale = None;
                 return Ok(None);
+            }
+            drop(stale);
+            if service == "Dictate" {
+                let prompt = self.prompt.lock().unwrap().take();
+                if let Some((opened, answered)) = prompt {
+                    opened.send(()).unwrap();
+                    answered.recv().unwrap();
+                }
             }
             Ok(self.peek(service, account))
         }
@@ -553,6 +582,62 @@ mod tests {
         vault.unwritable.lock().unwrap().clear();
         assert_eq!(store_on(&vault).get(Account::Ai), Ok(Some("sk-old".into())));
         assert_eq!(vault.peek("Loah", "default"), Some("sk-old".into()));
+    }
+
+    /// A store, and the two ends of a prompt for Dictate's entry: `opened` hears that the read is waiting for the person, and
+    /// `answer` is what the person does.
+    fn store_with_a_prompt(
+        vault: &Arc<MemoryVault>,
+    ) -> (Arc<KeyringStore>, mpsc::Receiver<()>, mpsc::Sender<()>) {
+        let (opened, opened_rx) = mpsc::channel();
+        let (answer, answered) = mpsc::channel();
+        *vault.prompt.lock().unwrap() = Some((opened, answered));
+        (Arc::new(store_on(vault)), opened_rx, answer)
+    }
+
+    #[test]
+    fn a_key_saved_while_the_prompt_for_dictates_key_waits_is_not_overwritten_by_it() {
+        let vault = MemoryVault::with(&[("Dictate", "default", "sk-old")]);
+        let (store, opened, answer) = store_with_a_prompt(&vault);
+        let reading = {
+            let store = store.clone();
+            std::thread::spawn(move || store.get(Account::Ai))
+        };
+        opened.recv().unwrap();
+
+        // The person pastes a key while the Keychain asks, and then allows the use of Dictate's.
+        store.set(Account::Ai, "sk-pasted").unwrap();
+        answer.send(()).unwrap();
+        let read = reading.join().unwrap();
+
+        assert_eq!(vault.peek("Loah", "default"), Some("sk-pasted".into()));
+        assert_eq!(
+            read,
+            Ok(Some("sk-pasted".into())),
+            "the read gives the key that is Loah's now"
+        );
+        assert_eq!(store.get(Account::Ai), Ok(Some("sk-pasted".into())));
+        assert_eq!(vault.peek("Dictate", "default"), Some("sk-old".into()));
+    }
+
+    #[test]
+    fn a_key_removed_while_the_prompt_for_dictates_key_waits_does_not_come_back() {
+        let vault = MemoryVault::with(&[("Dictate", "default", "sk-old")]);
+        let (store, opened, answer) = store_with_a_prompt(&vault);
+        let reading = {
+            let store = store.clone();
+            std::thread::spawn(move || store.get(Account::Ai))
+        };
+        opened.recv().unwrap();
+
+        // Cleared in Settings meanwhile: Loah's entry now says that the key was removed.
+        store.delete(Account::Ai).unwrap();
+        answer.send(()).unwrap();
+        let read = reading.join().unwrap();
+
+        assert_eq!(vault.peek("Loah", "default"), Some("(removed)".into()));
+        assert_eq!(read, Ok(None));
+        assert_eq!(store.get(Account::Ai), Ok(None));
     }
 
     #[test]
