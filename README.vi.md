@@ -139,7 +139,7 @@ Dữ liệu của Dictate, nếu bạn từng dùng, không phải việc của 
 
 ## Nâng cấp từ Dictate
 
-Loah là Dictate dưới một cái tên mới, từ phiên bản 2.1.0. Với hệ điều hành, đây là một app mới, có tên và mã định danh riêng (`io.github.henryonai.loah`), nên bộ cài sẽ cài nó cạnh Dictate chứ không đè lên (trên Linux thì gói mới thay gói cũ: xem bên dưới). Ở lần mở đầu tiên, Loah mang dữ liệu của bạn sang, và không bao giờ sửa hay xóa bất cứ thứ gì của Dictate, nên bạn vẫn quay lại Dictate được cho tới khi tự tay gỡ nó. Tóm tắt:
+Loah là Dictate dưới một cái tên mới, từ phiên bản 2.1.0. Với hệ điều hành, đây là một app mới, có tên và mã định danh riêng (`io.github.henryonai.loah`), nên bộ cài sẽ cài nó cạnh Dictate chứ không đè lên (trên Linux thì gói mới thay gói cũ: xem bên dưới). Ở lần mở đầu tiên, Loah mang dữ liệu của bạn sang, và không bao giờ sửa hay xóa bất cứ thứ gì của Dictate (ngoại lệ duy nhất là mục khởi động mà việc thay gói trên Linux để lại, mô tả bên dưới), nên bạn vẫn quay lại Dictate được cho tới khi tự tay gỡ nó. Tóm tắt:
 
 1. Cài Loah và mở một lần: Loah sẽ chép những gì bạn đã có.
 2. Trỏ MCP client của bạn sang Loah.
@@ -155,7 +155,7 @@ Khi Dictate đang chạy, hoặc được đặt tự mở khi khởi động m�
 - `whisper-models`, các model Whisper bạn đã tải, và `diarization-models`, các model tách người nói: trên cùng một ổ đĩa, nếu hệ thống file cho phép thì chúng được liên kết cứng (hard link) nên không tốn thêm chỗ, còn không thì được chép;
 - `Dictations`, các đoạn đọc đã lưu.
 
-Ngoài ra không chép gì khác (các file mà app Swift để lại trong cùng thư mục vẫn nằm yên). Việc chép chỉ làm một lần, sau đó hai app giữ cài đặt riêng: đổi gì ở Dictate thì Loah không thấy. Nếu Dictate đã bật tự mở khi khởi động máy, Loah bật *Tự mở Loah khi khởi động máy* cho chính nó ở lần mở đầu tiên đó; mục khởi động của Dictate vẫn còn cho tới khi bạn gỡ Dictate, nên tới lúc đó cả hai cùng chạy.
+Ngoài ra không chép gì khác (các file mà app Swift để lại trong cùng thư mục vẫn nằm yên). Việc chép chỉ làm một lần, sau đó hai app giữ cài đặt riêng: đổi gì ở Dictate thì Loah không thấy. Nếu Dictate đã bật tự mở khi khởi động máy, Loah bật *Tự mở Loah khi khởi động máy* cho chính nó ở lần mở đầu tiên đó. Mục khởi động của Dictate vẫn còn cho tới khi bạn gỡ Dictate, nên tới lúc đó cả hai cùng chạy. Trên Linux thì điều này chỉ đúng với mục khởi động chạy một chương trình Dictate riêng (ví dụ bản cài ở một chỗ khác): mục mà việc thay gói để lại chạy `/usr/bin/dictate`, giờ là script khởi động Loah, nên Loah gỡ nó đi, và từ đó chỉ có *Tự mở Loah khi khởi động máy* quyết định Loah có tự mở khi khởi động máy hay không.
 
 Nếu một mục chép không được (file đang được dùng, đĩa đầy), Loah vẫn đọc bản của Dictate cho mục đó, ở chế độ chỉ đọc, báo trong Cài đặt và thử lại ở lần mở sau. Những gì chính Loah lưu (cài đặt, model nó tải, đoạn đọc mới) luôn nằm trong thư mục của Loah. Vì vậy, khi việc chép các đoạn đọc đã lưu bị lỗi, mục **Mở thư mục đọc chính tả** trên menu khay mở thư mục `Dictations` của Dictate, nhưng các đoạn đọc mới vẫn được lưu vào thư mục `Dictations` của Loah.
 

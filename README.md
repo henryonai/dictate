@@ -139,7 +139,7 @@ The data of Dictate, if you used it, is not Loah's to remove: see [Upgrading fro
 
 ## Upgrading from Dictate
 
-Loah is Dictate under a new name, from version 2.1.0. To your system it is a new app, with its own name and identifier (`io.github.henryonai.loah`), so it installs beside Dictate instead of over it (on Linux the package replaces the old one: see below). On its first start Loah brings your things along, and it never changes or deletes anything of Dictate's, so you can go back until you remove Dictate yourself. In short:
+Loah is Dictate under a new name, from version 2.1.0. To your system it is a new app, with its own name and identifier (`io.github.henryonai.loah`), so it installs beside Dictate instead of over it (on Linux the package replaces the old one: see below). On its first start Loah brings your things along, and it never changes or deletes anything of Dictate's (the one exception is the login entry that the Linux package swap leaves, described below), so you can go back until you remove Dictate yourself. In short:
 
 1. Install Loah and open it once: it copies what you had.
 2. Point your MCP client at Loah.
@@ -155,7 +155,7 @@ On its first start Loah copies the four things that Dictate 2.0 saved, into its 
 - `whisper-models`, the Whisper models that you downloaded, and `diarization-models`, the speaker separation models: on the same drive they are linked where the file system allows it, which takes no more space, and otherwise copied;
 - `Dictations`, your saved dictations.
 
-Nothing else is copied (the files that the Swift app left in the same folder stay where they are). The copy is made once, and after it the two apps keep their own settings: a change in Dictate does not reach Loah. If Dictate was set to open at login, Loah turns on **Open Loah at login** for itself at that first start; Dictate's own login entry stays until you remove Dictate, so until then both start.
+Nothing else is copied (the files that the Swift app left in the same folder stay where they are). The copy is made once, and after it the two apps keep their own settings: a change in Dictate does not reach Loah. If Dictate was set to open at login, Loah turns on **Open Loah at login** for itself at that first start. Dictate's own login entry stays until you remove Dictate, so until then both start. On Linux that is true only of an entry that starts a Dictate program of its own (one installed in another place, for example): the entry that the package swap leaves behind runs `/usr/bin/dictate`, which is now the script that starts Loah, so Loah removes it, and **Open Loah at login** alone decides whether Loah opens at login.
 
 If an item cannot be copied (a file in use, a full disk), Loah goes on reading Dictate's copy of it, read only, says so in Settings and tries again at the next start. What Loah saves itself (its settings, a model it downloads, a new dictation) always goes to its own folders. So while the copy of the saved dictations has failed, the tray menu's **Open dictations folder** opens Dictate's `Dictations` folder, but new dictations are saved in Loah's `Dictations` folder.
 

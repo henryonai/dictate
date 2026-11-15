@@ -563,21 +563,26 @@ pub(crate) async fn blocking<T: Send + 'static>(
         .map_err(|e| format!("The work stopped unexpectedly: {e}"))
 }
 
-/// Turns launch at login on or off in the system, when it isn't already as asked.
+/// Turns launch at login on or off in the system, when it isn't already as asked. Turned off, it also removes the login entry
+/// that Dictate left behind where it starts Loah (a person who upgraded before Loah removed it at the first start would never be
+/// rid of it otherwise: Loah's own entry is the only one that this switch knew).
 pub(crate) fn set_launch_at_login(app: &AppHandle, enabled: bool) -> Result<(), String> {
     let manager = app.autolaunch();
     let current = manager
         .is_enabled()
         .map_err(|e| format!("Could not read the launch at login setting: {e}"))?;
-    if current == enabled {
-        return Ok(());
+    if current != enabled {
+        let changed = if enabled {
+            manager.enable()
+        } else {
+            manager.disable()
+        };
+        changed.map_err(|e| format!("Could not change launch at login: {e}"))?;
     }
-    let changed = if enabled {
-        manager.enable()
-    } else {
-        manager.disable()
-    };
-    changed.map_err(|e| format!("Could not change launch at login: {e}"))
+    if !enabled {
+        crate::legacy::remove_dictate_wrapper_autostart();
+    }
+    Ok(())
 }
 
 /// Opens a folder in the file manager, creating it first if needed.

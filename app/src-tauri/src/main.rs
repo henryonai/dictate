@@ -244,9 +244,12 @@ fn setup(
     }
     // The setting is otherwise applied only when it changes, and Loah has no login item of its own yet: at the start after the
     // migration was done, the settings that came over decide (and a registration that failed is tried again at the next).
-    match carried.settle_login_item(store.get().launch_at_login, || {
-        commands::set_launch_at_login(app.handle(), true)
-    }) {
+    // On Linux Dictate's own login entry runs `/usr/bin/dictate`, which is now Loah's wrapper: it goes, or Loah would start twice.
+    match carried.settle_login_item(
+        store.get().launch_at_login,
+        || commands::set_launch_at_login(app.handle(), true),
+        legacy::remove_dictate_wrapper_autostart,
+    ) {
         legacy::LoginItem::Registered => {
             log::info!("Registered Loah to start at login, as the settings from Dictate say");
         }

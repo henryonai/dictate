@@ -319,6 +319,15 @@ describe("the two READMEs", () => {
       expect(text).not.toContain("permission-guide-shown");
     }
     expect(sections.en).toMatch(/never (?:changes?|changed|touch(?:es|ed)?|delet(?:es?|ed))/i);
+    // The one exception is the login entry that the Linux package swap leaves: it starts Loah (`/usr/bin/dictate` is Loah's script now), so Loah
+    // removes it, while on the other systems Dictate's entry stays until Dictate is removed. Both say so where they speak of the login entry.
+    const paragraph = (text: string, needle: string) => text.split("\n\n").find((part) => part.includes(needle)) ?? "";
+    for (const [language, needle] of [["en", "Dictate's own login entry"], ["vi", "Mục khởi động của Dictate"]] as const) {
+      const about = paragraph(sections[language], needle);
+      expect(about, `${language}: the paragraph about the login entry`).not.toBe("");
+      expect(about, language).toContain("Linux");
+      expect(about, language).toContain("`/usr/bin/dictate`");
+    }
     // A command is the same in both languages, the ones inside a list item too.
     expect(allCode(sections.vi)).toEqual(allCode(sections.en));
     expect(allCode(readmeVi)).toEqual(allCode(readme));
