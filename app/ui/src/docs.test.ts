@@ -328,6 +328,9 @@ describe("the two READMEs", () => {
       expect(about, language).toContain("Linux");
       expect(about, language).toContain("`/usr/bin/dictate`");
     }
+    // While an item failed to copy, the copy is tried again at every start: what a person deletes in Loah in the meantime may come back.
+    expect(paragraph(sections.en, "tries again at every start"), "en: the retry and what it does to a deletion").toContain("may come back");
+    expect(paragraph(sections.vi, "thử lại ở mỗi lần mở"), "vi: the retry and what it does to a deletion").toContain("có thể quay lại");
     // A command is the same in both languages, the ones inside a list item too.
     expect(allCode(sections.vi)).toEqual(allCode(sections.en));
     expect(allCode(readmeVi)).toEqual(allCode(readme));
