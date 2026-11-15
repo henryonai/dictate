@@ -26,9 +26,9 @@
   }
 
   /**
-   * One badge at most, by priority: failed, processing, not summarized, N actions. A job that runs is "processing" even when an earlier run
-   * left its error on the row (see `failed`). The count is of the action items that are open, as the Actions tab counts them, and a
-   * recording with none open has no badge.
+   * One badge at most, by priority: failed, processing, not summarized, N actions. A job that runs is "processing": the Rust side sends the
+   * job or the error, not both, and the store clears the error of an earlier run when a job starts (see `failed`). The count is of the action
+   * items that are open, as the Actions tab counts them, and a recording with none open has no badge.
    */
   const badge = $derived.by((): Badge | null => {
     if (row.live) {
@@ -137,16 +137,26 @@
     color: var(--muted);
     white-space: nowrap;
   }
+  /* When the line is too narrow (a Vietnamese "1 giờ 5 phút" next to "đang xử lý 100%" at the narrowest list), the duration is what gives way,
+     with an ellipsis: the badge holds the figure that matters (the percent, the count), and the duration is on the page of the recording.
+     The padding and the margin are for the marks of the letters, as in the badge. */
   .duration {
-    flex: none;
+    flex: 0 1 auto;
+    min-width: 0;
+    padding: 1px 0;
+    margin: -1px 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   /* A pill with a line around it and no fill, so that its text keeps the contrast that the text of the list has on the panel and on the
-     selected row alike. It gives way (and ends in an ellipsis) when the list is at its narrowest. */
+     selected row alike. It does not shrink before the duration has: it is cut with an ellipsis only when it alone is wider than the line. */
   .badge {
     display: inline-flex;
+    flex: none;
     align-items: center;
     gap: 4px;
     min-width: 0;
+    max-width: 100%;
     padding: 0 6px;
     font-size: 11px;
     line-height: 14px;

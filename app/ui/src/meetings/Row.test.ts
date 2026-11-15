@@ -29,7 +29,6 @@ test("the_title_is_one_line_with_the_full_title_on_hover", () => {
   // The whole title is in the page, so that nothing is cut but the way it is drawn: a tooltip and the name of the button say all of it.
   const title = screen.getByText(LONG);
   expect(title).toHaveAttribute("title", LONG);
-  expect(screen.getByRole("button")).toHaveAttribute("aria-label", expect.stringContaining(LONG));
   expect(screen.getByRole("button").getAttribute("aria-label")?.startsWith(LONG)).toBe(true);
   expect(container.querySelectorAll(".title")).toHaveLength(1);
 
@@ -113,6 +112,37 @@ test("a recording with no summary says that it has none, and that wins over the 
   expect(badge(container)).toHaveTextContent(/^not summarized$/);
 });
 
+test("a recording that failed or is being processed before it has a summary says so, and the missing summary does not hide it", () => {
+  // The shapes that really come: a recording is "not summarized" while its job runs and after its job failed. The order of the checks
+  // decides which badge a row has: failed and processing are asked before the summary.
+  const failed = render(Row, {
+    row: fakeRow({ hasSummary: false, openTasks: 0, error: fakeError({ kind: "Api", key: "meetings.error.summary_failed" }) }),
+    selected: false,
+    onselect: vi.fn(),
+  });
+  expect(badges(failed.container)).toHaveLength(1);
+  expect(badge(failed.container)).toHaveTextContent(/^failed$/);
+  expect(badge(failed.container)).toHaveClass("failed");
+  failed.unmount();
+
+  const cancelled = render(Row, {
+    row: fakeRow({ hasSummary: false, openTasks: 0, error: fakeError({ kind: "Cancelled", key: "meetings.error.cancelled", detail: null }) }),
+    selected: false,
+    onselect: vi.fn(),
+  });
+  expect(badge(cancelled.container)).toHaveTextContent(/^Cancelled$/);
+  cancelled.unmount();
+
+  const busy = render(Row, {
+    row: fakeRow({ hasSummary: false, openTasks: 0, duration: null, live: fakeJob({ step: "summary", progress: 0.67 }) }),
+    selected: false,
+    onselect: vi.fn(),
+  });
+  expect(badges(busy.container)).toHaveLength(1);
+  expect(badge(busy.container)).toHaveTextContent(/^processing 67%$/);
+  expect(badge(busy.container)).toHaveClass("busy");
+});
+
 test("a cancelled recording says so in the place of the failed badge, and keeps the red", () => {
   const { container } = render(Row, {
     row: fakeRow({ error: fakeError({ kind: "Cancelled", key: "meetings.error.cancelled", detail: null }) }),
@@ -151,6 +181,16 @@ test("the name of the button says the title, how long it is and its state, to a 
   expect(screen.getByRole("button")).toHaveAccessibleName("Weekly planning, 12 min, failed, Click for how to fix");
 });
 
+test("the name of the button is in Vietnamese when the language is", () => {
+  setLanguage("vi");
+  const ok = render(Row, { row: fakeRow({ title: LONG, duration: 720, openTasks: 2 }), selected: false, onselect: vi.fn() });
+  expect(screen.getByRole("button")).toHaveAccessibleName(`${LONG}, 12 phút, 2 việc`);
+  ok.unmount();
+
+  render(Row, { row: fakeRow({ error: fakeError() }), selected: false, onselect: vi.fn() });
+  expect(screen.getByRole("button")).toHaveAccessibleName("Weekly planning, 12 phút, lỗi, Bấm để xem cách sửa");
+});
+
 test("nothing of a row is wider than the list: every part of it may shrink and the text that does not fit ends in an ellipsis", () => {
   // The list is 240 px at the narrowest (`min-width` of the aside), and a row loses 56 px of it to its padding, border, icon and gap.
   const text = declarationsOf(styles, ".text");
@@ -158,10 +198,18 @@ test("nothing of a row is wider than the list: every part of it may shrink and t
   const line = declarationsOf(styles, ".subtitle");
   expect(line["min-width"]).toBe("0");
   expect(line["white-space"]).toBe("nowrap");
-  // The duration keeps its width; the badge gives way, and cuts its words with an ellipsis rather than spill.
-  expect(declarationsOf(styles, ".duration").flex).toBe("none");
+  // What is too wide is the duration, which gives way first and ends in an ellipsis ("1 giờ 5 p…")...
+  const duration = declarationsOf(styles, ".duration");
+  expect(duration.flex).toBe("0 1 auto");
+  expect(duration["min-width"]).toBe("0");
+  expect(duration.overflow).toBe("hidden");
+  expect(duration["text-overflow"]).toBe("ellipsis");
+  // ...so that the badge keeps its figure ("đang xử lý 100%", "12 actions"): it does not shrink while the duration has room to give. Its words
+  // are cut with an ellipsis only when the badge alone is wider than the line.
   const badgeRule = declarationsOf(styles, ".badge");
+  expect(badgeRule.flex).toBe("none");
   expect(badgeRule["min-width"]).toBe("0");
+  expect(badgeRule["max-width"]).toBe("100%");
   const label = declarationsOf(styles, ".badge > span:last-child");
   expect(label.overflow).toBe("hidden");
   expect(label["text-overflow"]).toBe("ellipsis");
