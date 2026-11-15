@@ -247,6 +247,11 @@ describe("the two READMEs", () => {
     const button = /const UPGRADE_URL = "([^"]+)";/.exec(read("app/ui/src/settings/General.svelte"))?.[1] ?? "";
     expect(button).toBe("https://github.com/henryonai/loah#upgrading-from-dictate");
     expect(anchors(readme).has(button.split("#")[1])).toBe(true);
+    // In the Vietnamese interface it opens README.vi.md, a page of its own on GitHub, at the anchor of its own heading.
+    const buttonVi = /const UPGRADE_URL_VI = "([^"]+)";/.exec(read("app/ui/src/settings/General.svelte"))?.[1] ?? "";
+    expect(buttonVi).toBe("https://github.com/henryonai/loah/blob/main/README.vi.md#nâng-cấp-từ-dictate");
+    expect(anchors(readmeVi).has(buttonVi.split("#")[1])).toBe(true);
+    expect(existsSync(join(repoRoot, "README.vi.md"))).toBe(true);
 
     for (const [language, text] of Object.entries(sections)) {
       // What is copied, and where it goes: the four things Dictate 2.0.0 wrote, in the folders of Loah.

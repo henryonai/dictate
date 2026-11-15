@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { api, errorText } from "../lib/api";
   import type { Theme, UiLanguage } from "../lib/api";
-  import { t } from "../lib/i18n";
+  import { currentLanguage, t } from "../lib/i18n";
   import { recordHotkey } from "../lib/recording";
   import type { SettingsStore } from "../lib/settings-store.svelte";
   import ChoiceOrText from "./ChoiceOrText.svelte";
@@ -24,8 +24,10 @@
   // THIRD_PARTY_NOTICES.md of the repository: Loah's licenses, and those of what it includes (FFmpeg and the others).
   const NOTICES_URL = "https://github.com/henryonai/loah/blob/main/THIRD_PARTY_NOTICES.md";
 
-  // The section of the README about upgrading: what is copied, what to re-point, and how to remove the old app.
+  // The section of the README about upgrading: what is copied, what to re-point, and how to remove the old app. The Vietnamese one is a
+  // page of its own (the repository shows README.md), and the anchor is the slug of its heading, "Nâng cấp từ Dictate".
   const UPGRADE_URL = "https://github.com/henryonai/loah#upgrading-from-dictate";
+  const UPGRADE_URL_VI = "https://github.com/henryonai/loah/blob/main/README.vi.md#nâng-cấp-từ-dictate";
 
   const UI_LANGUAGES: UiLanguage[] = ["system", "en", "vi"];
   const THEMES: Theme[] = ["system", "light", "dark"];
@@ -70,7 +72,8 @@
 
   function openUpgradeGuide() {
     upgradeError = "";
-    api.openUrl(UPGRADE_URL).catch((e: unknown) => (upgradeError = errorText(e)));
+    const url = currentLanguage() === "vi" ? UPGRADE_URL_VI : UPGRADE_URL;
+    api.openUrl(url).catch((e: unknown) => (upgradeError = errorText(e)));
   }
 
   async function openMeetingsFolder() {

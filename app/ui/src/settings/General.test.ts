@@ -40,6 +40,27 @@ test("the notice is in Vietnamese when the interface is", async () => {
   expect(screen.getByRole("button", { name: "Xem cách chuyển sang Loah" })).toBeInTheDocument();
 });
 
+test("the button of the notice opens the Vietnamese README, at its own section, in the Vietnamese interface", async () => {
+  const user = userEvent.setup();
+  vi.mocked(api.dictateStillPresent).mockResolvedValue(true);
+  render(General, { store: await loadedStore({ ui_language: "vi" }) });
+
+  await user.click(await screen.findByRole("button", { name: "Xem cách chuyển sang Loah" }));
+
+  // README.vi.md is a page of its own on GitHub (the repository shows README.md), and "Nâng cấp từ Dictate" is the anchor of its heading.
+  expect(api.openUrl).toHaveBeenCalledExactlyOnceWith("https://github.com/henryonai/loah/blob/main/README.vi.md#nâng-cấp-từ-dictate");
+});
+
+test("the language of the system decides the README of the button when the interface follows the system", async () => {
+  const user = userEvent.setup();
+  vi.mocked(api.dictateStillPresent).mockResolvedValue(true);
+  render(General, { store: await loadedStore({ ui_language: "system", system_language: "vi" }) });
+
+  await user.click(await screen.findByRole("button", { name: "Xem cách chuyển sang Loah" }));
+
+  expect(api.openUrl).toHaveBeenCalledExactlyOnceWith("https://github.com/henryonai/loah/blob/main/README.vi.md#nâng-cấp-từ-dictate");
+});
+
 test("no notice when the old app is not there, or when that can't be told", async () => {
   render(General, { store: await loadedStore() });
   await screen.findByLabelText("Shortcut");
