@@ -182,8 +182,10 @@
     background: var(--warn-bg);
     border-radius: 8px;
   }
-  /* The columns can be as narrow as 300 and 280 px: at the narrowest window (960 px) with the list open (280 px) the detail has 640 px
-     for them, less its scroll bar, and a gap. They grow in the proportions of 480 to 420 (layout.test.ts adds it up). */
+  /* The columns can be as narrow as 300 and 280 px. The list is beside the recording only in a window of 1100 px or more (below that it
+     is closed, or lies over the recording): at the narrowest window, 960 px, with the list closed, the two columns and the gap have 903 px
+     (what is left once the padding of the detail and a scroll bar are taken off), and at 1100 px with the list open (280 px and its
+     border) they have 762 px. They grow in the proportions of 480 to 420 (layout.test.ts adds it up). */
   .split {
     display: grid;
     grid-template-columns: minmax(300px, 480fr) minmax(280px, 420fr);
@@ -198,6 +200,12 @@
     flex-direction: column;
     min-width: 0;
     min-height: 0;
+  }
+  /* The left column is a container of its size (it has the height of the row and the width of its track, whatever is in it): the large
+     picture of the player is capped by its height (`cqh`) so that the transcript keeps its room. */
+  .left {
+    container-name: column;
+    container-type: size;
   }
   .none {
     margin: 0;

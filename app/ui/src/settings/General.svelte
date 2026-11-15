@@ -1,7 +1,8 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import { api, errorText } from "../lib/api";
-  import type { UiLanguage } from "../lib/api";
-  import { t } from "../lib/i18n";
+  import type { Theme, UiLanguage } from "../lib/api";
+  import { currentLanguage, t } from "../lib/i18n";
   import { recordHotkey } from "../lib/recording";
   import type { SettingsStore } from "../lib/settings-store.svelte";
   import ChoiceOrText from "./ChoiceOrText.svelte";
@@ -20,14 +21,38 @@
   // Where the desktop owns the shortcut, or offers none, changing it here would do nothing.
   const hotkeyChangeable = $derived(hotkey?.backend !== "portal" && hotkey?.error !== "hotkey.wayland_unavailable");
 
-  // THIRD_PARTY_NOTICES.md of the repository: Dictate's licenses, and those of what it includes (FFmpeg and the others).
-  const NOTICES_URL = "https://github.com/henryonai/dictate/blob/main/THIRD_PARTY_NOTICES.md";
+  // THIRD_PARTY_NOTICES.md of the repository: Loah's licenses, and those of what it includes (FFmpeg and the others).
+  const NOTICES_URL = "https://github.com/henryonai/loah/blob/main/THIRD_PARTY_NOTICES.md";
+
+  // The section of the README about upgrading: what is copied, what to re-point, and how to remove the old app. The Vietnamese one is a
+  // page of its own (the repository shows README.md), and the anchor is the slug of its heading, "Nâng cấp từ Dictate".
+  const UPGRADE_URL = "https://github.com/henryonai/loah#upgrading-from-dictate";
+  const UPGRADE_URL_VI = "https://github.com/henryonai/loah/blob/main/README.vi.md#nâng-cấp-từ-dictate";
 
   const UI_LANGUAGES: UiLanguage[] = ["system", "en", "vi"];
+  const THEMES: Theme[] = ["system", "light", "dark"];
   const DICTATION_LANGUAGES = ["en-US", "vi-VN", "ja-JP", "zh-CN", "ko-KR", "fr-FR", "de-DE", "es-ES"];
 
   let folderError = $state("");
   let licensesError = $state("");
+  // The old app is still on this machine (running, or set to start at login). Asked when the page is shown and again when the window
+  // gets the focus back (a person quits it, or removes it, in another window), so it is true to the moment; where the answer can't be
+  // had the notice stays as it was, and nothing else says so.
+  let dictateStillPresent = $state(false);
+  let upgradeError = $state("");
+
+  function lookForDictate() {
+    api
+      .dictateStillPresent()
+      .then((present) => (dictateStillPresent = present))
+      .catch(() => {});
+  }
+
+  onMount(() => {
+    lookForDictate();
+    window.addEventListener("focus", lookForDictate);
+    return () => window.removeEventListener("focus", lookForDictate);
+  });
 
   const dictationLanguages = () => DICTATION_LANGUAGES.map((code) => ({ value: code, label: t(`lang.${code}`) }));
 
@@ -45,6 +70,12 @@
     api.openUrl(NOTICES_URL).catch((e: unknown) => (licensesError = errorText(e)));
   }
 
+  function openUpgradeGuide() {
+    upgradeError = "";
+    const url = currentLanguage() === "vi" ? UPGRADE_URL_VI : UPGRADE_URL;
+    api.openUrl(url).catch((e: unknown) => (upgradeError = errorText(e)));
+  }
+
   async function openMeetingsFolder() {
     folderError = "";
     try {
@@ -55,6 +86,16 @@
   }
 </script>
 
+{#if dictateStillPresent}
+  <div class="notice">
+    <p role="status">{t("general.dictate_still_installed")}</p>
+    <button type="button" onclick={openUpgradeGuide}>{t("general.dictate_still_installed_button")}</button>
+    {#if upgradeError}
+      <p class="error" role="alert">{upgradeError}</p>
+    {/if}
+  </div>
+{/if}
+
 <section class="group" aria-labelledby="general-interface">
   <h2 id="general-interface">{t("general.interface")}</h2>
   <Field label={t("general.ui_language")}>
@@ -64,6 +105,14 @@
     >
       {#each UI_LANGUAGES as language (language)}
         <option value={language}>{t(`general.ui_language.${language}`)}</option>
+      {/each}
+    </select>
+  </Field>
+  <!-- Saved here; Rust tells every window (`theme-changed`), this one too, and each applies it at once. -->
+  <Field label={t("general.theme")}>
+    <select value={view.theme} onchange={(event) => store.update({ theme: event.currentTarget.value as Theme })}>
+      {#each THEMES as theme (theme)}
+        <option value={theme}>{t(`general.theme.${theme}`)}</option>
       {/each}
     </select>
   </Field>
@@ -145,3 +194,17 @@
     <p class="error">{licensesError}</p>
   {/if}
 </section>
+
+<style>
+  .notice {
+    margin-bottom: 16px;
+    padding: 10px 14px;
+    color: var(--warn-fg);
+    background: var(--warn-bg);
+    border-radius: 6px;
+  }
+  .notice p {
+    margin: 0 0 8px;
+    overflow-wrap: anywhere;
+  }
+</style>

@@ -1,0 +1,6 @@
+//! The MCP server Loah offers to AI clients: protocol over stdio, tools supplied by the caller.
+
+pub mod server;
+pub mod tools;
+
+pub use server::{McpServer, Tool, ToolError, ToolFn, LEGACY_VERSIONS, MODERN_VERSIONS};

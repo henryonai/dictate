@@ -51,7 +51,7 @@ jobs:
           shared-key: ${{ runner.os }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # The sherpa-onnx library (onnxruntime inside), and why each system gets it from where it does. The one thing that is the same
-      # everywhere: the speech synthesis of sherpa-onnx has espeak-ng in it, which is GPL-3.0 and which Dictate has no use for, and
+      # everywhere: the speech synthesis of sherpa-onnx has espeak-ng in it, which is GPL-3.0 and which Loah has no use for, and
       # scripts/check-no-espeak.sh (the `app` job) fails when a program or a library that is shipped has any of it.
       #  - macOS: the static library that the build script of sherpa-onnx-sys downloads and unpacks into
       #    target/sherpa-onnx-prebuilt (20 MB). A static link keeps out what the program does not use, and the check shows it.
@@ -66,7 +66,7 @@ jobs:
       #    build script. The one it would download is built with the static C runtime (/MT, "RuntimeLibrary=MT_StaticRelease" in its
       #    objects), and whisper.cpp and Rust use the DLL one (/MD): the linker refuses to put them in one program (LNK2038,
       #    LNK2005). The /MD build with the synthesis in it was used first, and the linker pulls espeak-ng into the program from
-      #    it, /OPT:REF or not (check-no-espeak.sh found it in dictate.exe; the one object of the C API that the program needs
+      #    it, /OPT:REF or not (check-no-espeak.sh found it in loah.exe; the one object of the C API that the program needs
       #    also holds the synthesis, which refers to espeak-ng).
       #    The build without the synthesis has no espeak-ng.lib, piper_phonemize.lib or ucd.lib, which the build script of
       #    sherpa-onnx-sys names for every static build: copies of kissfft-float.lib stand in for them (the linker takes nothing
@@ -104,8 +104,8 @@ jobs:
           "SHERPA_ONNX_LIB_DIR=$(Join-Path $dir 'lib')" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       #  - Linux: the shared library of the same release without text to speech (9 MB). The shared library has all of its own code in
       #    it, so the ordinary one ships espeak-ng with the app (static on Linux aborts next to whisper.cpp, see
-      #    crates/dictate-services/Cargo.toml). scripts/fetch-sherpa-onnx-no-tts.sh downloads it, checks the SHA-256 that it pins
-      #    before it unpacks anything and prints the folder for SHERPA_ONNX_LIB_DIR, which crates/dictate-services/build.rs requires on
+      #    crates/loah-services/Cargo.toml). scripts/fetch-sherpa-onnx-no-tts.sh downloads it, checks the SHA-256 that it pins
+      #    before it unpacks anything and prints the folder for SHERPA_ONNX_LIB_DIR, which crates/loah-services/build.rs requires on
       #    Linux. Two statements, so that the failure of the script fails the step (`echo "...$(script)"` would not).
       - uses: actions/cache@v4
         if: runner.os == 'Linux'
@@ -153,8 +153,8 @@ jobs:
       - name: Record the primary monitor (Windows)
         if: runner.os == 'Windows'
         env:
-          DICTATE_TEST_SCREEN: "1"
-        run: cargo test -p dictate-services --lib --locked -- --ignored --nocapture windows_records_three_seconds_of_the_primary_monitor
+          LOAH_TEST_SCREEN: "1"
+        run: cargo test -p loah-services --lib --locked -- --ignored --nocapture windows_records_three_seconds_of_the_primary_monitor
       # Speaker separation on the real models. It is the only run of sherpa-onnx next to whisper.cpp on each system: on
       # Linux the static build aborted here with "free(): invalid pointer", and this step keeps that from coming back
       # unseen. The two models (46 MB) are cached under the SHA-256 of each: a new model is a new key. They are
@@ -174,7 +174,7 @@ jobs:
           curl -fsSL --retry 3 -o nemo_en_titanet_small.onnx https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/nemo_en_titanet_small.onnx
       # On Linux the programs load the sherpa-onnx .so files from target/debug. rust-cache saves only build/, deps/
       # and .fingerprint/ of it, so after a restore they are gone, and the build script of sherpa-onnx-sys, which
-      # copied them, is up to date and does not run again: the one of dictate-services has to bring them back. Delete
+      # copied them, is up to date and does not run again: the one of loah-services has to bring them back. Delete
       # them as a restore does. The next step builds sherpa-onnx-sys again (its features differ in this build), so it
       # copies them itself and proves nothing about the other one: the `app` job does, where nothing builds before the
       # check of target/debug/*.so (a copy in the wrong folder, as with Cargo 1.100, fails it there).
@@ -187,8 +187,8 @@ jobs:
       # gives the app's folders under the profile); it runs on every system, and Windows is where it can fail.
       - name: Separate the speakers of a recording with the real models
         env:
-          DICTATE_TEST_DIARIZE_DIR: ${{ runner.temp }}/diarize-models
-        run: cargo test -p dictate-services --lib --locked -- --ignored --nocapture diarizer_finds_two_speakers no_audio_and_silence_have_no_turns diarizer_loads_models_from_a_folder_with_a_non_ascii_name
+          LOAH_TEST_DIARIZE_DIR: ${{ runner.temp }}/diarize-models
+        run: cargo test -p loah-services --lib --locked -- --ignored --nocapture diarizer_finds_two_speakers no_audio_and_silence_have_no_turns diarizer_loads_models_from_a_folder_with_a_non_ascii_name
 
   # The app: its web UI (type check, tests, build) and the Tauri shell around it, on every OS.
   app:
@@ -274,15 +274,15 @@ jobs:
       - run: pnpm --dir app/ui check
       - run: pnpm --dir app/ui test
       - run: pnpm --dir app/ui build
-      - run: cargo build -p dictate-app --locked
-      # sherpa-onnx comes with espeak-ng, which is GPL-3.0 and which Dictate has no use for (it is for speech synthesis). Windows and
+      - run: cargo build -p loah-app --locked
+      # sherpa-onnx comes with espeak-ng, which is GPL-3.0 and which Loah has no use for (it is for speech synthesis). Windows and
       # Linux link the builds of sherpa-onnx that have none (see the test job), and macOS links the static library, which keeps out what
       # the program does not use: no program or library that is shipped may have any of it. On Windows the symbol names are in a
       # separate file, so the script looks for the string that espeak-ng reads its data path from. scripts/check-no-espeak.sh says more.
       - name: Check that no espeak-ng code is linked into the program (macOS, Windows)
         if: runner.os != 'Linux'
         shell: bash
-        run: bash scripts/check-no-espeak.sh "target/debug/dictate${{ runner.os == 'Windows' && '.exe' || '' }}"
+        run: bash scripts/check-no-espeak.sh "target/debug/loah${{ runner.os == 'Windows' && '.exe' || '' }}"
       # The shared libraries on Linux have all of their code in them whether or not the program uses it: the program is checked, and so
       # are the libraries that come with it and that a package has to ship: the copies beside the program (a pattern that matches
       # nothing fails the step and says so: the build has not put them there) and the folder that they are taken from, which is what
@@ -290,7 +290,7 @@ jobs:
       - name: Check that no espeak-ng code is in the program or its shared libraries (Linux)
         if: runner.os == 'Linux'
         shell: bash
-        run: bash scripts/check-no-espeak.sh target/debug/dictate target/debug/*.so "$SHERPA_ONNX_LIB_DIR"/*.so*
+        run: bash scripts/check-no-espeak.sh target/debug/loah target/debug/*.so "$SHERPA_ONNX_LIB_DIR"/*.so*
       # The macOS bundle is where Info.plist and Entitlements.plist take effect. A debug bundle is the quick one to
       # build, and the identity "-" signs it ad hoc, which is what applies the entitlements: check that the reason for
       # the microphone and the right to use it ended up in it.
@@ -301,7 +301,7 @@ jobs:
           APPLE_SIGNING_IDENTITY: "-"
         run: |
           pnpm tauri build --debug --bundles app
-          bundle=../target/debug/bundle/macos/Dictate.app
+          bundle=../target/debug/bundle/macos/Loah.app
           plutil -extract NSMicrophoneUsageDescription raw "$bundle/Contents/Info.plist"
           codesign --verify --strict "$bundle"
           codesign -d --entitlements - "$bundle" 2>&1 | grep com.apple.security.device.audio-input
@@ -406,10 +406,10 @@ jobs:
       - run: cargo check --workspace --all-targets --locked --target x86_64-apple-darwin
 
   # The ffmpeg that ships with the app: a minimal build of ffmpeg under the LGPL v2.1 or later, made from source by scripts/build-ffmpeg.sh,
-  # as `dictate-ffmpeg` next to the app (the installers are made in the release workflow; this job is where the build and its flags are
+  # as `loah-ffmpeg` next to the app (the installers are made in the release workflow; this job is where the build and its flags are
   # tried on every change). Each row builds one target, checks that it is a plain LGPL build (scripts/check-ffmpeg-lgpl.sh: no GPL or
   # non-free option or library, only the libraries of the system) and keeps it as an artifact. The rows that can run their own build
-  # then run the tests of the code that runs ffmpeg with it (DICTATE_FFMPEG), so that CI tests the ffmpeg that ships and not the one of
+  # then run the tests of the code that runs ffmpeg with it (LOAH_FFMPEG), so that CI tests the ffmpeg that ships and not the one of
   # brew, apt or choco, as the test job above does for the rest of the tests.
   #  - macOS: both targets are built on the arm64 runner, the Intel one cross-compiled (nasm for its assembly); only the arm64 one is run.
   #  - Linux: fully static, with libvpx, libopus and zlib from the static archives of the Ubuntu packages.
@@ -417,7 +417,7 @@ jobs:
   ffmpeg:
     name: ffmpeg (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
-    # A cold build of ffmpeg takes about 3 minutes; a cold build of what dictate-services is made of (whisper.cpp) takes the rest, as in the test job.
+    # A cold build of ffmpeg takes about 3 minutes; a cold build of what loah-services is made of (whisper.cpp) takes the rest, as in the test job.
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -437,6 +437,16 @@ jobs:
             exe: .exe
     steps:
       - uses: actions/checkout@v4
+      # What loah-services is built with, as in the test job: the Rust toolchain and its cache (read, not written: what this job builds is
+      # part of what that one does). They come first: when the cache that is restored is not an exact match (any change of Cargo.toml or
+      # Cargo.lock) Swatinem/rust-cache cleans target/ before it unpacks, and the ffmpeg that was put there a step earlier would be gone.
+      - uses: dtolnay/rust-toolchain@stable
+        if: matrix.tests
+      - uses: Swatinem/rust-cache@v2
+        if: matrix.tests
+        with:
+          shared-key: ${{ runner.os }}
+          save-if: false
       # What the build made, under the hash of the script (it has the version, the flags and the pins of the source in it).
       - uses: actions/cache@v4
         id: ffmpeg-build
@@ -462,14 +472,14 @@ jobs:
         run: bash scripts/build-ffmpeg.sh ${{ matrix.target }} target/ffmpeg/${{ matrix.target }}
       - name: Check that it is a plain LGPL ffmpeg
         shell: bash
-        run: bash scripts/check-ffmpeg-lgpl.sh target/ffmpeg/${{ matrix.target }}/dictate-ffmpeg${{ matrix.exe }}
+        run: bash scripts/check-ffmpeg-lgpl.sh target/ffmpeg/${{ matrix.target }}/loah-ffmpeg${{ matrix.exe }}
       # The program and the line that it was configured with (the written offer of the source points at it), for the job that runs the
       # Windows one and for the release. Before the tests: a test that fails must not keep them from the job after this one.
       - uses: actions/upload-artifact@v4
         with:
-          name: dictate-ffmpeg-${{ matrix.target }}
+          name: loah-ffmpeg-${{ matrix.target }}
           path: |
-            target/ffmpeg/${{ matrix.target }}/dictate-ffmpeg${{ matrix.exe }}
+            target/ffmpeg/${{ matrix.target }}/loah-ffmpeg${{ matrix.exe }}
             target/ffmpeg/${{ matrix.target }}/BUILDCONF-${{ matrix.target }}.txt
           if-no-files-found: error
           retention-days: 7
@@ -477,7 +487,7 @@ jobs:
         if: matrix.tests
         shell: bash
         run: |
-          ffmpeg="target/ffmpeg/${{ matrix.target }}/dictate-ffmpeg"
+          ffmpeg="target/ffmpeg/${{ matrix.target }}/loah-ffmpeg"
           "$ffmpeg" -version | head -n 1
           encoders="$("$ffmpeg" -hide_banner -encoders)"
           echo "$encoders" | grep -E '^ V'
@@ -498,15 +508,7 @@ jobs:
           for name in g722 g726 shorten als; do
             echo "$decoders" | grep -q " $name " || { echo "the decoder $name is not in the build"; exit 1; }
           done
-      # What dictate-services is built with, as in the test job: the Rust toolchain and its cache (read, not written: what this job builds is
-      # part of what that one does), and the sherpa-onnx library of the system.
-      - uses: dtolnay/rust-toolchain@stable
-        if: matrix.tests
-      - uses: Swatinem/rust-cache@v2
-        if: matrix.tests
-        with:
-          shared-key: ${{ runner.os }}
-          save-if: false
+      # The sherpa-onnx library of the system, which loah-services is built with (the Rust toolchain and its cache are the steps above).
       - uses: actions/cache@v4
         if: runner.os == 'macOS' && matrix.tests
         with:
@@ -530,17 +532,17 @@ jobs:
           cmake libclang-dev libasound2-dev libpipewire-0.3-dev libspa-0.2-dev
           libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
       # The tests that run ffmpeg: decoding what symphonia cannot read, writing audio.m4a, the encoders of a recording (picked and probed),
-      # the mux. CI is set by Actions, so a missing ffmpeg fails them instead of skipping them; DICTATE_FFMPEG is what `Tools::find` takes first.
-      # The program is run first: a DICTATE_FFMPEG that does not run fails the step here, and not as a test that was skipped or that ran with
+      # the mux. CI is set by Actions, so a missing ffmpeg fails them instead of skipping them; LOAH_FFMPEG is what `Tools::find` takes first.
+      # The program is run first: a LOAH_FFMPEG that does not run fails the step here, and not as a test that was skipped or that ran with
       # another ffmpeg (a test of tools.rs also checks that `Tools::find` gives this one).
       - name: Test the media and recording code with this ffmpeg
         if: matrix.tests
         shell: bash
         env:
-          DICTATE_FFMPEG: ${{ github.workspace }}/target/ffmpeg/${{ matrix.target }}/dictate-ffmpeg${{ matrix.exe }}
+          LOAH_FFMPEG: ${{ github.workspace }}/target/ffmpeg/${{ matrix.target }}/loah-ffmpeg${{ matrix.exe }}
         run: |
-          "$DICTATE_FFMPEG" -version
-          cargo test -p dictate-services --lib --locked -- media:: record:: --nocapture
+          "$LOAH_FFMPEG" -version
+          cargo test -p loah-services --lib --locked -- media:: record:: --nocapture
 
   # The Windows ffmpeg of the job above, run for the first time here: it was built on Linux, which cannot run it. It is the program that
   # the Windows installer ships, so this is where its encoders (Media Foundation, NVENC, AMF), the C runtime that it was linked with
@@ -554,17 +556,23 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+      # Before the download: a cache that is not an exact match makes Swatinem/rust-cache clean target/ (see the job above).
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ runner.os }}
+          save-if: false
       - uses: actions/download-artifact@v4
         with:
-          name: dictate-ffmpeg-x86_64-pc-windows-msvc
+          name: loah-ffmpeg-x86_64-pc-windows-msvc
           path: target/ffmpeg/x86_64-pc-windows-msvc
       - name: Check that it is a plain LGPL ffmpeg
         shell: bash
-        run: bash scripts/check-ffmpeg-lgpl.sh target/ffmpeg/x86_64-pc-windows-msvc/dictate-ffmpeg.exe
+        run: bash scripts/check-ffmpeg-lgpl.sh target/ffmpeg/x86_64-pc-windows-msvc/loah-ffmpeg.exe
       - name: List the encoders of the Windows ffmpeg
         shell: bash
         run: |
-          ffmpeg=target/ffmpeg/x86_64-pc-windows-msvc/dictate-ffmpeg.exe
+          ffmpeg=target/ffmpeg/x86_64-pc-windows-msvc/loah-ffmpeg.exe
           "$ffmpeg" -version | head -n 1
           encoders="$("$ffmpeg" -hide_banner -encoders)"
           echo "$encoders" | grep -E '^ V'
@@ -582,11 +590,6 @@ jobs:
           for name in g722 g726 shorten als; do
             echo "$decoders" | grep -q " $name " || { echo "the decoder $name is not in the build"; exit 1; }
           done
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ${{ runner.os }}
-          save-if: false
       # The /MD build of sherpa-onnx without text to speech: the same step as in the test job, with the same key and the same pin.
       - uses: actions/cache@v4
         with:
@@ -617,13 +620,13 @@ jobs:
           }
           "SHERPA_ONNX_LIB_DIR=$(Join-Path $dir 'lib')" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       # The runner has no graphics card, so the first try of h264_mf (the hardware encoder) fails and the second (the software one of
-      # Media Foundation) has to be the pick: DICTATE_EXPECT_ENCODER makes a test fail when it is mpeg4 (a recording that the player cannot
+      # Media Foundation) has to be the pick: LOAH_EXPECT_ENCODER makes a test fail when it is mpeg4 (a recording that the player cannot
       # play), which is what every Windows machine without a hardware encoder would get. The tests print `encoder: <the pick>`.
       - name: Test the media and recording code with this ffmpeg
         shell: bash
         env:
-          DICTATE_FFMPEG: ${{ github.workspace }}/target/ffmpeg/x86_64-pc-windows-msvc/dictate-ffmpeg.exe
-          DICTATE_EXPECT_ENCODER: h264_mf
+          LOAH_FFMPEG: ${{ github.workspace }}/target/ffmpeg/x86_64-pc-windows-msvc/loah-ffmpeg.exe
+          LOAH_EXPECT_ENCODER: h264_mf
         run: |
-          "$DICTATE_FFMPEG" -version
-          cargo test -p dictate-services --lib --locked -- media:: record:: --nocapture
+          "$LOAH_FFMPEG" -version
+          cargo test -p loah-services --lib --locked -- media:: record:: --nocapture

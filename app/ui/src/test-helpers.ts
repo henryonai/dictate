@@ -27,6 +27,7 @@ import type { PanelState } from "./panel/state";
 export function fakeSettings(overrides: Partial<Settings> = {}): Settings {
   return {
     ui_language: "system",
+    theme: "system",
     dictation_language: "en-US",
     hotkey: "Ctrl+Alt+Space",
     push_to_talk: false,
@@ -60,6 +61,7 @@ export function fakeView(overrides: Partial<SettingsView> = {}): SettingsView {
     has_transcribe_key: false,
     shares_openrouter_key: false,
     load_warning: null,
+    migration_note: null,
     system_language: "en",
     ...overrides,
   };
@@ -107,6 +109,8 @@ export function stubApi() {
     { id: "custom", models: [], key_url: null },
   ]);
   vi.spyOn(api, "openMeetingsFolder").mockResolvedValue();
+  // The old Dictate is not there.
+  vi.spyOn(api, "dictateStillPresent").mockResolvedValue(false);
   vi.spyOn(api, "mediaTools").mockResolvedValue({
     ffmpeg: null,
     ytDlp: null,
@@ -211,7 +215,7 @@ export function fakePanelState(overrides: Partial<PanelState> = {}): PanelState 
   };
 }
 
-/** The 8 favourites and 24 others of `dictate_services::dictation::lang`. */
+/** The 8 favourites and 24 others of `loah_services::dictation::lang`. */
 export const FAVOURITE_LANGUAGES = ["en-US", "vi-VN", "en-GB", "ja-JP", "ko-KR", "zh-CN", "fr-FR", "de-DE"];
 export const OTHER_LANGUAGES = [
   "es-ES", "it-IT", "pt-BR", "pt-PT", "nl-NL", "pl-PL", "ru-RU", "uk-UA", "tr-TR", "id-ID", "ms-MY", "th-TH",

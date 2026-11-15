@@ -3,11 +3,11 @@
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use dictate_services::audio::capture::{CaptureError, CaptureEvent};
-use dictate_services::dictation::machine::Phase;
-use dictate_services::dictation::pipeline::{Notice, NoticeKey};
-use dictate_services::presets::{find_edit_preset, TranscribePreset};
-use dictate_services::settings::Engine;
+use loah_services::audio::capture::{CaptureError, CaptureEvent};
+use loah_services::dictation::machine::Phase;
+use loah_services::dictation::pipeline::{Notice, NoticeKey};
+use loah_services::presets::{find_edit_preset, TranscribePreset};
+use loah_services::settings::Engine;
 
 use super::fakes::*;
 use crate::hotkey::HotkeyEvent;
@@ -55,7 +55,7 @@ impl Fixture {
             s.set_transcribe_preset(preset);
         });
         self.flags
-            .set(dictate_services::secrets::Account::Transcribe, true);
+            .set(loah_services::secrets::Account::Transcribe, true);
     }
 }
 
@@ -945,7 +945,7 @@ fn controller_api_engine_never_uploads_when_engine_is_local() {
     let fx = Fixture::new();
     // Everything for the API is set up, but the engine is the local one.
     fx.flags
-        .set(dictate_services::secrets::Account::Transcribe, true);
+        .set(loah_services::secrets::Account::Transcribe, true);
     assert_eq!(fx.settings.get().dictation_engine, Engine::Whisper);
     fx.dictate_to_chip();
 
@@ -1078,7 +1078,7 @@ fn controller_a_failed_edit_writes_the_text_as_it_is_and_says_so() {
 #[test]
 fn controller_no_ai_key_is_a_notice_on_the_chip_and_nothing_on_the_card() {
     let fx = Fixture::new();
-    fx.flags.set(dictate_services::secrets::Account::Ai, false);
+    fx.flags.set(loah_services::secrets::Account::Ai, false);
     fx.dictate_to_chip();
     assert_eq!(fx.ui.last().notice, notice(NoticeKey::NotEditedNoKey));
     assert_eq!(fx.ui.last().text, "hello world");
@@ -1086,7 +1086,7 @@ fn controller_no_ai_key_is_a_notice_on_the_chip_and_nothing_on_the_card() {
 
     // The card shows the text as it is: the card is where it can be edited by hand or by a style.
     let fx = Fixture::new();
-    fx.flags.set(dictate_services::secrets::Account::Ai, false);
+    fx.flags.set(loah_services::secrets::Account::Ai, false);
     fx.dictate_to_card();
     assert_eq!(fx.ui.last().notice, None);
     assert_eq!(fx.ui.last().text, "hello world");

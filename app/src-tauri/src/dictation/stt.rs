@@ -2,9 +2,9 @@
 
 use std::sync::Arc;
 
-use dictate_services::settings::SettingsStore;
-use dictate_services::whisper::local::LocalWhisper;
-use dictate_services::whisper::models::ModelDir;
+use loah_services::settings::SettingsStore;
+use loah_services::whisper::local::LocalWhisper;
+use loah_services::whisper::models::ModelDir;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::local_model;
@@ -65,7 +65,7 @@ impl LocalStt for WhisperStt {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dictate_services::whisper::models::ModelDir;
+    use loah_services::whisper::models::ModelDir;
 
     struct Fixture {
         _dir: tempfile::TempDir,
@@ -98,7 +98,7 @@ mod tests {
         assert!(!f.stt.available());
 
         // 16 GB: the recommended model is the one that is there.
-        let id = dictate_services::whisper::models::recommended(16);
+        let id = loah_services::whisper::models::recommended(16);
         std::fs::write(f.models.path(id), b"not a real model").unwrap();
         assert!(
             f.stt.available(),
@@ -125,7 +125,7 @@ mod tests {
     #[test]
     fn a_damaged_model_is_an_error_and_is_asked_for_again_next_time() {
         let f = fixture();
-        let id = dictate_services::whisper::models::recommended(16);
+        let id = loah_services::whisper::models::recommended(16);
         std::fs::write(f.models.path(id), b"not a real model").unwrap();
 
         let error = f

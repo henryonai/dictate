@@ -1,4 +1,4 @@
-//! Recording in the app: the recorder that turns what `dictate_services::record` captures into a meeting of the library.
+//! Recording in the app: the recorder that turns what `loah_services::record` captures into a meeting of the library.
 //!
 //! A recording begins as a folder of the library (its `meta.json` has the source that the screen recordings of the Swift app have)
 //! and ends, when it is stopped or ends by itself, as a meeting whose job starts at the audio. The recorder holds the one
@@ -26,13 +26,13 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 use chrono::Local;
-use dictate_services::media::tools::{install_command, Tool, Tools};
-use dictate_services::record::capture::{list_sources, OsCapturer, Sources};
-use dictate_services::record::marker::MARKER;
-use dictate_services::record::session::{recover, Levels, Session, SessionState};
-use dictate_services::record::video::pick_codec;
-use dictate_services::record::{Capturer, EndReason, Mode, RecordOptions, StartError};
-use dictate_services::settings::SettingsStore;
+use loah_services::media::tools::{install_command, Tool, Tools};
+use loah_services::record::capture::{list_sources, OsCapturer, Sources};
+use loah_services::record::marker::MARKER;
+use loah_services::record::session::{recover, Levels, Session, SessionState};
+use loah_services::record::video::pick_codec;
+use loah_services::record::{Capturer, EndReason, Mode, RecordOptions, StartError};
+use loah_services::settings::SettingsStore;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 use crate::meetings::jobs::Hold;

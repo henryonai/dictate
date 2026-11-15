@@ -1,20 +1,20 @@
-//! A way to look at the windows without the controller: in a debug build, `DICTATE_PANEL_DEMO=1` cycles fixture states
+//! A way to look at the windows without the controller: in a debug build, `LOAH_PANEL_DEMO=1` cycles fixture states
 //! through [`emit_state`]. Debug builds only: a release build has none of it.
 //!
-//! - `DICTATE_PANEL_DEMO_ANCHOR=x,y` puts the panels next to a caret there (logical points from the top left of the
+//! - `LOAH_PANEL_DEMO_ANCHOR=x,y` puts the panels next to a caret there (logical points from the top left of the
 //!   main screen), where without it they stand at the bottom centre of the screen.
-//! - `DICTATE_PANEL_DEMO_STEP_MS` is how long each state stays (3000).
-//! - `DICTATE_PANEL_DEMO_HOLD=n` stays on the n-th state (from 0) and doesn't cycle.
-//! - `DICTATE_PANEL_DEMO_CLOSE=bubble` (or `card`) closes that window once, a few seconds in, as the system does when it
+//! - `LOAH_PANEL_DEMO_STEP_MS` is how long each state stays (3000).
+//! - `LOAH_PANEL_DEMO_HOLD=n` stays on the n-th state (from 0) and doesn't cycle.
+//! - `LOAH_PANEL_DEMO_CLOSE=bubble` (or `card`) closes that window once, a few seconds in, as the system does when it
 //!   asks a window to close: to see that the app hides it and shows it again with the next state.
-//! - `DICTATE_PANEL_DEMO_MONITOR=1` also starts the monitor of the keyboard and the mouse, which only logs that it heard
+//! - `LOAH_PANEL_DEMO_MONITOR=1` also starts the monitor of the keyboard and the mouse, which only logs that it heard
 //!   a key or a click (never which).
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use dictate_services::dictation::machine::Phase;
-use dictate_services::dictation::pipeline::{Notice, NoticeKey};
+use loah_services::dictation::machine::Phase;
+use loah_services::dictation::pipeline::{Notice, NoticeKey};
 use tauri::{AppHandle, Manager};
 
 use crate::panel::{self, emit_state, set_anchor, PanelState, View, WorkKind, Working};
@@ -204,27 +204,27 @@ fn cards() -> Vec<PanelState> {
 
 /// Starts cycling when the environment asks for it.
 pub fn start(app: &AppHandle) {
-    if std::env::var_os("DICTATE_PANEL_DEMO").is_none() {
+    if std::env::var_os("LOAH_PANEL_DEMO").is_none() {
         return;
     }
-    let anchor = std::env::var("DICTATE_PANEL_DEMO_ANCHOR")
+    let anchor = std::env::var("LOAH_PANEL_DEMO_ANCHOR")
         .ok()
         .and_then(|value| parse_anchor(&value));
-    let step = std::env::var("DICTATE_PANEL_DEMO_STEP_MS")
+    let step = std::env::var("LOAH_PANEL_DEMO_STEP_MS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .map_or(Duration::from_secs(3), Duration::from_millis);
-    let hold = std::env::var("DICTATE_PANEL_DEMO_HOLD")
+    let hold = std::env::var("LOAH_PANEL_DEMO_HOLD")
         .ok()
         .and_then(|value| value.parse::<usize>().ok());
     let app = app.clone();
-    if let Some(label) = std::env::var("DICTATE_PANEL_DEMO_CLOSE")
+    if let Some(label) = std::env::var("LOAH_PANEL_DEMO_CLOSE")
         .ok()
         .and_then(|value| parse_close(&value))
     {
         close_once(&app, label);
     }
-    let monitor = std::env::var_os("DICTATE_PANEL_DEMO_MONITOR")
+    let monitor = std::env::var_os("LOAH_PANEL_DEMO_MONITOR")
         .is_some()
         .then(|| start_monitor(&app));
     log::info!("Panel demo: cycling the fixture states (anchor {anchor:?})");
@@ -240,7 +240,7 @@ pub fn start(app: &AppHandle) {
     }
 }
 
-/// The panel window that a `DICTATE_PANEL_DEMO_CLOSE` names.
+/// The panel window that a `LOAH_PANEL_DEMO_CLOSE` names.
 fn parse_close(value: &str) -> Option<&'static str> {
     panel::window_label(value.trim())
 }

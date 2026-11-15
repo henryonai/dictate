@@ -1,4 +1,4 @@
-//! The global shortcuts, and `dictate --toggle` and `dictate --record`, which do the same from a script.
+//! The global shortcuts, and `loah --toggle` and `loah --record`, which do the same from a script.
 //!
 //! The shortcut that starts and stops dictation can be changed in Settings. Every way of hearing its key ends as [`HotkeyEvent`]s
 //! on one channel, which the dictation controller reads. The shortcut of the recording (Ctrl+Alt+R, as in the Swift app) is fixed:
@@ -9,8 +9,8 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use dictate_services::dictation::lang::display_hotkey;
-use dictate_services::settings::SettingsStore;
+use loah_services::dictation::lang::display_hotkey;
+use loah_services::settings::SettingsStore;
 use serde::Serialize;
 #[cfg(target_os = "linux")]
 use tauri::Emitter;
@@ -23,14 +23,14 @@ use crate::state::lock;
 #[cfg(target_os = "linux")]
 mod portal;
 
-/// What the shortcut, or `dictate --toggle`, tells the dictation controller.
+/// What the shortcut, or `loah --toggle`, tells the dictation controller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HotkeyEvent {
     /// The key went down (once: holding it doesn't repeat this).
     Pressed,
     /// The key went up.
     Released,
-    /// `dictate --toggle`: start when idle, stop when recording.
+    /// `loah --toggle`: start when idle, stop when recording.
     Toggle,
 }
 
@@ -229,7 +229,7 @@ impl Hotkeys {
                 .map_err(ChangeError::Save)
         };
         let Some(registry) = &self.registry else {
-            // The desktop owns the shortcut: what is saved is the one Dictate asks for the next time it binds.
+            // The desktop owns the shortcut: what is saved is the one Loah asks for the next time it binds.
             return save();
         };
 
@@ -269,7 +269,7 @@ fn label_of(accel: &str) -> String {
     display_hotkey(accel, cfg!(target_os = "macos"))
 }
 
-/// The accelerator as a shortcut, when Dictate can use it: modifiers, then one key; and Ctrl, Alt or Super with it
+/// The accelerator as a shortcut, when Loah can use it: modifiers, then one key; and Ctrl, Alt or Super with it
 /// unless the key is a function key. Shift doesn't count: Shift+D would take every capital D from typing in every
 /// app, and a letter with no modifier every D.
 pub fn parse_accelerator(accel: &str) -> Result<Shortcut, ChangeError> {
@@ -580,7 +580,7 @@ impl Registry for PluginRegistry {
     }
 }
 
-/// Starts listening for the shortcut `accel`: its presses and releases go to `tx`. (`dictate --toggle` is not heard
+/// Starts listening for the shortcut `accel`: its presses and releases go to `tx`. (`loah --toggle` is not heard
 /// here: the single-instance callback and the first launch send that one themselves.) The answer says whether the
 /// shortcut works, and the app manages the [`Hotkeys`] that the commands `set_hotkey` and `hotkey_status` use. A
 /// shortcut that can't be had is not an error: the app goes on without it and Settings says why.
@@ -770,8 +770,8 @@ fn unavailable(label: String, error: &str) -> HotkeyStatus {
 mod tests {
     use super::*;
     use crate::test_support::FakeRegistry;
-    use dictate_services::dictation::lang::display_hotkey;
-    use dictate_services::settings::Settings;
+    use loah_services::dictation::lang::display_hotkey;
+    use loah_services::settings::Settings;
     use std::str::FromStr;
     use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 
@@ -1063,7 +1063,7 @@ mod tests {
         assert!(rx.try_recv().is_err(), "the key was never up");
     }
 
-    // ---- which shortcuts Dictate takes
+    // ---- which shortcuts Loah takes
 
     #[test]
     fn shortcuts_with_a_modifier_or_a_function_key_are_taken() {
@@ -1192,7 +1192,7 @@ mod tests {
             .all(|shortcut| !shortcut.description.is_empty()));
         assert_ne!(shortcuts[0].description, shortcuts[1].description);
 
-        // A dictation shortcut that Dictate has no name for is left to the desktop; the recording's wish does not depend on it.
+        // A dictation shortcut that Loah has no name for is left to the desktop; the recording's wish does not depend on it.
         let without = portal_shortcuts(None);
         assert_eq!(without[0].preferred_trigger, None);
         assert_eq!(without[1].preferred_trigger.as_deref(), Some("CTRL+ALT+r"));
@@ -1211,32 +1211,22 @@ mod tests {
 
     #[test]
     fn wants_record_reads_the_flag() {
-        assert!(wants_record(&["dictate", "--record"]));
-        assert!(wants_record(&["/usr/bin/dictate", "--other", "--record"]));
-        assert!(!wants_record(&["dictate"]));
-        assert!(!wants_record(&[
-            "dictate",
-            "--recorded",
-            "record",
-            "-record"
-        ]));
+        assert!(wants_record(&["loah", "--record"]));
+        assert!(wants_record(&["/usr/bin/loah", "--other", "--record"]));
+        assert!(!wants_record(&["loah"]));
+        assert!(!wants_record(&["loah", "--recorded", "record", "-record"]));
         assert!(!wants_record::<&str>(&[]));
         // The two flags are separate: one does not ask for the other.
-        assert!(!wants_record(&["dictate", "--toggle"]));
-        assert!(!wants_toggle(&["dictate", "--record"]));
+        assert!(!wants_record(&["loah", "--toggle"]));
+        assert!(!wants_toggle(&["loah", "--record"]));
     }
 
     #[test]
     fn toggle_is_found_among_the_arguments_of_a_launch() {
-        assert!(wants_toggle(&["dictate", "--toggle"]));
-        assert!(wants_toggle(&["/usr/bin/dictate", "--other", "--toggle"]));
-        assert!(!wants_toggle(&["dictate"]));
-        assert!(!wants_toggle(&[
-            "dictate",
-            "--toggled",
-            "toggle",
-            "-toggle"
-        ]));
+        assert!(wants_toggle(&["loah", "--toggle"]));
+        assert!(wants_toggle(&["/usr/bin/loah", "--other", "--toggle"]));
+        assert!(!wants_toggle(&["loah"]));
+        assert!(!wants_toggle(&["loah", "--toggled", "toggle", "-toggle"]));
         assert!(!wants_toggle::<&str>(&[]));
     }
 

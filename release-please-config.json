@@ -17,10 +17,10 @@
   "extra-files": [
     {"type": "toml", "path": "Cargo.toml", "jsonpath": "$.workspace.package.version"},
     {"type": "json", "path": "app/ui/package.json", "jsonpath": "$.version"},
-    {"type": "toml", "path": "Cargo.lock", "jsonpath": "$.package[?(@.name.value=='dictate-app')].version"},
-    {"type": "toml", "path": "Cargo.lock", "jsonpath": "$.package[?(@.name.value=='dictate-core')].version"},
-    {"type": "toml", "path": "Cargo.lock", "jsonpath": "$.package[?(@.name.value=='dictate-mcp')].version"},
-    {"type": "toml", "path": "Cargo.lock", "jsonpath": "$.package[?(@.name.value=='dictate-services')].version"}
+    {"type": "toml", "path": "Cargo.lock", "jsonpath": "$.package[?(@.name.value=='loah-app')].version"},
+    {"type": "toml", "path": "Cargo.lock", "jsonpath": "$.package[?(@.name.value=='loah-core')].version"},
+    {"type": "toml", "path": "Cargo.lock", "jsonpath": "$.package[?(@.name.value=='loah-mcp')].version"},
+    {"type": "toml", "path": "Cargo.lock", "jsonpath": "$.package[?(@.name.value=='loah-services')].version"}
   ],
   "packages": {
     ".": {}

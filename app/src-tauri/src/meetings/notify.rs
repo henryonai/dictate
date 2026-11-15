@@ -7,8 +7,8 @@
 
 use std::sync::Arc;
 
-use dictate_services::meetings::{ErrorKind, MeetingError};
-use dictate_services::settings::SettingsStore;
+use loah_services::meetings::{ErrorKind, MeetingError};
+use loah_services::settings::SettingsStore;
 use tauri::AppHandle;
 use tauri_plugin_notification::NotificationExt;
 
@@ -79,8 +79,8 @@ pub const TEXTS: &[(&str, &str, &str)] = &[
     // The banners.
     (
         "meetings.notify.title",
-        "Dictate — {title}",
-        "Dictate — {title}",
+        "Loah — {title}",
+        "Loah — {title}",
     ),
     (
         "meetings.notify.decisions",
@@ -243,8 +243,8 @@ pub const TEXTS: &[(&str, &str, &str)] = &[
     ),
     (
         "recording.error.needs_screen_permission",
-        "No Screen Recording permission. Turn on Dictate in System Settings → Privacy & Security → Screen & System Audio Recording, then reopen the app.",
-        "Chưa có quyền Screen Recording. Bật cho Dictate trong System Settings → Privacy & Security → Screen & System Audio Recording, rồi mở lại app.",
+        "No Screen Recording permission. Turn on Loah in System Settings → Privacy & Security → Screen & System Audio Recording, then reopen the app.",
+        "Chưa có quyền Screen Recording. Bật cho Loah trong System Settings → Privacy & Security → Screen & System Audio Recording, rồi mở lại app.",
     ),
     (
         "recording.error.needs_ffmpeg",
@@ -293,8 +293,8 @@ pub const TEXTS: &[(&str, &str, &str)] = &[
     ),
     (
         "recording.error.stop_failed",
-        "Couldn't finish the recording: {detail}. What was recorded is kept, and Dictate tries again the next time it starts.",
-        "Không hoàn tất được bản ghi: {detail}. Phần đã quay được giữ lại, và Dictate sẽ thử lại ở lần mở sau.",
+        "Couldn't finish the recording: {detail}. What was recorded is kept, and Loah tries again the next time it starts.",
+        "Không hoàn tất được bản ghi: {detail}. Phần đã quay được giữ lại, và Loah sẽ thử lại ở lần mở sau.",
     ),
     (
         "recording.error.discard_failed",
@@ -340,7 +340,7 @@ pub fn error_message(lang: Lang, error: &MeetingError) -> String {
 pub fn banner(lang: Lang, notice: &Notice) -> (String, String) {
     // A recording that has not begun has no title to name it by.
     let title = if notice.title.is_empty() && matches!(notice.kind, NoticeKind::Recording { .. }) {
-        "Dictate".to_owned()
+        "Loah".to_owned()
     } else {
         text(lang, "meetings.notify.title", &[("title", &notice.title)])
     };
@@ -396,7 +396,7 @@ fn count(lang: Lang, n: usize, one: &str, many: &str) -> Option<String> {
 mod tests {
     use std::collections::BTreeSet;
 
-    use dictate_services::meetings::error::key;
+    use loah_services::meetings::error::key;
     use serde_json::Value;
 
     use super::*;
@@ -418,7 +418,7 @@ mod tests {
         assert_eq!(
             en(ready(3, 2)),
             (
-                "Dictate — Họp kế hoạch".to_owned(),
+                "Loah — Họp kế hoạch".to_owned(),
                 "3 decisions · 2 action items — click to view".to_owned()
             )
         );
@@ -434,7 +434,7 @@ mod tests {
         assert_eq!(
             vi(ready(3, 2)),
             (
-                "Dictate — Họp kế hoạch".to_owned(),
+                "Loah — Họp kế hoạch".to_owned(),
                 "3 quyết định · 2 việc cần làm — bấm để xem".to_owned()
             )
         );
@@ -494,7 +494,7 @@ mod tests {
         };
 
         let (title, body) = banner(Lang::En, &ended("recording.ended.display_gone", ""));
-        assert_eq!(title, "Dictate — Họp kế hoạch");
+        assert_eq!(title, "Loah — Họp kế hoạch");
         // Not more than is known: on Linux a stream that breaks ends in this too.
         assert_eq!(
             body,
@@ -512,7 +512,7 @@ mod tests {
     }
 
     #[test]
-    fn a_banner_for_a_recording_that_has_no_meeting_is_titled_dictate() {
+    fn a_banner_for_a_recording_that_has_no_meeting_is_titled_loah() {
         // A start that fails from the shortcut: there is no recording to name.
         let (title, body) = banner(
             Lang::En,
@@ -526,7 +526,7 @@ mod tests {
             },
         );
 
-        assert_eq!(title, "Dictate");
+        assert_eq!(title, "Loah");
         assert!(
             body.starts_with("Recording the screen needs ffmpeg"),
             "{body}"
@@ -564,7 +564,7 @@ mod tests {
 
     #[test]
     fn a_message_has_its_command_and_falls_back_when_it_has_nothing_to_say() {
-        let missing = MeetingError::from_link(dictate_services::media::ytdlp::LinkError::Spawn(
+        let missing = MeetingError::from_link(loah_services::media::ytdlp::LinkError::Spawn(
             "not found".into(),
         ));
         let message = error_message(Lang::En, &missing);
@@ -596,7 +596,7 @@ mod tests {
             MeetingError::invalid_link(),
             MeetingError::other("It broke"),
             MeetingError::summary_failed("API error 401"),
-            MeetingError::from_decode(dictate_services::media::decode::DecodeError::Unsupported {
+            MeetingError::from_decode(loah_services::media::decode::DecodeError::Unsupported {
                 what: "ac3".into(),
                 ffmpeg_hint: "brew install ffmpeg",
             }),

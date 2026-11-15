@@ -1,12 +1,14 @@
 /// Every command the app registers, with a permission made for each (`allow-get-settings`, ...). With this list the
 /// app has an ACL of its own: a window may call a command only when its capability file names the permission. The
-/// Settings window has the commands of `default.json`, the floating dictation windows those of `panel.json` and the
-/// meetings window those of `meetings.json`.
+/// Settings window has the commands of `default.json`, the floating dictation windows those of `panel.json`, the
+/// meetings window those of `meetings.json` and the recording bar those of `recorder.json`; `current_theme` is in all four.
 /// `main.rs` registers the same names, and a test there checks that the two agree and that the files scope them.
 const COMMANDS: &[&str] = &[
     // Settings.
     "get_settings",
     "save_settings",
+    // The theme of the settings, which every window with a page asks when it opens (and then hears `theme-changed`).
+    "current_theme",
     "set_ai_provider",
     "set_transcribe_preset",
     "set_hotkey",
@@ -26,6 +28,8 @@ const COMMANDS: &[&str] = &[
     "permissions_status",
     "request_permission",
     "open_permission_settings",
+    // Whether the old Dictate is still there, which General says.
+    "dictate_still_present",
     // Which tools of the system are installed. Settings asks it too: the one command it shares with the meetings window.
     "media_tools",
     // The meetings window.
@@ -86,10 +90,10 @@ mod build_rpath;
 
 fn main() {
     // The run path of the program and its tests (`build_rpath.rs` says what each part is for). Linux: the shared sherpa-onnx libraries,
-    // which `sherpa-onnx-sys` and the build script of `dictate-services` copy into `target/<profile>` (the program is built there, the
-    // tests in its `deps`), and which the installed package has in `/usr/lib/dictate`. macOS: the Swift runtime of the system, for the
-    // ScreenCaptureKit bridge that `dictate-services` links (the bridge's own build script gives this run path only to the binaries of its
-    // own package, which has none, and neither does the one of `dictate-services` reach this package). A build script's link arguments
+    // which `sherpa-onnx-sys` and the build script of `loah-services` copy into `target/<profile>` (the program is built there, the
+    // tests in its `deps`), and which the installed package has in `/usr/lib/loah`. macOS: the Swift runtime of the system, for the
+    // ScreenCaptureKit bridge that `loah-services` links (the bridge's own build script gives this run path only to the binaries of its
+    // own package, which has none, and neither does the one of `loah-services` reach this package). A build script's link arguments
     // reach only the binaries of its own package, so the libraries' build scripts cannot set this up for them.
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     // The release build asks for the run path of the installed package only (`build_rpath::INSTALLED_ONLY_VARIABLE`); a change of the
@@ -105,6 +109,9 @@ fn main() {
     ) {
         println!("cargo::rustc-link-arg={arg}");
     }
+    // The tray images (`tray.rs` includes them with `include_image!`, which Cargo does not watch): another image has to build the program
+    // again.
+    println!("cargo::rerun-if-changed=icons/tray");
     tauri_build::try_build(
         tauri_build::Attributes::new()
             .app_manifest(tauri_build::AppManifest::new().commands(COMMANDS)),

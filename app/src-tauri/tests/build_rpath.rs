@@ -3,11 +3,11 @@
 //!
 //! On Linux the program has to find the shared sherpa-onnx libraries in three places: beside it (`target/<profile>` in a build of the
 //! source tree), one folder up (the tests of Cargo until 1.99 are in `deps`), four up (the tests of Cargo from 1.100 are in
-//! `build/<package>/<hash>/out`), and, in the installed package, in `/usr/lib/dictate` (the package has the program in `/usr/bin`). The
+//! `build/<package>/<hash>/out`), and, in the installed package, in `/usr/lib/loah` (the package has the program in `/usr/bin`). The
 //! installed one is what a `.deb` needs to start at all.
 //!
 //! The installed program has only that one: the others are for a build in the source tree, and in a package they would make the program look
-//! for libraries in `/usr` (`$ORIGIN/..`) and in `/` (`$ORIGIN/../../../..`). The release build asks for it with `DICTATE_RPATH_INSTALLED=1`.
+//! for libraries in `/usr` (`$ORIGIN/..`) and in `/` (`$ORIGIN/../../../..`). The release build asks for it with `LOAH_RPATH_INSTALLED=1`.
 
 #[path = "../build_rpath.rs"]
 mod build_rpath;
@@ -24,11 +24,11 @@ fn rpaths(target_os: &str, installed: bool) -> Vec<String> {
 
 #[test]
 fn linux_finds_the_libraries_of_the_installed_package_and_looks_there_first() {
-    // /usr/bin/dictate -> /usr/lib/dictate: the `.deb` puts the libraries there (tauri.release.conf.json).
+    // /usr/bin/loah -> /usr/lib/loah: the `.deb` puts the libraries there (tauri.release.conf.json).
     for installed in [false, true] {
         assert_eq!(
             rpaths("linux", installed).first().map(String::as_str),
-            Some("$ORIGIN/../lib/dictate"),
+            Some("$ORIGIN/../lib/loah"),
             "installed only: {installed}"
         );
     }
@@ -44,14 +44,14 @@ fn linux_still_finds_the_libraries_that_a_build_of_the_source_tree_copies_beside
 
 #[test]
 fn linux_finds_them_from_the_tests_that_cargo_1_100_builds_four_folders_down() {
-    // The same run path that crates/dictate-services/build.rs gives its own tests.
+    // The same run path that crates/loah-services/build.rs gives its own tests.
     assert!(rpaths("linux", false).contains(&"$ORIGIN/../../../..".to_owned()));
 }
 
 #[test]
 fn the_installed_program_has_no_run_path_but_its_own_folder_of_libraries() {
-    // `$ORIGIN/..` of /usr/bin/dictate is /usr, and `$ORIGIN/../../../..` is /: a library that somebody puts there would be loaded.
-    assert_eq!(rpaths("linux", true), ["$ORIGIN/../lib/dictate"]);
+    // `$ORIGIN/..` of /usr/bin/loah is /usr, and `$ORIGIN/../../../..` is /: a library that somebody puts there would be loaded.
+    assert_eq!(rpaths("linux", true), ["$ORIGIN/../lib/loah"]);
 }
 
 #[test]
@@ -82,7 +82,7 @@ fn windows_has_no_run_path() {
 
 #[test]
 fn only_the_value_1_of_the_variable_asks_for_the_installed_run_path() {
-    assert_eq!(INSTALLED_ONLY_VARIABLE, "DICTATE_RPATH_INSTALLED");
+    assert_eq!(INSTALLED_ONLY_VARIABLE, "LOAH_RPATH_INSTALLED");
     assert!(installed_only(Some("1")));
     // A build that does not say, or says anything else, is the build of the source tree: the one that tests run.
     for value in [None, Some(""), Some("0"), Some("true"), Some("yes")] {

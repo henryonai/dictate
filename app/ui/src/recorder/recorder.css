@@ -1,8 +1,5 @@
-/* The recording bar is a transparent window: nothing but the capsule that the component draws may have a background. */
-
-:root {
-  color-scheme: dark;
-}
+/* The recording bar is a transparent window: nothing but the capsule that the component draws may have a background. The colors are the
+   tokens of tokens.css (the Graphite theme, which main.ts loads before this file); the color scheme is the theme's, set there too. */
 
 * {
   box-sizing: border-box;
@@ -19,7 +16,7 @@ html {
 }
 
 body {
-  color: #fff;
+  color: var(--ink);
   font: 12px/1.3 system-ui, -apple-system, "Segoe UI", sans-serif;
   /* The bar is read and pressed, not selected, and the cursor stays an arrow where it can't type. */
   cursor: default;
@@ -33,6 +30,6 @@ button {
 }
 
 button:focus-visible {
-  outline: 2px solid rgb(76 154 255);
+  outline: 2px solid var(--accent);
   outline-offset: 1px;
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Writes THIRD_PARTY_LICENSES.txt: the license texts of everything that an installer of Dictate carries.
+"""Writes THIRD_PARTY_LICENSES.txt: the license texts of everything that an installer of Loah carries.
 
 Usage (from anywhere; it needs `cargo`, and `pnpm install` run for the interface):
     python3 scripts/generate-licenses.py            writes THIRD_PARTY_LICENSES.txt at the root of the repository
@@ -7,7 +7,7 @@ Usage (from anywhere; it needs `cargo`, and `pnpm install` run for the interface
 
 What is in the file:
   1. The native components that the installers carry (FFmpeg and what is linked into it, whisper.cpp, the models, sherpa-onnx, ONNX
-     Runtime): the texts in licenses/native, which are copied from the releases that Dictate is built with.
+     Runtime, the Be Vietnam Pro font): the texts in licenses/native, which are copied from the releases that Loah is built with.
   2. Every Rust crate that the program of an installer is linked with, with the license files that the crate ships (LICENSE*, COPYING*,
      NOTICE*, so the copyright lines and the NOTICE of an Apache crate are there). `cargo tree -e normal` for each of the four systems of the
      installers says which crates those are (build scripts and tests are not shipped). A crate that ships no license file gets the standard
@@ -33,7 +33,7 @@ TARGETS = [
     "x86_64-unknown-linux-gnu",
 ]
 # The programs of the installers: the app and the MCP server.
-PACKAGES = ["dictate-app", "dictate-mcp"]
+PACKAGES = ["loah-app", "loah-mcp"]
 # What the bundle of the interface has in it (app/ui/package.json has the first two; the others are what the runtime of Svelte uses).
 NPM_PACKAGES = ["svelte", "clsx", "esm-env", "@tauri-apps/api", "@tauri-apps/plugin-opener"]
 LICENSE_FILE = re.compile(r"^(LICEN[CS]E|COPYING|NOTICE|UNLICENSE|COPYRIGHT)([._-].*)?$", re.IGNORECASE)
@@ -42,13 +42,13 @@ FALLBACK_ORDER = ["MIT", "Apache-2.0", "BSD-3-Clause", "BSD-2-Clause", "Zlib", "
 
 # The native components, in the order of the file: (title, what it is, the files of licenses/native).
 NATIVE = [
-    ("FFmpeg 9.0.2 (the program dictate-ffmpeg)", "LGPL-2.1-or-later: the text is COPYING.LGPLv2.1, next to this file. This is what FFmpeg says of the license of its files.", ["ffmpeg-LICENSE.md"]),
-    ("libvpx 1.14.0 (inside dictate-ffmpeg on Linux)", "BSD-3-Clause, and the additional IP rights grant of the WebM project.", ["libvpx-LICENSE.txt", "libvpx-PATENTS.txt"]),
-    ("libopus 1.4 (inside dictate-ffmpeg on Linux)", "BSD-3-Clause.", ["opus-COPYING.txt"]),
-    ("zlib (inside dictate-ffmpeg on Linux)", "The zlib license.", ["zlib-LICENSE.txt"]),
-    ("glibc 2.39 (inside dictate-ffmpeg on Linux)", "LGPL-2.1-or-later: the text is COPYING.LGPLv2.1, next to this file.", []),
-    ("libgcc, the runtime of GCC 13 (inside dictate-ffmpeg on Linux and on Windows)", "GPL-3.0-or-later with the GCC Runtime Library Exception 3.1.", ["gcc-COPYING.RUNTIME.txt", "gcc-COPYING3.txt"]),
-    ("mingw-w64 runtime and winpthreads (inside dictate-ffmpeg on Windows)", "Public domain and permissive licenses; the notices that the runtime asks for.", ["mingw-w64-runtime-COPYING.txt", "mingw-w64-COPYING.txt", "winpthreads-COPYING.txt"]),
+    ("FFmpeg 9.0.2 (the program loah-ffmpeg)", "LGPL-2.1-or-later: the text is COPYING.LGPLv2.1, next to this file. This is what FFmpeg says of the license of its files.", ["ffmpeg-LICENSE.md"]),
+    ("libvpx 1.14.0 (inside loah-ffmpeg on Linux)", "BSD-3-Clause, and the additional IP rights grant of the WebM project.", ["libvpx-LICENSE.txt", "libvpx-PATENTS.txt"]),
+    ("libopus 1.4 (inside loah-ffmpeg on Linux)", "BSD-3-Clause.", ["opus-COPYING.txt"]),
+    ("zlib (inside loah-ffmpeg on Linux)", "The zlib license.", ["zlib-LICENSE.txt"]),
+    ("glibc 2.39 (inside loah-ffmpeg on Linux)", "LGPL-2.1-or-later: the text is COPYING.LGPLv2.1, next to this file.", []),
+    ("libgcc, the runtime of GCC 13 (inside loah-ffmpeg on Linux and on Windows)", "GPL-3.0-or-later with the GCC Runtime Library Exception 3.1.", ["gcc-COPYING.RUNTIME.txt", "gcc-COPYING3.txt"]),
+    ("mingw-w64 runtime and winpthreads (inside loah-ffmpeg on Windows)", "Public domain and permissive licenses; the notices that the runtime asks for.", ["mingw-w64-runtime-COPYING.txt", "mingw-w64-COPYING.txt", "winpthreads-COPYING.txt"]),
     ("nv-codec-headers n12.1.14.0 (headers the Windows ffmpeg was compiled with)", "MIT.", ["nv-codec-headers-NOTICE.txt"]),
     ("AMF headers v1.5.3 (headers the Windows ffmpeg was compiled with)", "MIT.", ["amf-LICENSE.txt"]),
     ("whisper.cpp and ggml (linked into the program)", "MIT.", ["whisper.cpp-LICENSE.txt"]),
@@ -56,6 +56,7 @@ NATIVE = [
     ("pyannote segmentation 3.0 (the model that is downloaded)", "MIT.", ["pyannote-segmentation-3.0-LICENSE.txt"]),
     ("sherpa-onnx 1.13.8 (linked into the program, or libsherpa-onnx-c-api.so)", "Apache-2.0. The project has no NOTICE file.", ["sherpa-onnx-LICENSE.txt"]),
     ("ONNX Runtime 1.28.2 (inside the sherpa-onnx libraries, or libonnxruntime.so)", "MIT, and the notices of the third-party code that ONNX Runtime contains. The project has no NOTICE file.", ["onnxruntime-LICENSE.txt", "onnxruntime-ThirdPartyNotices.txt"]),
+    ("Be Vietnam Pro 1.002 (the font of the windows, bundled in the interface as WOFF2 files)", "SIL Open Font License 1.1: the font files are used as they are, and are bundled with this license.", ["be-vietnam-pro-OFL.txt"]),
 ]
 
 RULE = "=" * 100
@@ -213,12 +214,12 @@ def npm_section():
 
 def build():
     out = []
-    out.append(f"""Third-party license texts of Dictate
-=====================================
+    out.append(f"""Third-party license texts of Loah
+=================================
 
-This file has the license texts of the software that an installer of Dictate carries or that Dictate downloads, with the copyright lines
+This file has the license texts of the software that an installer of Loah carries or that Loah downloads, with the copyright lines
 and the notices that the licenses ask to keep. The list of components, the written offer of the FFmpeg source and where each thing comes
-from are in THIRD_PARTY_NOTICES.md, next to this file. Dictate itself is under the MIT license (LICENSE); the text of the LGPL 2.1, for FFmpeg
+from are in THIRD_PARTY_NOTICES.md, next to this file. Loah itself is under the MIT license (LICENSE); the text of the LGPL 2.1, for FFmpeg
 and glibc, is COPYING.LGPLv2.1.
 
 This file is made by scripts/generate-licenses.py: do not edit it by hand.

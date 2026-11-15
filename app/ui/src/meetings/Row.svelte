@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { MeetingRow, StepName } from "../lib/api";
   import { formatDuration } from "../lib/days";
-  import { currentLanguage, t } from "../lib/i18n";
+  import { t } from "../lib/i18n";
 
   // One recording of the list: an icon for where it came from, its title, and a line that says how it stands.
   let { row, selected, onselect }: { row: MeetingRow; selected: boolean; onselect: (id: string) => void } = $props();
@@ -18,37 +18,49 @@
   const failed = $derived(row.live === null && row.error !== null);
   const icon = $derived(failed ? "error" : row.kind);
 
-  function time(created: number): string {
-    return new Date(created * 1000).toLocaleTimeString(currentLanguage(), { hour: "numeric", minute: "2-digit" });
+  /** What a row says of how it stands, in one badge: a failure, work in progress, no summary yet, or the action items that are still open. */
+  type Badge = { tone: "failed" | "busy" | "plain"; text: string; /** The tooltip. */ hint?: string };
+
+  function percent(progress: number): number {
+    return Math.round(Math.min(1, Math.max(0, progress)) * 100);
   }
 
-  function actions(n: number): string {
-    return n === 1 ? t("meetings.row.action") : t("meetings.row.actions", { n });
-  }
-
-  const line = $derived.by((): { text: string; tone: "done" | "failed" | "busy" } => {
+  /**
+   * One badge at most, by priority: failed, processing, not summarized, N actions. A job that runs is "processing": the Rust side sends the
+   * job or the error, not both, and the store clears the error of an earlier run when a job starts (see `failed`). The count is of the action
+   * items that are open, as the Actions tab counts them, and a recording with none open has no badge.
+   */
+  const badge = $derived.by((): Badge | null => {
     if (row.live) {
-      const status = row.live.step ? t(STATUS[row.live.step]) : t("meetings.status.waiting");
-      const percent = row.live.progress === null ? "" : ` · ${Math.round(Math.min(1, Math.max(0, row.live.progress)) * 100)}%`;
-      return { text: status + percent, tone: "busy" };
-    }
-    if (row.error) {
       return {
-        text: row.error.kind === "Cancelled" ? t("meetings.error.cancelled") : t("meetings.row.failed"),
-        tone: "failed",
+        tone: "busy",
+        text:
+          row.live.progress === null
+            ? t("meetings.row.badge.processing_unknown")
+            : t("meetings.row.badge.processing", { pct: percent(row.live.progress) }),
+        hint: row.live.step ? t(STATUS[row.live.step]) : t("meetings.status.waiting"),
       };
     }
-    if (!row.hasSummary) return { text: t("meetings.row.not_summarized"), tone: "done" };
-    const parts = [
-      row.created ? time(row.created) : "",
-      row.duration === null ? "" : formatDuration(row.duration),
-      row.openTasks > 0 ? actions(row.openTasks) : "",
-    ];
-    return { text: parts.filter(Boolean).join(" · "), tone: "done" };
+    if (row.error) {
+      // A cancelled job has nothing to fix: it says so, in the place and the tone of the failed badge.
+      return row.error.kind === "Cancelled"
+        ? { tone: "failed", text: t("meetings.error.cancelled") }
+        : { tone: "failed", text: t("meetings.row.badge.failed"), hint: t("meetings.row.badge.failed_hint") };
+    }
+    if (!row.hasSummary) return { tone: "plain", text: t("meetings.row.badge.not_summarized") };
+    if (row.openTasks > 0) {
+      return { tone: "plain", text: row.openTasks === 1 ? t("meetings.row.badge.action") : t("meetings.row.badge.actions", { n: row.openTasks }) };
+    }
+    return null;
   });
+
+  const duration = $derived(row.duration === null ? "" : formatDuration(row.duration));
+
+  /** The title is cut to one line on screen, so the name of the button holds all of it, with the rest of what the row says. */
+  const label = $derived([row.title, duration, badge?.text, failed ? badge?.hint : undefined].filter(Boolean).join(", "));
 </script>
 
-<button type="button" class="row" class:selected aria-current={selected ? "true" : undefined} onclick={() => onselect(row.id)}>
+<button type="button" class="row" class:selected aria-label={label} aria-current={selected ? "true" : undefined} onclick={() => onselect(row.id)}>
   <span class="icon" class:failed data-icon={icon} aria-hidden="true">
     <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
       {#if icon === "screen"}
@@ -63,8 +75,13 @@
     </svg>
   </span>
   <span class="text">
-    <span class="title">{row.title}</span>
-    <span class="subtitle {line.tone}" class:failed={line.tone === "failed"}>{#if line.tone === "busy"}<span class="spinner" aria-hidden="true"></span>{/if}<span>{line.text}</span></span>
+    <span class="title" title={row.title}>{row.title}</span>
+    <span class="subtitle">
+      {#if duration}<span class="duration">{duration}</span>{/if}
+      {#if badge}
+        <span class="badge {badge.tone}" title={badge.hint}>{#if badge.tone === "busy"}<span class="spinner" aria-hidden="true"></span>{/if}<span>{badge.text}</span></span>
+      {/if}
+    </span>
   </span>
 </button>
 
@@ -102,33 +119,67 @@
     min-width: 0;
   }
   .title {
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    line-clamp: 2;
-    -webkit-box-orient: vertical;
+    display: block;
     overflow: hidden;
-    overflow-wrap: anywhere;
     font-weight: 500;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
+  /* The second line: the duration, then the badge. 16 px high whatever is on it, so that every row is as tall as the next. */
   .subtitle {
     display: flex;
     align-items: center;
     gap: 6px;
     min-width: 0;
+    min-height: 16px;
     font-size: 12px;
+    line-height: 16px;
     color: var(--muted);
     white-space: nowrap;
   }
-  .subtitle > span:last-child {
+  /* When the line is too narrow (a Vietnamese "1 giờ 5 phút" next to "đang xử lý 100%" at the narrowest list), the duration is what gives way,
+     with an ellipsis: the badge holds the figure that matters (the percent, the count), and the duration is on the page of the recording.
+     The padding and the margin are for the marks of the letters, as in the badge. */
+  .duration {
+    flex: 0 1 auto;
     min-width: 0;
+    padding: 1px 0;
+    margin: -1px 0;
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .subtitle.failed {
-    color: var(--danger);
+  /* A pill with a line around it and no fill, so that its text keeps the contrast that the text of the list has on the panel and on the
+     selected row alike. It does not shrink before the duration has: it is cut with an ellipsis only when it alone is wider than the line. */
+  .badge {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+    max-width: 100%;
+    padding: 0 6px;
+    font-size: 11px;
+    line-height: 14px;
+    color: var(--muted);
+    border: 1px solid var(--line);
+    border-radius: 999px;
   }
-  .subtitle.busy {
+  /* The words. `overflow: hidden` would cut the marks of a Vietnamese letter (ử, ệ) at the edge of a 14 px line, so the box is a pixel
+     taller on each side and the margin takes the pixel back. */
+  .badge > span:last-child {
+    min-width: 0;
+    padding: 1px 0;
+    margin: -1px 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .badge.failed {
+    color: var(--danger);
+    border-color: var(--danger);
+  }
+  .badge.busy {
     color: var(--warn-fg);
+    border-color: var(--warn);
   }
   .spinner {
     flex: none;

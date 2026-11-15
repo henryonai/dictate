@@ -43,7 +43,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   setLanguage("en");
-  delete (window as unknown as Record<string, unknown>).__dictateOpenRecorder;
+  delete (window as unknown as Record<string, unknown>).__loahOpenRecorder;
 });
 
 // ---- The list
@@ -68,7 +68,7 @@ test("a library shows its recordings grouped by day, with no one selected, and t
 test("a library with nothing in it shows the empty state, with no list and no search", async () => {
   await open([]);
 
-  expect(await screen.findByRole("heading", { level: 1, name: "Record it, Dictate summarizes it" })).toBeInTheDocument();
+  expect(await screen.findByRole("heading", { level: 1, name: "Record it, Loah summarizes it" })).toBeInTheDocument();
   expect(screen.queryByRole("searchbox")).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Hide list" })).not.toBeInTheDocument();
   // The toolbar still adds a file or a link.
@@ -94,7 +94,7 @@ test("the search asks for the list with what is typed, and a search that finds n
   expect(await screen.findByText("No results for “zzz”")).toBeInTheDocument();
   expect(api.meetingsList).toHaveBeenLastCalledWith("zzz");
   expect(screen.getByRole("searchbox")).toHaveValue("zzz");
-  expect(screen.queryByRole("heading", { name: "Record it, Dictate summarizes it" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "Record it, Loah summarizes it" })).not.toBeInTheDocument();
 });
 
 test("the list can be hidden and shown again", async () => {
@@ -106,6 +106,235 @@ test("the list can be hidden and shown again", async () => {
 
   await user.click(screen.getByRole("button", { name: "Show list" }));
   expect(screen.getByRole("navigation", { name: "Recordings" })).toBeInTheDocument();
+});
+
+// ---- A narrow window
+
+/** The window is `width` px wide, as the web view reports it, and it says so. */
+function resize(width: number) {
+  window.innerWidth = width;
+  window.dispatchEvent(new Event("resize"));
+}
+
+const recordings = () => screen.queryByRole("navigation", { name: "Recordings" });
+
+test("the_list_folds_below_1100px: a window narrower than 1100 px opens with the list hidden, and one of 1100 px with it open", async () => {
+  const user = userEvent.setup();
+  window.innerWidth = 1099;
+  const narrow = await open();
+
+  expect(recordings()).not.toBeInTheDocument();
+  const show = screen.getByRole("button", { name: "Show list" });
+  expect(show).toHaveAttribute("aria-expanded", "false");
+
+  // It is the person's to open.
+  await user.click(show);
+  expect(recordings()).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Hide list" })).toHaveAttribute("aria-expanded", "true");
+  narrow.unmount();
+
+  window.innerWidth = 1100;
+  await open();
+  expect(recordings()).toBeInTheDocument();
+});
+
+test("the_list_folds_below_1100px: a window that is made narrower folds the list, and one that is made wider does not open it again", async () => {
+  const user = userEvent.setup();
+  await open();
+  expect(recordings()).toBeInTheDocument();
+
+  resize(1099);
+  await vi.waitFor(() => expect(recordings()).not.toBeInTheDocument());
+  expect(screen.getByRole("button", { name: "Show list" })).toBeInTheDocument();
+
+  resize(1500);
+  expect(recordings()).not.toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "Show list" }));
+  expect(recordings()).toBeInTheDocument();
+});
+
+test("the_list_folds_below_1100px: the list that was opened in a narrow window stays while the window is narrow, and a wide one keeps what the person chose", async () => {
+  const user = userEvent.setup();
+  window.innerWidth = 900;
+  await open();
+  await user.click(screen.getByRole("button", { name: "Show list" }));
+
+  // A smaller window, or a larger one that is still narrow: the list is as it was left.
+  resize(880);
+  resize(1000);
+  expect(recordings()).toBeInTheDocument();
+
+  // A wide window with the list hidden by the person stays hidden when it gets narrower and wider again.
+  resize(1300);
+  await user.click(screen.getByRole("button", { name: "Hide list" }));
+  resize(1000);
+  resize(1300);
+  expect(recordings()).not.toBeInTheDocument();
+});
+
+test("picking_a_recording_closes_the_overlay_list: in a narrow window the list lies over the recording, and a pick shows the recording", async () => {
+  const user = userEvent.setup();
+  window.innerWidth = 900;
+  await open();
+  await user.click(screen.getByRole("button", { name: "Show list" }));
+  expect(recordings()?.closest("aside")).toHaveClass("overlay");
+
+  await user.click(screen.getByRole("button", { name: /Weekly planning/ }));
+
+  expect(await screen.findByRole("heading", { level: 1, name: "Weekly planning" })).toBeInTheDocument();
+  expect(api.meetingDetail).toHaveBeenCalledWith(ID);
+  expect(recordings()).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Show list" })).toHaveAttribute("aria-expanded", "false");
+});
+
+test("picking_a_recording_closes_the_overlay_list: in a wide window the list is beside the recording and stays open", async () => {
+  const user = userEvent.setup();
+  await open();
+  expect(recordings()?.closest("aside")).not.toHaveClass("overlay");
+
+  await user.click(screen.getByRole("button", { name: /Weekly planning/ }));
+
+  expect(await screen.findByRole("heading", { level: 1, name: "Weekly planning" })).toBeInTheDocument();
+  expect(recordings()).toBeInTheDocument();
+});
+
+test("escape_closes_the_overlay_list: Esc puts away a list that lies over the recording, and the focus goes to its button", async () => {
+  const user = userEvent.setup();
+  window.innerWidth = 900;
+  await open();
+  await user.click(screen.getByRole("button", { name: "Show list" }));
+  expect(recordings()).toBeInTheDocument();
+
+  await user.keyboard("{Escape}");
+
+  expect(recordings()).not.toBeInTheDocument();
+  const toggle = screen.getByRole("button", { name: "Show list" });
+  expect(toggle).toHaveAttribute("aria-expanded", "false");
+  expect(toggle).toHaveFocus();
+});
+
+test("escape_closes_the_overlay_list: Esc leaves a list that is beside the recording where it is", async () => {
+  const user = userEvent.setup();
+  await open();
+
+  await user.keyboard("{Escape}");
+
+  expect(recordings()).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Hide list" })).toBeInTheDocument();
+});
+
+test("escape_closes_the_overlay_list: with the Add menu open, Esc closes the menu first and the list on the next one", async () => {
+  const user = userEvent.setup();
+  window.innerWidth = 900;
+  await open();
+  await user.click(screen.getByRole("button", { name: "Show list" }));
+  await user.click(screen.getByRole("button", { name: "Add file or link" }));
+  expect(screen.getByRole("group", { name: "Add file or link" })).toBeInTheDocument();
+
+  await user.keyboard("{Escape}");
+  expect(screen.queryByRole("group", { name: "Add file or link" })).not.toBeInTheDocument();
+  expect(recordings()).toBeInTheDocument();
+
+  await user.keyboard("{Escape}");
+  expect(recordings()).not.toBeInTheDocument();
+});
+
+test("escape_closes_the_overlay_list: with a menu of the recording open, Esc closes the menu and leaves the list, and the next one closes the list", async () => {
+  const user = userEvent.setup();
+  window.innerWidth = 900;
+  await open();
+  // A recording is shown, and the list is brought back over it.
+  await user.click(screen.getByRole("button", { name: "Show list" }));
+  await user.click(screen.getByRole("button", { name: /Weekly planning/ }));
+  await screen.findByRole("heading", { level: 1, name: "Weekly planning" });
+  await user.click(screen.getByRole("button", { name: "Show list" }));
+  expect(recordings()).toBeInTheDocument();
+  const more = "More: summarize again, open folder, view log, delete";
+  await user.click(screen.getByRole("button", { name: more }));
+  expect(screen.getByRole("group", { name: more })).toBeInTheDocument();
+
+  await user.keyboard("{Escape}");
+
+  expect(screen.queryByRole("group", { name: more })).not.toBeInTheDocument();
+  expect(recordings(), "the one Esc was the menu's").toBeInTheDocument();
+  expect(screen.getByRole("button", { name: more })).toHaveFocus();
+
+  await user.keyboard("{Escape}");
+  expect(recordings()).not.toBeInTheDocument();
+});
+
+test("escape_closes_the_overlay_list: with a dialog open, Esc closes the dialog and leaves the list", async () => {
+  const user = userEvent.setup();
+  window.innerWidth = 900;
+  await open();
+  await user.click(screen.getByRole("button", { name: "Show list" }));
+  await user.click(screen.getByRole("button", { name: "Add file or link" }));
+  await user.click(screen.getByRole("button", { name: /^Paste a link/ }));
+  expect(await screen.findByRole("dialog")).toBeInTheDocument();
+
+  await user.keyboard("{Escape}");
+
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(recordings()).toBeInTheDocument();
+});
+
+test("a pick in the overlay list moves the focus to the button of the list, by mouse and by keyboard, and not to the page", async () => {
+  const user = userEvent.setup();
+  window.innerWidth = 900;
+  await open();
+  await user.click(screen.getByRole("button", { name: "Show list" }));
+
+  await user.click(screen.getByRole("button", { name: /Weekly planning/ }));
+  expect(recordings()).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Show list" })).toHaveFocus();
+
+  // By keyboard: the list is opened, a recording is reached with Tab and picked with Enter.
+  await user.click(screen.getByRole("button", { name: "Show list" }));
+  const retro = screen.getByRole("button", { name: /Retro/ });
+  retro.focus();
+  await user.keyboard("{Enter}");
+  expect(recordings()).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Show list" })).toHaveFocus();
+  expect(await screen.findByRole("heading", { level: 1, name: "Retro" })).toBeInTheDocument();
+});
+
+test("a pick in a list that is beside the recording leaves the focus where it is", async () => {
+  const user = userEvent.setup();
+  await open();
+
+  const weekly = screen.getByRole("button", { name: /Weekly planning/ });
+  weekly.focus();
+  await user.keyboard("{Enter}");
+
+  expect(await screen.findByRole("heading", { level: 1, name: "Weekly planning" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /Weekly planning/ })).toHaveFocus();
+});
+
+test("the recording under the overlay list can't be reached while the list is over it, and can be otherwise", async () => {
+  const user = userEvent.setup();
+  window.innerWidth = 900;
+  const { container } = await open();
+  // `inert` is a property of the element that the web view reflects as the attribute (jsdom has the property only).
+  const inert = (element: Element | null | undefined) => (element as (HTMLElement & { inert?: boolean }) | null | undefined)?.inert === true;
+  const detail = () => container.querySelector(".detail");
+
+  expect(inert(detail())).toBe(false);
+  await user.click(screen.getByRole("button", { name: "Show list" }));
+  expect(inert(detail())).toBe(true);
+  // The toolbar and the list are not inert: they are what the person is at.
+  expect(inert(screen.getByRole("toolbar"))).toBe(false);
+  expect(inert(recordings()?.closest("aside"))).toBe(false);
+
+  await user.keyboard("{Escape}");
+  expect(inert(detail())).toBe(false);
+});
+
+test("a list that is beside the recording leaves it reachable", async () => {
+  const { container } = await open();
+
+  expect(recordings()).toBeInTheDocument();
+  expect((container.querySelector(".detail") as HTMLElement & { inert?: boolean }).inert).not.toBe(true);
 });
 
 test("a title that looks like HTML is shown as text, in the list and in the header", async () => {
@@ -194,7 +423,10 @@ test("a recording that failed shows the error card, and View log opens the log",
   });
   await open([failed]);
   vi.mocked(api.meetingLog).mockResolvedValue("a line of the log");
-  await user.click(await screen.findByRole("button", { name: /Weekly planning/ }));
+  // The row of the list says that it failed, and what a click does.
+  const failedRow = await screen.findByRole("button", { name: /Weekly planning/ });
+  expect(within(failedRow).getByText("failed").closest(".badge")).toHaveAttribute("title", "Click for how to fix");
+  await user.click(failedRow);
 
   expect(await screen.findByRole("heading", { name: "Something went wrong" })).toBeInTheDocument();
   expect(screen.getByText("Not finished processing")).toBeInTheDocument();
@@ -428,7 +660,7 @@ test("a job event moves the row of the list without asking for the list", async 
 
   events.emitJob(fakeJob({ id: ID, step: "transcript", progress: 0.3 }));
 
-  expect(await screen.findByText("Transcribing · 30%")).toBeInTheDocument();
+  expect(await screen.findByText("processing 30%")).toBeInTheDocument();
   expect(api.meetingsList).not.toHaveBeenCalled();
 });
 
@@ -621,23 +853,23 @@ test("a library whose only recording is the one that goes on shows the empty sta
 
   events.sendRecordingState(fakeRecording({ phase: "recording", meetingId: RECORDING, elapsedMs: 4_000 }));
 
-  expect(await screen.findByRole("heading", { level: 1, name: "Record it, Dictate summarizes it" })).toBeInTheDocument();
+  expect(await screen.findByRole("heading", { level: 1, name: "Record it, Loah summarizes it" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Stop 00:04" })).toBeInTheDocument();
 });
 
 test("a window made for the picker opens it at once, with the error that the ask had, and the ask is taken away", async () => {
   const error = fakeError({ kind: "MissingTool", key: "recording.error.needs_ffmpeg", detail: null, command: "brew install ffmpeg" });
-  (window as unknown as Record<string, unknown>).__dictateOpenRecorder = { error };
+  (window as unknown as Record<string, unknown>).__loahOpenRecorder = { error };
 
   await open();
 
   const dialog = await screen.findByRole("dialog", { name: "Record & summarize" });
   expect(await within(dialog).findByRole("alert")).toHaveTextContent("Recording the screen needs ffmpeg: brew install ffmpeg");
-  expect("__dictateOpenRecorder" in window).toBe(false);
+  expect("__loahOpenRecorder" in window).toBe(false);
 });
 
 test("the ask of a window made for the picker is read before the window hears anything, and an ask that comes after does not open a second picker", async () => {
-  (window as unknown as Record<string, unknown>).__dictateOpenRecorder = { error: null };
+  (window as unknown as Record<string, unknown>).__loahOpenRecorder = { error: null };
   await open();
   await screen.findByRole("dialog", { name: "Record & summarize" });
 

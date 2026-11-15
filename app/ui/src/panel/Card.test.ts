@@ -471,7 +471,7 @@ test("the hint is written with Ctrl on the other systems", () => {
 
 test("card_accessibility_hint: the card asks for the permission when writing into other apps needs it", async () => {
   render(Card, { panel: review({ accessibilityMissing: true }) });
-  expect(screen.getByText("Grant Accessibility access so Dictate can write into chat boxes.")).toBeInTheDocument();
+  expect(screen.getByText("Grant Accessibility access so Loah can write into chat boxes.")).toBeInTheDocument();
 
   await fireEvent.click(screen.getByRole("button", { name: "Grant access…" }));
   expect(api.dictationGrantAccessibility).toHaveBeenCalledOnce();

@@ -9,12 +9,12 @@
 // change to a setting wins. A call sends the same, but only up to its own change: the ones made after it come with
 // their own calls.
 import { api, errorText } from "./api";
-import type { Account, AiProvider, HotkeyStatus, Settings, SettingsView, TranscribePreset } from "./api";
+import type { Account, AiProvider, HotkeyStatus, MigrationItem, Settings, SettingsView, TranscribePreset } from "./api";
 import { setLanguage } from "./i18n";
 
 /** The settings without what the view adds to them. */
 function settingsOf(view: SettingsView): Settings {
-  const { has_ai_key, has_transcribe_key, shares_openrouter_key, load_warning, system_language, ...settings } = view;
+  const { has_ai_key, has_transcribe_key, shares_openrouter_key, load_warning, migration_note, system_language, ...settings } = view;
   return settings;
 }
 
@@ -33,6 +33,8 @@ export class SettingsStore {
    * it for as long as it is shown and never lets a later view without it wipe it out.
    */
   loadWarning = $state<string | null>(null);
+  /** What could not be copied from Dictate: told once like `loadWarning`, and kept like it until it is dismissed. */
+  migrationNote = $state<MigrationItem[] | null>(null);
   /** What went wrong last, as the Rust side said it; empty when all is well. */
   error = $state("");
   /** True while the settings are being read; the window has nothing to show before that has worked once. */
@@ -55,6 +57,7 @@ export class SettingsStore {
       const view = await api.getSettings();
       this.saved = view;
       this.loadWarning = view.load_warning ?? this.loadWarning;
+      this.migrationNote = view.migration_note ?? this.migrationNote;
       this.show();
       void this.refreshHotkey();
     } catch (e) {
@@ -100,6 +103,10 @@ export class SettingsStore {
 
   dismissWarning(): void {
     this.loadWarning = null;
+  }
+
+  dismissMigrationNote(): void {
+    this.migrationNote = null;
   }
 
   dismissError(): void {
@@ -196,6 +203,7 @@ export class SettingsStore {
         const newer = Object.fromEntries(Object.entries(heard).filter(([key]) => !(key in entry.patch)));
         this.saved = { ...answer, ...newer };
         this.loadWarning = this.saved.load_warning ?? this.loadWarning;
+        this.migrationNote = this.saved.migration_note ?? this.migrationNote;
         // A call that was queued before a failure doesn't make that failure go away.
         if (this.failures === entry.failuresBefore) this.error = "";
         return true;

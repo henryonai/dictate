@@ -5,13 +5,13 @@
 
 use std::path::PathBuf;
 
-use dictate_services::ai::AiConfig;
-use dictate_services::dictation::pipeline::ApiPlan;
-use dictate_services::presets::AiProvider;
-use dictate_services::secrets::{Account, SecretStore};
-use dictate_services::settings::{self, Engine, Settings, SettingsStore};
-use dictate_services::transcribe_api::TranscribeConfig;
-use dictate_services::whisper::models::{self, ModelDir};
+use loah_services::ai::AiConfig;
+use loah_services::dictation::pipeline::ApiPlan;
+use loah_services::presets::AiProvider;
+use loah_services::secrets::{Account, SecretStore};
+use loah_services::settings::{self, Engine, Settings, SettingsStore};
+use loah_services::transcribe_api::TranscribeConfig;
+use loah_services::whisper::models::{self, ModelDir};
 
 /// How many characters of the vocabulary go to the transcription API as its prompt.
 const PROMPT_LIMIT: usize = 800;
@@ -162,15 +162,15 @@ pub fn local_model(
             "The {id} model isn't downloaded yet. Download it in Settings first."
         ));
     }
-    let path = models.path(&id);
+    let path = models.existing_path(&id);
     Ok((id, path))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dictate_services::presets::TranscribePreset;
-    use dictate_services::secrets::MemoryStore;
+    use loah_services::presets::TranscribePreset;
+    use loah_services::secrets::MemoryStore;
 
     const AI_KEY: &str = "sk-ai-secret-123";
     const STT_KEY: &str = "sk-stt-secret-456";
@@ -575,6 +575,25 @@ mod tests {
         let (id, path) = local_model(&settings, &models, 32).unwrap();
         assert_eq!(id, "tiny");
         assert_eq!(path, models.path("tiny"));
+    }
+
+    #[test]
+    fn a_model_that_only_dictate_has_is_loaded_from_dictates_folder() {
+        // The copy of Dictate's models failed: the model is used where it is, and the settings are told it is there.
+        let dir = tempfile::tempdir().unwrap();
+        let dictates = dir.path().join("dictate-models");
+        std::fs::create_dir_all(&dictates).unwrap();
+        std::fs::write(dictates.join("ggml-tiny.bin"), b"not a real model").unwrap();
+        let models = ModelDir::new(dir.path().join("models")).with_fallback(dictates.clone());
+        let settings = Settings {
+            whisper_model: Some("tiny".into()),
+            ..Settings::default()
+        };
+
+        let (id, path) = local_model(&settings, &models, 32).unwrap();
+
+        assert_eq!(id, "tiny");
+        assert_eq!(path, dictates.join("ggml-tiny.bin"));
     }
 
     #[test]

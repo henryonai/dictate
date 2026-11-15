@@ -55,11 +55,12 @@ test("bubble_hint_toggle_vs_hold: no hint while finishing", () => {
   expect(container.querySelector(".hint")).toBeNull();
 });
 
-test("bubble_partial_is_dimmed: what is committed is white and the guess for the rest is grey 0.6", () => {
+test("bubble_partial_is_dimmed: what is committed is in the ink and the guess for the rest is the muted color of the theme", () => {
   render(Bubble, { panel: fakePanelState({ committed: "Hello there", partial: "how are" }) });
 
-  expect(screen.getByText("Hello there")).not.toHaveStyle({ color: "rgba(255, 255, 255, 0.6)" });
-  expect(screen.getByText("how are")).toHaveStyle({ color: "rgba(255, 255, 255, 0.6)" });
+  // The color is a token, so that it is the muted one in light as in dark: the committed words take the ink of the bubble.
+  expect(screen.getByText("how are").style.getPropertyValue("color")).toBe("var(--muted)");
+  expect(screen.getByText("Hello there").style.getPropertyValue("color")).toBe("");
 });
 
 test("bubble_partial_is_dimmed: the two are joined with a space, and with none for Japanese", () => {
@@ -186,7 +187,7 @@ test("what went wrong while listening is said under the words, and the recording
   render(Bubble, {
     panel: fakePanelState({ committed: "Hello", error: { key: "audio.silent", detail: null, action: null } }),
   });
-  expect(screen.getByRole("alert")).toHaveTextContent("Dictate only hears silence");
+  expect(screen.getByRole("alert")).toHaveTextContent("Loah only hears silence");
   expect(screen.getByText("Listening")).toBeInTheDocument();
 });
 

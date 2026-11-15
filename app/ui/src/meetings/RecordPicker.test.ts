@@ -139,7 +139,7 @@ test("a Screen Recording that is off is told, with a button to System Settings, 
   const user = userEvent.setup();
   await open(fakeSources({ screen: "needs_permission", displays: [], windows: [] }));
 
-  expect(screen.getByText("Turn on Screen Recording for Dictate first.")).toBeInTheDocument();
+  expect(screen.getByText("Turn on Screen Recording for Loah first.")).toBeInTheDocument();
   expect(mode("Full screen")).toBeEnabled();
   expect(start()).toBeEnabled();
   await user.click(screen.getByRole("button", { name: "Open System Settings" }));
@@ -224,7 +224,7 @@ test("the_linux_picker_says_the_system_asks", async () => {
   // Both selects give way to the note: the desktop's own dialog is where the person chooses.
   expect(screen.getByText("Your system will ask what to share.")).toBeInTheDocument();
   expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
-  expect(screen.getByText("Dictate's own windows can appear in the video.")).toBeInTheDocument();
+  expect(screen.getByText("Loah's own windows can appear in the video.")).toBeInTheDocument();
   await user.click(mode("Single window"));
   expect(screen.getByText("Your system will ask what to share.")).toBeInTheDocument();
   expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
@@ -234,11 +234,11 @@ test("the_linux_picker_says_the_system_asks", async () => {
   expect(api.recordingStart).toHaveBeenCalledWith(expect.objectContaining({ mode: { kind: "window", id: "" } }));
 });
 
-test("a system that lists what there is has no note about the system asking, or about the windows of Dictate", async () => {
+test("a system that lists what there is has no note about the system asking, or about the windows of Loah", async () => {
   await open();
 
   expect(screen.queryByText("Your system will ask what to share.")).not.toBeInTheDocument();
-  expect(screen.queryByText("Dictate's own windows can appear in the video.")).not.toBeInTheDocument();
+  expect(screen.queryByText("Loah's own windows can appear in the video.")).not.toBeInTheDocument();
 });
 
 test("start_sends_the_chosen_options", async () => {

@@ -4,7 +4,7 @@
 //!
 //! What can take long (starting, stopping, asking the system what can be recorded) is done on a blocking thread.
 
-use dictate_services::record::RecordOptions;
+use loah_services::record::RecordOptions;
 use tauri::{AppHandle, State};
 
 use super::{hud, Recorder, RecordingView, SourcesView};

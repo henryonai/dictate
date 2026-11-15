@@ -295,18 +295,18 @@
     gap: 10px;
     width: 540px;
     padding: 16px;
-    border: 1px solid rgb(255 255 255 / 0.1);
+    border: 1px solid var(--line);
     border-radius: 16px;
-    background: rgb(37 37 37);
-    box-shadow: 0 10px 28px rgb(0 0 0 / 0.4);
-    color: rgb(245 245 245);
+    background: var(--panel);
+    box-shadow: var(--shadow-dialog);
+    color: var(--ink);
   }
 
   .header {
     display: flex;
     align-items: center;
     gap: 8px;
-    color: rgb(184 184 184);
+    color: var(--muted);
     font-size: 12px;
     font-weight: 500;
   }
@@ -316,11 +316,11 @@
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    background: rgb(48 209 88);
+    background: var(--ok);
   }
 
   .dot.refining {
-    background: rgb(191 90 242);
+    background: var(--accent);
   }
 
   .grow {
@@ -342,9 +342,9 @@
     min-height: 90px;
     max-height: 260px;
     padding: 10px 12px;
-    border: 1px solid rgb(255 255 255 / 0.1);
+    border: 1px solid var(--line);
     border-radius: 10px;
-    background: rgb(28 28 28);
+    background: var(--bg);
     color: inherit;
     font: inherit;
     font-size: 15px;
@@ -367,8 +367,8 @@
     box-sizing: border-box;
     width: 14px;
     height: 14px;
-    border: 1.5px solid rgb(255 255 255 / 0.25);
-    border-top-color: rgb(255 255 255 / 0.8);
+    border: 1.5px solid var(--line);
+    border-top-color: var(--accent);
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
   }
@@ -385,7 +385,7 @@
     align-items: baseline;
     gap: 4px 10px;
     margin: 0;
-    color: rgb(255 159 10);
+    color: var(--warn);
     font-size: 12px;
   }
 
@@ -395,8 +395,15 @@
     gap: 10px;
     padding: 8px 10px;
     border-radius: 8px;
-    background: rgb(255 159 10 / 0.14);
+    background: var(--warn-bg);
+    color: var(--warn-fg);
     font-size: 12px;
+  }
+
+  /* The accent is not legible enough on the amber of the banner: the link there is the banner's own color. */
+  .access .link {
+    color: inherit;
+    text-decoration: underline;
   }
 
   .styles {
@@ -411,9 +418,9 @@
     gap: 6px;
     height: 26px;
     padding: 0 10px;
-    border: 1px solid rgb(255 255 255 / 0.1);
+    border: 1px solid var(--line);
     border-radius: 13px;
-    background: rgb(255 255 255 / 0.06);
+    background: var(--bg);
     color: inherit;
     font: inherit;
     font-size: 12px;
@@ -422,12 +429,12 @@
   }
 
   .style:hover:not(:disabled) {
-    background: rgb(255 255 255 / 0.12);
+    background: var(--hover);
   }
 
   .style.current {
-    border-color: rgb(76 154 255);
-    background: rgb(76 154 255 / 0.25);
+    border-color: var(--accent);
+    background: var(--selected);
   }
 
   .style:disabled {
@@ -436,13 +443,13 @@
   }
 
   kbd {
-    color: rgb(255 255 255 / 0.5);
+    color: var(--muted);
     font: inherit;
     font-size: 10px;
   }
 
   .caret {
-    color: rgb(255 255 255 / 0.6);
+    color: var(--muted);
     font-size: 10px;
   }
 
@@ -458,10 +465,10 @@
     box-sizing: border-box;
     min-width: 210px;
     padding: 4px;
-    border: 1px solid rgb(255 255 255 / 0.1);
+    border: 1px solid var(--line);
     border-radius: 10px;
-    background: rgb(40 40 40);
-    box-shadow: 0 6px 16px rgb(0 0 0 / 0.4);
+    background: var(--raised);
+    box-shadow: var(--shadow-pop);
     font-size: 12px;
   }
 
@@ -483,7 +490,7 @@
 
   .item:hover,
   .item:focus-visible {
-    background: rgb(255 255 255 / 0.12);
+    background: var(--hover);
     outline: none;
   }
 
@@ -503,9 +510,9 @@
     min-width: 0;
     height: 30px;
     padding: 0 10px;
-    border: 1px solid rgb(255 255 255 / 0.1);
+    border: 1px solid var(--line);
     border-radius: 8px;
-    background: rgb(28 28 28);
+    background: var(--bg);
     color: inherit;
     font: inherit;
     user-select: text;
@@ -520,7 +527,7 @@
   }
 
   .hint {
-    color: rgb(140 140 140);
+    color: var(--muted);
     font-size: 11px;
   }
 
@@ -537,12 +544,12 @@
   }
 
   .primary {
-    background: rgb(245 245 245);
-    color: black;
+    background: var(--accent);
+    color: var(--on-accent);
   }
 
   .secondary {
-    background: rgb(255 255 255 / 0.1);
+    background: var(--wash);
     color: inherit;
   }
 
@@ -556,7 +563,7 @@
     padding: 0;
     border: 0;
     background: transparent;
-    color: rgb(76 154 255);
+    color: var(--accent);
     font: inherit;
     font-size: 12px;
     cursor: pointer;

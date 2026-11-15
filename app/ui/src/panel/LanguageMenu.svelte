@@ -146,8 +146,8 @@
     padding: 0 10px;
     border: 0;
     border-radius: 999px;
-    background: rgb(59 59 59);
-    color: rgb(245 245 245);
+    background: var(--hover);
+    color: var(--ink);
     font: inherit;
     font-size: 12px;
     font-weight: 600;
@@ -164,11 +164,11 @@
     max-height: 260px;
     overflow-y: auto;
     padding: 4px;
-    border: 1px solid rgb(255 255 255 / 0.1);
+    border: 1px solid var(--line);
     border-radius: 10px;
-    background: rgb(40 40 40);
-    box-shadow: 0 6px 16px rgb(0 0 0 / 0.4);
-    color: rgb(245 245 245);
+    background: var(--raised);
+    box-shadow: var(--shadow-pop);
+    color: var(--ink);
     font-size: 12px;
     font-weight: 400;
   }
@@ -190,7 +190,7 @@
 
   .item:hover,
   .item:focus-visible {
-    background: rgb(255 255 255 / 0.12);
+    background: var(--hover);
     outline: none;
   }
 
@@ -202,12 +202,12 @@
 
   .arrow {
     margin-left: auto;
-    color: rgb(255 255 255 / 0.6);
+    color: var(--muted);
   }
 
   .rule {
     height: 1px;
     margin: 4px 0;
-    background: rgb(255 255 255 / 0.1);
+    background: var(--line);
   }
 </style>

@@ -1279,114 +1279,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dictate-app"
-version = "2.0.0"
-dependencies = [
- "arboard",
- "ashpd",
- "async-trait",
- "block2",
- "chrono",
- "dictate-core",
- "dictate-services",
- "dirs 7.0.0",
- "enigo",
- "env_logger",
- "futures-util",
- "getrandom 0.3.4",
- "log",
- "objc2",
- "objc2-app-kit",
- "objc2-application-services",
- "objc2-av-foundation",
- "objc2-core-foundation",
- "objc2-core-graphics",
- "objc2-foundation",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "sys-locale",
- "tauri",
- "tauri-build",
- "tauri-nspanel",
- "tauri-plugin-autostart",
- "tauri-plugin-dialog",
- "tauri-plugin-global-shortcut",
- "tauri-plugin-notification",
- "tauri-plugin-opener",
- "tauri-plugin-single-instance",
- "tempfile",
- "tiny_http",
- "tokio",
- "tokio-util",
- "trash",
- "windows 0.61.3",
- "x11rb",
-]
-
-[[package]]
-name = "dictate-core"
-version = "2.0.0"
-dependencies = [
- "chrono",
- "dirs 7.0.0",
- "fancy-regex",
- "serde",
- "serde_json",
- "tempfile",
- "unicode-normalization",
- "unicode-segmentation",
-]
-
-[[package]]
-name = "dictate-mcp"
-version = "2.0.0"
-dependencies = [
- "dictate-core",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
-name = "dictate-services"
-version = "2.0.0"
-dependencies = [
- "ashpd",
- "async-trait",
- "base64 0.22.1",
- "cpal",
- "dictate-core",
- "dirs 7.0.0",
- "futures-util",
- "hound",
- "keyring",
- "objc2-audio-toolbox",
- "objc2-core-audio-types",
- "objc2-core-foundation",
- "objc2-core-graphics",
- "opus-decoder",
- "pipewire",
- "process-wrap",
- "reqwest 0.12.28",
- "rubato",
- "screencapturekit",
- "serde",
- "serde_json",
- "sha2",
- "sherpa-onnx-sys",
- "symphonia",
- "sysinfo",
- "tempfile",
- "tokio",
- "tokio-util",
- "which",
- "whisper-rs",
- "windows 0.61.3",
- "windows-capture",
- "wiremock",
-]
-
-[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3064,6 +2956,114 @@ name = "litemap"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
+
+[[package]]
+name = "loah-app"
+version = "2.0.0"
+dependencies = [
+ "arboard",
+ "ashpd",
+ "async-trait",
+ "block2",
+ "chrono",
+ "dirs 7.0.0",
+ "enigo",
+ "env_logger",
+ "futures-util",
+ "getrandom 0.3.4",
+ "loah-core",
+ "loah-services",
+ "log",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-application-services",
+ "objc2-av-foundation",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-foundation",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sys-locale",
+ "tauri",
+ "tauri-build",
+ "tauri-nspanel",
+ "tauri-plugin-autostart",
+ "tauri-plugin-dialog",
+ "tauri-plugin-global-shortcut",
+ "tauri-plugin-notification",
+ "tauri-plugin-opener",
+ "tauri-plugin-single-instance",
+ "tempfile",
+ "tiny_http",
+ "tokio",
+ "tokio-util",
+ "trash",
+ "windows 0.61.3",
+ "x11rb",
+]
+
+[[package]]
+name = "loah-core"
+version = "2.0.0"
+dependencies = [
+ "chrono",
+ "dirs 7.0.0",
+ "fancy-regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "unicode-normalization",
+ "unicode-segmentation",
+]
+
+[[package]]
+name = "loah-mcp"
+version = "2.0.0"
+dependencies = [
+ "loah-core",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "loah-services"
+version = "2.0.0"
+dependencies = [
+ "ashpd",
+ "async-trait",
+ "base64 0.22.1",
+ "cpal",
+ "dirs 7.0.0",
+ "futures-util",
+ "hound",
+ "keyring",
+ "loah-core",
+ "objc2-audio-toolbox",
+ "objc2-core-audio-types",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "opus-decoder",
+ "pipewire",
+ "process-wrap",
+ "reqwest 0.12.28",
+ "rubato",
+ "screencapturekit",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sherpa-onnx-sys",
+ "symphonia",
+ "sysinfo",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "which",
+ "whisper-rs",
+ "windows 0.61.3",
+ "windows-capture",
+ "wiremock",
+]
 
 [[package]]
 name = "lock_api"

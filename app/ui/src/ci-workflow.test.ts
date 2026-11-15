@@ -110,10 +110,10 @@ describe("the sherpa-onnx build without text to speech that Linux links", () => 
   });
 
   test("the pin is the same in the script, in the message that a build without the folder gets, and in the README", () => {
-    for (const text of [read(SCRIPT), read("crates/dictate-services/build_support.rs"), read("app/README.md")]) {
+    for (const text of [read(SCRIPT), read("crates/loah-services/build_support.rs"), read("app/README.md")]) {
       expect(text).toContain(SHA256);
     }
-    expect(read("crates/dictate-services/build_support.rs")).toContain(ARCHIVE);
+    expect(read("crates/loah-services/build_support.rs")).toContain(ARCHIVE);
     expect(read("app/README.md")).toContain(ARCHIVE);
   });
 
@@ -154,7 +154,7 @@ describe("the sherpa-onnx build without text to speech that Linux links", () => 
 
 describe("the speaker models of a folder that has a Vietnamese name", () => {
   test("the step that runs the real models runs the test that loads them from such a folder, on every system", () => {
-    const smoke = steps().find((step) => step.includes("DICTATE_TEST_DIARIZE_DIR"));
+    const smoke = steps().find((step) => step.includes("LOAH_TEST_DIARIZE_DIR"));
     expect(smoke).toBeDefined();
     expect(smoke).toContain("diarizer_loads_models_from_a_folder_with_a_non_ascii_name");
     // The same step as the other two real-model tests: it is in the `test` job, whose matrix has Windows.
@@ -178,7 +178,7 @@ describe("the recording of the screen on the Windows runner", () => {
     // experiment had `continue-on-error: true`, which turns a failure into a pass.
     expect(step).not.toContain("continue-on-error");
     expect(step).not.toContain("experiment");
-    expect(step).toMatch(/DICTATE_TEST_SCREEN: "?1"?\n/);
+    expect(step).toMatch(/LOAH_TEST_SCREEN: "?1"?\n/);
     // The test is ignored: it runs only when it is asked for, and by its name.
     expect(step).toMatch(/cargo test .*-- .*--ignored .*windows_records_three_seconds_of_the_primary_monitor/);
   });
@@ -192,7 +192,7 @@ describe("the recording of the screen on the Windows runner", () => {
   });
 
   test("the test that the step names is in the code: a name that matches nothing runs nothing, and passes", () => {
-    expect(read("crates/dictate-services/src/record/capture/windows.rs")).toContain(`fn ${TEST}()`);
+    expect(read("crates/loah-services/src/record/capture/windows.rs")).toContain(`fn ${TEST}()`);
   });
 });
 
@@ -262,19 +262,19 @@ describe("no espeak-ng (GPL-3.0) in what the app ships", () => {
     expect(linux, "a step for Linux").toBeDefined();
     // The shared library has the code of espeak-ng in it whether or not the program refers to it: it is checked too.
     expect(linux).toContain("target/debug/*.so");
-    expect(linux).toContain("target/debug/dictate");
+    expect(linux).toContain("target/debug/loah");
     // And the libraries that a package ships are the ones in the folder they are taken from, whether or not the build copied them
     // beside the program: a restored cache has not (the libraries are not in it), and the check on the copies alone failed on it.
     expect(linux).toContain('"$SHERPA_ONNX_LIB_DIR"/*.so*');
 
     const elsewhere = checks.find((step) => step.includes("runner.os != 'Linux'"));
     expect(elsewhere, "a step for macOS and Windows").toBeDefined();
-    expect(elsewhere).toContain("target/debug/dictate");
+    expect(elsewhere).toContain("target/debug/loah");
     expect(elsewhere).toContain(".exe");
   });
 
   test("the check runs after the program is built, and in bash, which every system has", () => {
-    const build = workflow.indexOf("cargo build -p dictate-app --locked");
+    const build = workflow.indexOf("cargo build -p loah-app --locked");
     const checks = steps().filter((step) => step.includes(`run: bash ${SCRIPT}`));
     expect(checks.length).toBeGreaterThan(0);
     for (const check of checks) {
@@ -333,7 +333,7 @@ describe("the ffmpeg that ships with the app (LGPL v2.1 or later, built from sou
   });
 
   test("every demuxer and every decoder is on, so that no import that the user's own ffmpeg could read fails with the one that ships", () => {
-    // Tools::find prefers dictate-ffmpeg to the ffmpeg of the user, and an import that symphonia cannot read goes through ffmpeg.
+    // Tools::find prefers loah-ffmpeg to the ffmpeg of the user, and an import that symphonia cannot read goes through ffmpeg.
     const lines = code(SCRIPT);
     expect(lines).toContain("--disable-everything");
     for (const all of ["--enable-demuxers", "--enable-decoders", "--enable-parsers", "--enable-bsfs"]) {
@@ -360,11 +360,11 @@ describe("the ffmpeg that ships with the app (LGPL v2.1 or later, built from sou
 
   test("the tests are run after the program that they run with is shown to run", () => {
     for (const name of ["ffmpeg", "ffmpeg-windows"]) {
-      const tests = step(name, "cargo test -p dictate-services");
-      const version = tests.indexOf('"$DICTATE_FFMPEG" -version');
+      const tests = step(name, "cargo test -p loah-services");
+      const version = tests.indexOf('"$LOAH_FFMPEG" -version');
       expect(version, `${name}: the program is run first`).toBeGreaterThan(-1);
-      expect(version).toBeLessThan(tests.indexOf("cargo test -p dictate-services"));
-      // Bash on every system: Windows would read `"$DICTATE_FFMPEG"` as text in PowerShell.
+      expect(version).toBeLessThan(tests.indexOf("cargo test -p loah-services"));
+      // Bash on every system: Windows would read `"$LOAH_FFMPEG"` as text in PowerShell.
       expect(tests).toContain("shell: bash");
     }
   });
@@ -414,21 +414,21 @@ describe("the ffmpeg that ships with the app (LGPL v2.1 or later, built from sou
   test("each build is checked to be a plain LGPL ffmpeg, and kept for the job that runs the Windows one", () => {
     const check = step("ffmpeg", `bash ${CHECK}`);
     expect(check).toContain("shell: bash");
-    expect(check).toContain("target/ffmpeg/${{ matrix.target }}/dictate-ffmpeg${{ matrix.exe }}");
+    expect(check).toContain("target/ffmpeg/${{ matrix.target }}/loah-ffmpeg${{ matrix.exe }}");
     expect(job("ffmpeg").indexOf(check)).toBeGreaterThan(job("ffmpeg").indexOf(`bash ${SCRIPT}`));
 
     const upload = step("ffmpeg", "actions/upload-artifact@v4");
-    expect(upload).toContain("name: dictate-ffmpeg-${{ matrix.target }}");
-    expect(upload).toContain("target/ffmpeg/${{ matrix.target }}/dictate-ffmpeg${{ matrix.exe }}");
+    expect(upload).toContain("name: loah-ffmpeg-${{ matrix.target }}");
+    expect(upload).toContain("target/ffmpeg/${{ matrix.target }}/loah-ffmpeg${{ matrix.exe }}");
     expect(upload).toContain("BUILDCONF-${{ matrix.target }}.txt");
     // Before the tests: a failing test must not keep the artifact from the Windows job.
     expect(job("ffmpeg").indexOf(upload)).toBeGreaterThan(job("ffmpeg").indexOf(check));
   });
 
   test("the tests of media and recording run with the ffmpeg that was built, not the one of the package manager, after the check", () => {
-    const tests = step("ffmpeg", "cargo test -p dictate-services");
-    expect(tests).toMatch(/cargo test -p dictate-services --lib --locked -- .*media:: .*record::/);
-    expect(tests).toContain("DICTATE_FFMPEG: ${{ github.workspace }}/target/ffmpeg/${{ matrix.target }}/dictate-ffmpeg${{ matrix.exe }}");
+    const tests = step("ffmpeg", "cargo test -p loah-services");
+    expect(tests).toMatch(/cargo test -p loah-services --lib --locked -- .*media:: .*record::/);
+    expect(tests).toContain("LOAH_FFMPEG: ${{ github.workspace }}/target/ffmpeg/${{ matrix.target }}/loah-ffmpeg${{ matrix.exe }}");
     // A program that cannot run on the runner (the other Mac, the Windows one) is not run.
     expect(tests).toContain("if: matrix.tests");
     expect(job("ffmpeg").indexOf(tests)).toBeGreaterThan(job("ffmpeg").indexOf(`bash ${CHECK}`));
@@ -445,18 +445,18 @@ describe("the ffmpeg that ships with the app (LGPL v2.1 or later, built from sou
     expect(windows).toContain("needs: ffmpeg");
     expect(windows).toContain("if: ${{ !cancelled() }}");
     const download = step("ffmpeg-windows", "actions/download-artifact@v4");
-    expect(download).toContain("name: dictate-ffmpeg-x86_64-pc-windows-msvc");
+    expect(download).toContain("name: loah-ffmpeg-x86_64-pc-windows-msvc");
     expect(download).toContain("path: target/ffmpeg/x86_64-pc-windows-msvc");
 
     const check = step("ffmpeg-windows", `bash ${CHECK}`);
     expect(check).toContain("shell: bash");
-    expect(check).toContain("target/ffmpeg/x86_64-pc-windows-msvc/dictate-ffmpeg.exe");
+    expect(check).toContain("target/ffmpeg/x86_64-pc-windows-msvc/loah-ffmpeg.exe");
     // The first time the program runs on Windows: what it lists is the encoders that the recording picks from.
     expect(windows).toContain("-hide_banner -encoders");
 
-    const tests = step("ffmpeg-windows", "cargo test -p dictate-services");
-    expect(tests).toMatch(/cargo test -p dictate-services --lib --locked -- .*media:: .*record::/);
-    expect(tests).toContain("DICTATE_FFMPEG: ${{ github.workspace }}/target/ffmpeg/x86_64-pc-windows-msvc/dictate-ffmpeg.exe");
+    const tests = step("ffmpeg-windows", "cargo test -p loah-services");
+    expect(tests).toMatch(/cargo test -p loah-services --lib --locked -- .*media:: .*record::/);
+    expect(tests).toContain("LOAH_FFMPEG: ${{ github.workspace }}/target/ffmpeg/x86_64-pc-windows-msvc/loah-ffmpeg.exe");
     expect(windows.indexOf(download)).toBeLessThan(windows.indexOf(check));
     expect(windows.indexOf(check)).toBeLessThan(windows.indexOf(tests));
   });
@@ -464,16 +464,16 @@ describe("the ffmpeg that ships with the app (LGPL v2.1 or later, built from sou
   test("the Windows runner has no graphics card: the encoder it picks must be h264_mf (the software one), and never mpeg4", () => {
     // The ffmpeg that ships has no libx264 or libopenh264, so a machine whose Media Foundation tries all fail records mpeg4, which the
     // player cannot play. The tests print which encoder they ran with; this one fails when it is not Media Foundation's.
-    const tests = step("ffmpeg-windows", "cargo test -p dictate-services");
-    expect(tests).toContain("DICTATE_EXPECT_ENCODER: h264_mf");
+    const tests = step("ffmpeg-windows", "cargo test -p loah-services");
+    expect(tests).toContain("LOAH_EXPECT_ENCODER: h264_mf");
     const TEST = "pick_codec_with_the_real_ffmpeg_gives_the_encoder_that_a_machine_is_known_to_have";
-    expect(read("crates/dictate-services/src/record/video.rs")).toContain(`fn ${TEST}()`);
-    expect(read("crates/dictate-services/src/record/video.rs")).toContain('std::env::var("DICTATE_EXPECT_ENCODER")');
+    expect(read("crates/loah-services/src/record/video.rs")).toContain(`fn ${TEST}()`);
+    expect(read("crates/loah-services/src/record/video.rs")).toContain('std::env::var("LOAH_EXPECT_ENCODER")');
     // It is in what the step runs: a name that matches nothing runs nothing, and passes.
     expect(tests).toMatch(/-- .*record::/);
   });
 
-  test("the jobs that run the tests have what dictate-services is built with: the sherpa-onnx library of each system", () => {
+  test("the jobs that run the tests have what loah-services is built with: the sherpa-onnx library of each system", () => {
     const linux = step("ffmpeg", "Use the sherpa-onnx build without text to speech (Linux)");
     expect(linux).toContain("if: runner.os == 'Linux' && matrix.tests");
     expect(linux).toContain('echo "SHERPA_ONNX_LIB_DIR=$lib" >> "$GITHUB_ENV"');
@@ -488,6 +488,17 @@ describe("the ffmpeg that ships with the app (LGPL v2.1 or later, built from sou
       expect(rust).toContain("shared-key: ${{ runner.os }}");
       expect(rust).toContain("save-if: false");
     }
+  });
+
+  test("the Rust cache is restored before the ffmpeg is put in target/, or a restore of another key empties target/ffmpeg", () => {
+    // Swatinem/rust-cache cleans target/ when what it restores is not an exact match (any change of Cargo.toml or Cargo.lock): the
+    // ffmpeg that the job had built or restored a step before is gone, and `"$LOAH_FFMPEG" -version` fails with 127.
+    const ffmpeg = job("ffmpeg");
+    expect(ffmpeg.indexOf(step("ffmpeg", "Swatinem/rust-cache@v2"))).toBeLessThan(ffmpeg.indexOf(step("ffmpeg", "id: ffmpeg-build")));
+    const windows = job("ffmpeg-windows");
+    expect(windows.indexOf(step("ffmpeg-windows", "Swatinem/rust-cache@v2"))).toBeLessThan(
+      windows.indexOf(step("ffmpeg-windows", "actions/download-artifact@v4")),
+    );
   });
 
   test("the job gets time for a cold build of the whole workspace's libraries on a slow runner", () => {
@@ -544,5 +555,15 @@ describe("the Intel Mac is checked before a release finds out that it does not b
     expect(rust).toContain("shared-key: macos-x86_64");
     expect(rust).toContain("save-if: ${{ github.ref == 'refs/heads/main' }}");
     expect(text()).toContain("key: sherpa-onnx-1.13.8-${{ runner.os }}-${{ runner.arch }}");
+  });
+});
+
+describe("the macOS bundle that the app job looks at", () => {
+  test("it_is_Loah_app_because_the_product_name_is_the_name_of_the_bundle", () => {
+    // `tauri build --bundles app` writes <productName>.app: a path with the old name is a bundle that is not there, and the step fails.
+    const bundle = steps().find((step) => step.includes("Bundle the macOS app and check what it declares"));
+    expect(bundle).toBeDefined();
+    expect(bundle).toContain("bundle=../target/debug/bundle/macos/Loah.app");
+    expect(workflow).not.toContain("macos/Dictate.app");
   });
 });

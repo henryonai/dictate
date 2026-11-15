@@ -75,24 +75,20 @@
       aria-label={t("meetings.ask.label")}
       autocomplete="off"
     />
-    <button type="submit" disabled={asking || needsApi || question.trim() === ""}>{t("meetings.ask.submit")}</button>
+    <button type="submit" class="primary" disabled={asking || needsApi || question.trim() === ""}>{t("meetings.ask.submit")}</button>
   </form>
 </section>
 
 <style>
-  /* Pinned under the parts of the summary: the questions and their answers scroll in the room that they have (half of the pane at most),
-     and the field below them does not. */
+  /* The Ask tab: the questions and their answers scroll in the room that the tab has, and the field is at the bottom of it, in reach. */
   .ask {
     display: flex;
-    flex: 0 1 auto;
+    flex: 1 1 auto;
     flex-direction: column;
-    max-height: 50%;
     min-height: 0;
-    padding-top: 8px;
-    border-top: 1px solid var(--border);
   }
   .entries {
-    flex: 0 1 auto;
+    flex: 1 1 auto;
     min-height: 0;
     margin: 0 0 8px;
     padding: 0;
@@ -115,6 +111,7 @@
     display: flex;
     flex: none;
     gap: 6px;
+    margin-top: auto;
   }
   input {
     flex: 1;

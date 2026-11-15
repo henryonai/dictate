@@ -9,7 +9,7 @@ import vi from "./vi.json";
 /** The part of a Rust source file from `start` to the `];` that ends the list. */
 function listIn(file: string, start: string): string {
   const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "../../../..");
-  const source = readFileSync(join(repoRoot, "crates/dictate-services/src", file), "utf8");
+  const source = readFileSync(join(repoRoot, "crates/loah-services/src", file), "utf8");
   const from = source.indexOf(start);
   expect(from, `${start} in ${file}`).toBeGreaterThan(-1);
   return source.slice(from, source.indexOf("];", from));

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/svelte";
+import { fireEvent, render, screen, within } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { api } from "../lib/api";
@@ -16,6 +16,89 @@ afterEach(() => {
 });
 
 const lastSaved = () => vi.mocked(api.saveSettings).mock.lastCall?.[0];
+
+test("the_dictate_still_installed_notice_shows_when_reported", async () => {
+  const user = userEvent.setup();
+  vi.mocked(api.dictateStillPresent).mockResolvedValue(true);
+  render(General, { store: await loadedStore() });
+
+  const notice = await screen.findByRole("status");
+  expect(notice).toHaveTextContent(
+    "Dictate is still installed and uses the same shortcut and meetings folder. Quit it and remove it, then re-point your MCP client to Loah.",
+  );
+  // The button opens the section of the README about upgrading, in the browser.
+  await user.click(screen.getByRole("button", { name: "How to switch to Loah" }));
+  expect(api.openUrl).toHaveBeenCalledExactlyOnceWith("https://github.com/henryonai/loah#upgrading-from-dictate");
+});
+
+test("the notice is in Vietnamese when the interface is", async () => {
+  vi.mocked(api.dictateStillPresent).mockResolvedValue(true);
+  render(General, { store: await loadedStore({ ui_language: "vi" }) });
+
+  const notice = await screen.findByRole("status");
+  expect(notice).toHaveTextContent("Dictate vẫn còn được cài trên máy");
+  expect(screen.getByRole("button", { name: "Xem cách chuyển sang Loah" })).toBeInTheDocument();
+});
+
+test("the button of the notice opens the Vietnamese README, at its own section, in the Vietnamese interface", async () => {
+  const user = userEvent.setup();
+  vi.mocked(api.dictateStillPresent).mockResolvedValue(true);
+  render(General, { store: await loadedStore({ ui_language: "vi" }) });
+
+  await user.click(await screen.findByRole("button", { name: "Xem cách chuyển sang Loah" }));
+
+  // README.vi.md is a page of its own on GitHub (the repository shows README.md), and "Nâng cấp từ Dictate" is the anchor of its heading.
+  expect(api.openUrl).toHaveBeenCalledExactlyOnceWith("https://github.com/henryonai/loah/blob/main/README.vi.md#nâng-cấp-từ-dictate");
+});
+
+test("the language of the system decides the README of the button when the interface follows the system", async () => {
+  const user = userEvent.setup();
+  vi.mocked(api.dictateStillPresent).mockResolvedValue(true);
+  render(General, { store: await loadedStore({ ui_language: "system", system_language: "vi" }) });
+
+  await user.click(await screen.findByRole("button", { name: "Xem cách chuyển sang Loah" }));
+
+  expect(api.openUrl).toHaveBeenCalledExactlyOnceWith("https://github.com/henryonai/loah/blob/main/README.vi.md#nâng-cấp-từ-dictate");
+});
+
+test("no notice when the old app is not there, or when that can't be told", async () => {
+  render(General, { store: await loadedStore() });
+  await screen.findByLabelText("Shortcut");
+  expect(api.dictateStillPresent).toHaveBeenCalled();
+  expect(screen.queryByRole("status")).not.toBeInTheDocument();
+});
+
+test("a question about the old app that fails says nothing", async () => {
+  vi.mocked(api.dictateStillPresent).mockRejectedValue("not allowed");
+  render(General, { store: await loadedStore() });
+  await screen.findByLabelText("Shortcut");
+  await vi.waitFor(() => expect(api.dictateStillPresent).toHaveBeenCalled());
+  expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
+test("the old app is asked about again when the window gets the focus back, and the notice goes when it is gone", async () => {
+  vi.mocked(api.dictateStillPresent).mockResolvedValue(true);
+  render(General, { store: await loadedStore() });
+  await screen.findByRole("status");
+
+  // The person quits and removes it in another window, and comes back.
+  vi.mocked(api.dictateStillPresent).mockResolvedValue(false);
+  await fireEvent.focus(window);
+
+  await vi.waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
+});
+
+test("a notice whose button can't open the page says so", async () => {
+  const user = userEvent.setup();
+  vi.mocked(api.dictateStillPresent).mockResolvedValue(true);
+  vi.mocked(api.openUrl).mockRejectedValue("no browser");
+  render(General, { store: await loadedStore() });
+
+  await user.click(await screen.findByRole("button", { name: "How to switch to Loah" }));
+
+  expect(await screen.findByRole("alert")).toHaveTextContent("no browser");
+});
 
 test("shows the stored shortcut and doesn't let it be typed over", async () => {
   vi.mocked(api.hotkeyStatus).mockRejectedValue("not asked yet");
@@ -75,13 +158,13 @@ test("a shortcut that was taken when the app started says so, and can be replace
   expect(screen.getByLabelText("Shortcut")).toHaveValue("F6");
 });
 
-test("a desktop with no global shortcuts for apps says how to bind dictate --toggle and dictate --record, and has nothing to change", async () => {
+test("a desktop with no global shortcuts for apps says how to bind loah --toggle and loah --record, and has nothing to change", async () => {
   vi.mocked(api.hotkeyStatus).mockResolvedValue(fakeHotkeyStatus({ backend: "none", error: "hotkey.wayland_unavailable" }));
   render(General, { store: await loadedStore() });
 
   expect(
     await screen.findByText(
-      "Your desktop doesn't offer global shortcuts to apps. Bind shortcuts in your desktop settings to run: dictate --toggle (dictation) and dictate --record (recording)",
+      "Your desktop doesn't offer global shortcuts to apps. Bind shortcuts in your desktop settings to run: loah --toggle (dictation) and loah --record (recording)",
     ),
   ).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Change…" })).not.toBeInTheDocument();
@@ -96,9 +179,9 @@ test("a shortcut that the desktop's portal binds is changed in the desktop, not 
   expect(screen.queryByRole("button", { name: "Change…" })).not.toBeInTheDocument();
 });
 
-test("tells how to run dictate --toggle", async () => {
+test("tells how to run loah --toggle", async () => {
   render(General, { store: await loadedStore() });
-  expect(screen.getByText(/dictate --toggle/)).toBeInTheDocument();
+  expect(screen.getByText(/loah --toggle/)).toBeInTheDocument();
 });
 
 test("changing the interface language saves it and switches the words at once", async () => {
@@ -121,6 +204,42 @@ test("switching the language back to the system's follows the web view", async (
 
   expect(lastSaved()).toMatchObject({ ui_language: "system" });
   expect(await screen.findByLabelText("Interface language")).toBeInTheDocument();
+});
+
+test("the_theme_choice_is_saved", async () => {
+  const user = userEvent.setup();
+  render(General, { store: await loadedStore() });
+
+  const theme = screen.getByLabelText("Theme");
+  // System first, as the setting is by default.
+  expect(theme).toHaveValue("system");
+  expect(within(theme).getAllByRole("option").map((option) => option.textContent)).toEqual(["Same as the system", "Light", "Dark"]);
+
+  await user.selectOptions(theme, "Dark");
+  expect(lastSaved()).toMatchObject({ theme: "dark" });
+
+  await user.selectOptions(theme, "Light");
+  expect(lastSaved()).toMatchObject({ theme: "light" });
+
+  await user.selectOptions(theme, "Same as the system");
+  expect(lastSaved()).toMatchObject({ theme: "system" });
+});
+
+test("the theme that is saved is the one the select shows", async () => {
+  render(General, { store: await loadedStore({ theme: "light" }) });
+
+  expect(screen.getByLabelText("Theme")).toHaveValue("light");
+});
+
+test("the theme choice has words in Vietnamese", async () => {
+  const user = userEvent.setup();
+  render(General, { store: await loadedStore({ ui_language: "vi" }) });
+
+  const theme = screen.getByLabelText("Chủ đề");
+  expect(within(theme).getAllByRole("option").map((option) => option.textContent)).toEqual(["Theo hệ thống", "Sáng", "Tối"]);
+  await user.selectOptions(theme, "Tối");
+
+  expect(lastSaved()).toMatchObject({ theme: "dark" });
 });
 
 test("picks a dictation language from the list", async () => {
@@ -163,7 +282,7 @@ test("the mode picks between press-to-toggle and push-to-talk", async () => {
 test.each([
   ["Write into the focused text field", "auto_write", true],
   ["Save recordings + transcripts", "save_recordings", true],
-  ["Open Dictate at login", "launch_at_login", false],
+  ["Open Loah at login", "launch_at_login", false],
 ] as const)("the %s switch saves %s", async (label, key, was) => {
   const user = userEvent.setup();
   render(General, { store: await loadedStore() });
@@ -180,7 +299,7 @@ test("a switch goes back when the system refuses the change", async () => {
   vi.mocked(api.saveSettings).mockRejectedValue("Could not change launch at login: denied");
   render(General, { store: await loadedStore() });
 
-  const toggle = screen.getByRole("checkbox", { name: "Open Dictate at login" });
+  const toggle = screen.getByRole("checkbox", { name: "Open Loah at login" });
   await user.click(toggle);
 
   await vi.waitFor(() => expect(toggle).not.toBeChecked());
@@ -246,7 +365,7 @@ test("the shortcut of the recording is shown next to the dictation's, and can't 
   const record = screen.getByLabelText("Recording shortcut");
   expect(record).toHaveValue("Ctrl+Alt+R");
   expect(record).toHaveAttribute("readonly");
-  expect(screen.getByText("Starts and stops a recording from anywhere. From a script, run: dictate --record")).toBeInTheDocument();
+  expect(screen.getByText("Starts and stops a recording from anywhere. From a script, run: loah --record")).toBeInTheDocument();
   // The dictation's own shortcut is not touched by it.
   expect(screen.getByLabelText("Shortcut")).toHaveValue("Ctrl+Alt+Space");
 });
@@ -264,7 +383,7 @@ test("the shortcut of the recording has words in Vietnamese", async () => {
   expect(screen.getByLabelText("Phím tắt quay màn hình")).toHaveValue("Ctrl+Alt+R");
 });
 
-const NOTICES = "https://github.com/henryonai/dictate/blob/main/THIRD_PARTY_NOTICES.md";
+const NOTICES = "https://github.com/henryonai/loah/blob/main/THIRD_PARTY_NOTICES.md";
 
 test.each([
   ["en", "Licenses"],

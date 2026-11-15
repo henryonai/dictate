@@ -3,17 +3,19 @@
 
 use std::sync::Mutex;
 
-use dictate_services::dictation::lang::display_hotkey;
-use dictate_services::settings::{Settings, UiLanguage};
+use loah_services::dictation::lang::display_hotkey;
+use loah_services::settings::{Settings, UiLanguage};
 use serde::Serialize;
+use tauri::image::Image;
 use tauri::menu::{IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Manager, Runtime};
+use tauri::{include_image, AppHandle, Manager, Runtime};
 
 use crate::commands;
 use crate::dictation::system::DictationHandle;
 use crate::hotkey::{self, HotkeyEvent};
 use crate::meetings;
+use crate::platform::rules::Os;
 use crate::recording::{Phase, Recorder, RecordingView};
 use crate::state::lock;
 
@@ -50,7 +52,7 @@ pub fn resolve_language(setting: UiLanguage, os_locale: Option<&str>) -> Lang {
     }
 }
 
-/// The words of the tray menu. The version line ("Dictate 1.2.3") has no words to translate.
+/// The words of the tray menu. The version line ("Loah 1.2.3") has no words to translate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TrayLabels {
     pub settings: &'static str,
@@ -115,7 +117,7 @@ pub fn title(view: &RecordingView) -> Option<String> {
         Phase::Paused => "⏸",
         Phase::Idle | Phase::Starting | Phase::Finishing => return None,
     };
-    let time = dictate_core::text::timestamp::format(view.elapsed_ms as f64 / 1000.0);
+    let time = loah_core::text::timestamp::format(view.elapsed_ms as f64 / 1000.0);
     Some(format!("{mark} {time}"))
 }
 
@@ -173,7 +175,7 @@ fn menu_entries(lang: Lang, hotkey: &str, recording: bool) -> Vec<Option<Entry>>
         None,
         entry(
             ID_VERSION,
-            &format!("Dictate {}", env!("CARGO_PKG_VERSION")),
+            &format!("{} {}", crate::APP_NAME, env!("CARGO_PKG_VERSION")),
             false,
         ),
         entry(ID_QUIT, labels.quit, true),
@@ -276,18 +278,41 @@ impl Look {
 /// The look of the tray, kept as state of the app.
 struct TrayLook(Mutex<Look>);
 
+/// What the tray shows as its icon, and whether the system paints it.
+struct TrayArt {
+    image: Image<'static>,
+    /// A template image is only a shape (black, with transparency) that the menu bar of the Mac paints dark or light to match itself.
+    template: bool,
+}
+
+/// The icon of the tray on a system. The Mac gets the glyph of the icon as a template, 36 pixels for the 18 points that the menu bar
+/// draws. Windows and Linux get a graphite tile with the blue bars and the light lines, which shows on a light and on a dark taskbar
+/// (a black shape would vanish on a dark one, and the app cannot tell which it is). Both are made by `scripts/make-icons.sh`.
+fn tray_art(os: Os) -> TrayArt {
+    match os {
+        Os::Mac => TrayArt {
+            image: include_image!("icons/tray/tray-template@2x.png"),
+            template: true,
+        },
+        Os::Windows | Os::Linux => TrayArt {
+            image: include_image!("icons/tray/tray@2x.png"),
+            template: false,
+        },
+    }
+}
+
 /// Puts the icon in the tray. Clicking it opens the menu (on macOS too, as menu bar apps do).
 pub fn create(app: &AppHandle, lang: Lang, hotkey: &str) -> tauri::Result<()> {
     app.manage(TrayLook(Mutex::new(Look::new(lang, hotkey.to_owned()))));
-    let mut tray = TrayIconBuilder::with_id(TRAY_ID)
-        .tooltip("Dictate")
+    let art = tray_art(Os::current());
+    TrayIconBuilder::with_id(TRAY_ID)
+        .tooltip(crate::APP_NAME)
+        .icon(art.image)
+        .icon_as_template(art.template)
         .menu(&build_menu(app, lang, hotkey, false)?)
         .show_menu_on_left_click(true)
-        .on_menu_event(on_menu_event);
-    if let Some(icon) = app.default_window_icon() {
-        tray = tray.icon(icon.clone());
-    }
-    tray.build(app)?;
+        .on_menu_event(on_menu_event)
+        .build(app)?;
     log::info!("The tray icon is in place");
     Ok(())
 }
@@ -420,6 +445,7 @@ pub fn show_settings(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::platform::rules::Os;
     use crate::recording::{Phase, RecordingView};
 
     #[test]
@@ -441,6 +467,19 @@ mod tests {
         assert_eq!(vi.quit, "Thoát");
         assert_eq!(vi.record, "Quay & tóm tắt…");
         assert_eq!(vi.stop_recording, "Dừng quay & tóm tắt");
+    }
+
+    #[test]
+    fn the_version_line_names_the_app_loah_and_its_version() {
+        // The line has no words to translate: the name of the app and its version, the same in both languages.
+        for lang in [Lang::En, Lang::Vi] {
+            let version = menu_entries(lang, "Ctrl+Alt+Space", false)
+                .into_iter()
+                .flatten()
+                .find(|entry| entry.id == ID_VERSION)
+                .expect("the version line");
+            assert_eq!(version.text, format!("Loah {}", env!("CARGO_PKG_VERSION")));
+        }
     }
 
     #[test]
@@ -710,5 +749,50 @@ mod tests {
             Lang::En
         );
         assert_eq!(resolve_language(UiLanguage::System, None), Lang::En);
+    }
+
+    /// The pixels of a tray image as `[red, green, blue, alpha]`.
+    fn pixels(art: &TrayArt) -> Vec<[u8; 4]> {
+        art.image
+            .rgba()
+            .chunks_exact(4)
+            .map(|p| [p[0], p[1], p[2], p[3]])
+            .collect()
+    }
+
+    #[test]
+    fn tray_uses_the_template_icon_on_macos() {
+        let art = tray_art(Os::Mac);
+        assert!(
+            art.template,
+            "the menu bar tints a template to match itself"
+        );
+        // The menu bar draws it 18 points high: 36 pixels on a Retina screen.
+        assert_eq!((art.image.width(), art.image.height()), (36, 36));
+        let pixels = pixels(&art);
+        // A template is a shape, not a picture: black, with the alpha telling where the shape is.
+        assert!(
+            pixels.iter().all(|&[r, g, b, _]| (r, g, b) == (0, 0, 0)),
+            "every pixel is black"
+        );
+        assert!(pixels.iter().any(|p| p[3] == 255), "the shape is there");
+        assert!(pixels.iter().any(|p| p[3] == 0), "and the rest is clear");
+    }
+
+    #[test]
+    fn windows_and_linux_get_a_tile_that_shows_on_a_dark_and_on_a_light_bar() {
+        for os in [Os::Windows, Os::Linux] {
+            let art = tray_art(os);
+            // Only the menu bar of the Mac tints an image: elsewhere a black shape would vanish on a dark taskbar.
+            assert!(!art.template, "{os:?}");
+            assert_eq!((art.image.width(), art.image.height()), (32, 32), "{os:?}");
+            let luma = |&[r, g, b, _]: &[u8; 4]| {
+                (299 * u32::from(r) + 587 * u32::from(g) + 114 * u32::from(b)) / 1000
+            };
+            let opaque: Vec<[u8; 4]> = pixels(&art).into_iter().filter(|p| p[3] == 255).collect();
+            // A dark ground that stands out on a light bar, with light lines that stand out on a dark one.
+            assert!(opaque.iter().any(|p| luma(p) < 60), "{os:?}: a dark ground");
+            assert!(opaque.iter().any(|p| luma(p) > 200), "{os:?}: light lines");
+        }
     }
 }

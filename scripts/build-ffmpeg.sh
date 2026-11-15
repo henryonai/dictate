@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Builds the minimal LGPL ffmpeg that Dictate ships next to its own program (a Tauri sidecar called `dictate-ffmpeg`).
+# Builds the minimal LGPL ffmpeg that Loah ships next to its own program (a Tauri sidecar called `loah-ffmpeg`).
 #
 # Usage: scripts/build-ffmpeg.sh TARGET OUTDIR
-#   TARGET  a Rust target triple (the name that Tauri wants after `dictate-ffmpeg-`):
+#   TARGET  a Rust target triple (the name that Tauri wants after `loah-ffmpeg-`):
 #             aarch64-apple-darwin | x86_64-apple-darwin   build on a Mac; x86_64 is cross-compiled on an arm64 one
 #             x86_64-unknown-linux-gnu                     build on Ubuntu 24.04 x86_64; fully static
 #             x86_64-pc-windows-msvc                       build on Linux with mingw-w64 (CROSS_PREFIX=x86_64-w64-mingw32-), or in an
 #                                                          MSYS2 UCRT64 shell on Windows (no CROSS_PREFIX); the program is for Windows
 #                                                          whichever of them makes it
-#   OUTDIR  gets `dictate-ffmpeg[.exe]`, `BUILDCONF-TARGET.txt` (the configure line, for the offer of the source that the LGPL asks
+#   OUTDIR  gets `loah-ffmpeg[.exe]`, `BUILDCONF-TARGET.txt` (the configure line, for the offer of the source that the LGPL asks
 #           for) and `ffmpeg-VERSION.tar.xz` (the exact source that the program was built from).
 #
 # It needs: a C compiler, make, curl, xz, git (Windows), and nasm for the x86_64 targets; on Linux pkg-config and the static archives of
@@ -50,8 +50,8 @@ OUT="$(mkdir -p "$2" && cd "$2" && pwd)"
 JOBS="$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2)"
 # The name of the program in OUTDIR is the one that the app looks for next to itself, on every system.
 case "$TARGET" in
-  *-windows-*) EXE="ffmpeg.exe" SIDECAR="dictate-ffmpeg.exe" ;;
-  *) EXE="ffmpeg" SIDECAR="dictate-ffmpeg" ;;
+  *-windows-*) EXE="ffmpeg.exe" SIDECAR="loah-ffmpeg.exe" ;;
+  *) EXE="ffmpeg" SIDECAR="loah-ffmpeg" ;;
 esac
 
 hash_of() {
@@ -75,7 +75,7 @@ if [ "$actual" != "$SHA256" ]; then
 fi
 tar -xf "ffmpeg-$VERSION.tar.xz" || fail "the unpacking failed"
 
-# --- what the app asks of ffmpeg (see crates/dictate-services/src/media/{decode,encode/ffmpeg}.rs and record/video.rs) ---------------
+# --- what the app asks of ffmpeg (see crates/loah-services/src/media/{decode,encode/ffmpeg}.rs and record/video.rs) ---------------
 # --disable-everything, and then:
 #  - every demuxer and every decoder (--enable-demuxers --enable-decoders). An import that symphonia cannot read (AC-3, WMA, AMR, odd
 #    AAC, damaged files, whatever else) goes through ffmpeg, and Tools::find takes the ffmpeg that ships before the one of the user, so

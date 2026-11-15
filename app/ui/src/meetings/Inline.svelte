@@ -61,7 +61,10 @@
     user-select: text;
   }
   .inline :global(a[data-seek]) {
+    font-family: var(--mono);
+    font-size: 0.92em;
     font-variant-numeric: tabular-nums;
+    color: var(--ts);
   }
   .inline :global(a[data-inert]) {
     color: inherit;

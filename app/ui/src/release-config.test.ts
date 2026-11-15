@@ -53,7 +53,7 @@ describe("one version for the app, every crate and the web UI", () => {
   test("every_crate_takes_the_version_of_the_workspace_and_the_tauri_config_has_none", () => {
     const folders = memberFolders().sort();
     // The three libraries and the app: a new crate has to say what it does about its version.
-    expect(folders).toEqual(["app/src-tauri", "crates/dictate-core", "crates/dictate-mcp", "crates/dictate-services"]);
+    expect(folders).toEqual(["app/src-tauri", "crates/loah-core", "crates/loah-mcp", "crates/loah-services"]);
     for (const folder of folders) {
       const manifest = table(read(`${folder}/Cargo.toml`), "package");
       expect(manifest, folder).toMatch(/^version\.workspace = true$/m);

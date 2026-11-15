@@ -53,7 +53,7 @@
   {#if !empty}
     <div class="scroll" bind:this={scroller}>
       <p class="text" style:opacity={working ? 0.7 : 1}>
-        {#if done !== ""}<span>{done.trimEnd()}</span>{/if}{between}{#if live !== ""}<span style:color="rgba(255, 255, 255, 0.6)">{live.trimStart()}</span>{/if}
+        {#if done !== ""}<span>{done.trimEnd()}</span>{/if}{between}{#if live !== ""}<span style:color="var(--muted)">{live.trimStart()}</span>{/if}
       </p>
     </div>
   {/if}
@@ -72,11 +72,11 @@
     box-sizing: border-box;
     width: 400px;
     padding: 9px 12px;
-    border: 1px solid rgb(255 255 255 / 0.08);
+    border: 1px solid var(--line);
     border-radius: 14px;
-    background: rgb(28 28 28 / 0.96);
-    box-shadow: 0 6px 12px rgb(0 0 0 / 0.28);
-    color: rgb(245 245 245);
+    background: color-mix(in srgb, var(--panel) 96%, transparent);
+    box-shadow: var(--shadow-pop);
+    color: var(--ink);
   }
 
   /* Nothing to show yet but the header: no wider than it needs. */
@@ -88,7 +88,7 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    color: rgb(184 184 184);
+    color: var(--muted);
     font-size: 11px;
     font-weight: 500;
   }
@@ -107,7 +107,7 @@
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    background: rgb(255 69 58);
+    background: var(--record);
   }
 
   .slot {
@@ -121,8 +121,8 @@
     box-sizing: border-box;
     width: 12px;
     height: 12px;
-    border: 1.5px solid rgb(255 255 255 / 0.25);
-    border-top-color: rgb(255 255 255 / 0.8);
+    border: 1.5px solid var(--line);
+    border-top-color: var(--accent);
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
   }
@@ -143,7 +143,7 @@
     padding: 0;
     border: 0;
     border-radius: 50%;
-    background: rgb(59 59 59);
+    background: var(--hover);
     color: inherit;
     cursor: pointer;
   }
@@ -164,14 +164,21 @@
 
   .hint {
     margin-top: 8px;
-    color: rgb(140 140 140);
+    color: var(--muted);
     font-size: 10px;
   }
 
   .problem {
     margin-top: 8px;
-    color: rgb(255 159 10);
+    color: var(--warn);
     font-size: 11px;
     line-height: 1.35;
+  }
+
+  /* A web view before Safari 16.2 (macOS 13.0 has 16.0) does not know color-mix(): the bubble is then solid. */
+  @supports not (color: color-mix(in srgb, red, blue)) {
+    .bubble {
+      background: var(--panel);
+    }
   }
 </style>

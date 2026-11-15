@@ -7,8 +7,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use chrono::{Local, NaiveDateTime};
-use dictate_services::audio::capture::{Capture, CaptureError, CaptureEvent};
-use dictate_services::system;
+use loah_services::audio::capture::{Capture, CaptureError, CaptureEvent};
+use loah_services::system;
 use tauri::{AppHandle, Manager};
 use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -65,7 +65,7 @@ impl CaptureFactory for Microphone {
 }
 
 /// A debug build can listen to a WAV file instead of the microphone, to try dictation without a person to talk: set
-/// `DICTATE_DEBUG_MIC_WAV` to the path of a WAV file (16-bit or 32-bit float, any rate), and each recording hears it, in real time,
+/// `LOAH_DEBUG_MIC_WAV` to the path of a WAV file (16-bit or 32-bit float, any rate), and each recording hears it, in real time,
 /// from its start. A release build has none of this.
 #[cfg(debug_assertions)]
 pub struct WavReplay {
@@ -87,7 +87,7 @@ impl WavReplay {
     /// The file at `path`, heard in real time.
     pub fn open(path: &std::path::Path) -> Result<Self, String> {
         let samples =
-            dictate_services::whisper::local::read_wav_16k_mono(path).map_err(|e| e.to_string())?;
+            loah_services::whisper::local::read_wav_16k_mono(path).map_err(|e| e.to_string())?;
         Ok(Self::new(samples, Duration::from_millis(100)))
     }
 }
@@ -138,16 +138,16 @@ impl CaptureFactory for WavReplay {
     }
 }
 
-/// What a recording listens to: the microphone, or in a debug build the file that `DICTATE_DEBUG_MIC_WAV` names.
+/// What a recording listens to: the microphone, or in a debug build the file that `LOAH_DEBUG_MIC_WAV` names.
 fn capture_source() -> Arc<dyn CaptureFactory> {
     #[cfg(debug_assertions)]
-    if let Some(path) = std::env::var_os("DICTATE_DEBUG_MIC_WAV") {
+    if let Some(path) = std::env::var_os("LOAH_DEBUG_MIC_WAV") {
         match WavReplay::open(std::path::Path::new(&path)) {
             Ok(replay) => {
                 log::warn!("Recordings listen to a WAV file, not to the microphone");
                 return Arc::new(replay);
             }
-            Err(e) => log::error!("Could not read DICTATE_DEBUG_MIC_WAV: {e}"),
+            Err(e) => log::error!("Could not read LOAH_DEBUG_MIC_WAV: {e}"),
         }
     }
     Arc::new(Microphone)
@@ -238,7 +238,7 @@ pub fn build(app: &AppHandle, state: &AppState) -> Result<Arc<Controller>, Strin
 }
 
 /// Builds the controller on a thread of its own, once the key store has been asked which keys exist, and then hands it what the
-/// shortcut, the tray and `dictate --toggle` say. The events that came meanwhile wait in the channel.
+/// shortcut, the tray and `loah --toggle` say. The events that came meanwhile wait in the channel.
 pub fn start(
     app: AppHandle,
     state: AppState,
@@ -263,7 +263,7 @@ pub fn start(
     });
 }
 
-/// Hands what the shortcut, the tray and `dictate --toggle` say to the controller, one at a time, until the channel is closed.
+/// Hands what the shortcut, the tray and `loah --toggle` say to the controller, one at a time, until the channel is closed.
 /// It has a thread of its own: handling a press shows windows, which asks the main thread and may wait for it, and that is not
 /// work for a thread that the rest of the app's async work shares.
 fn listen_for_the_shortcut(
@@ -385,7 +385,7 @@ mod tests {
         fn a_wav_file_is_read_from_disk_as_the_samples_it_holds() {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("speech.wav");
-            dictate_services::audio::wav::write_16k_mono(&path, &samples(1_600)).unwrap();
+            loah_services::audio::wav::write_16k_mono(&path, &samples(1_600)).unwrap();
             let replay = WavReplay::open(&path).unwrap();
             let (tx, rx) = mpsc::channel();
             let capture = replay.start(tx).unwrap();

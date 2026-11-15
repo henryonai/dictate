@@ -16,23 +16,23 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use dictate_core::meetings::library::files;
-use dictate_core::text::segments::Segment;
-use dictate_core::text::whisper::Turn;
-use dictate_services::audio::resample::StreamResampler;
-use dictate_services::diarize::{self, Diarizer};
-use dictate_services::media::decode::{DecodeError, MonoDecoder};
-use dictate_services::media::encode::{self, EncodeError, M4aSink, M4A_RATE};
-use dictate_services::media::tools::Tools;
-use dictate_services::media::ytdlp::{self, Downloaded, LinkError};
-use dictate_services::meetings::{MeetingBackend, Prepared};
-use dictate_services::secrets::{Account, SecretStore};
-use dictate_services::settings::{self, Engine, Settings, SettingsStore};
-use dictate_services::summary::{self, SummaryProgress};
-use dictate_services::system;
-use dictate_services::transcribe_api::{self, ApiProgress, BoxFuture, LongApiError};
-use dictate_services::whisper::local::{LocalWhisper, TimedTranscript};
-use dictate_services::whisper::models::{self, ModelDir};
+use loah_core::meetings::library::files;
+use loah_core::text::segments::Segment;
+use loah_core::text::whisper::Turn;
+use loah_services::audio::resample::StreamResampler;
+use loah_services::diarize::{self, Diarizer};
+use loah_services::media::decode::{DecodeError, MonoDecoder};
+use loah_services::media::encode::{self, EncodeError, M4aSink, M4A_RATE};
+use loah_services::media::tools::Tools;
+use loah_services::media::ytdlp::{self, Downloaded, LinkError};
+use loah_services::meetings::{MeetingBackend, Prepared};
+use loah_services::secrets::{Account, SecretStore};
+use loah_services::settings::{self, Engine, Settings, SettingsStore};
+use loah_services::summary::{self, SummaryProgress};
+use loah_services::system;
+use loah_services::transcribe_api::{self, ApiProgress, BoxFuture, LongApiError};
+use loah_services::whisper::local::{LocalWhisper, TimedTranscript};
+use loah_services::whisper::models::{self, ModelDir};
 use tokio_util::sync::CancellationToken;
 
 use crate::commands::api_error_text;
@@ -186,6 +186,8 @@ pub struct AppBackend {
     diarizer: Arc<DiarizerCache>,
     /// Where the speaker separation models are (and are downloaded to).
     diarize_dir: PathBuf,
+    /// Dictate's folder of them, read only, when Loah could not copy it.
+    diarize_fallback: Option<PathBuf>,
     ram_gb: u64,
     /// Where ffmpeg and yt-dlp are: looked for each time, so that one installed while the app runs is found.
     tools: Arc<dyn Fn() -> Tools + Send + Sync>,
@@ -203,6 +205,7 @@ impl AppBackend {
             whisper: state.whisper.clone(),
             diarizer,
             diarize_dir,
+            diarize_fallback: state.fallbacks.diarization_models.clone(),
             ram_gb: system::total_ram_gb(),
             tools: Arc::new(Tools::find),
         }
@@ -369,21 +372,20 @@ impl MeetingBackend for AppBackend {
         log: &(dyn for<'a> Fn(&'a str) + Send + Sync),
     ) -> Result<Vec<Turn>, String> {
         // Once for the job, and on a blocking thread: it reads both models (46 MB) to check them.
-        let dir = self.diarize_dir.clone();
-        let missing = tauri::async_runtime::spawn_blocking(move || diarize::missing_models(&dir))
-            .await
-            .map_err(|e| format!("The work stopped unexpectedly: {e}"))?;
+        let (loahs, fallback) = (self.diarize_dir.clone(), self.diarize_fallback.clone());
+        let (dir, missing) = tauri::async_runtime::spawn_blocking(move || {
+            diarize::models_folder(&loahs, fallback.as_deref())
+        })
+        .await
+        .map_err(|e| format!("The work stopped unexpectedly: {e}"))?;
         let downloaded = !missing.is_empty();
         if downloaded {
+            // Into Loah's own folder, which is `dir` whenever something is missing.
             self.download_models(&missing, cancel, on_progress, log)
                 .await?;
         }
 
-        let (cache, dir, cancel) = (
-            self.diarizer.clone(),
-            self.diarize_dir.clone(),
-            cancel.clone(),
-        );
+        let (cache, cancel) = (self.diarizer.clone(), cancel.clone());
         let throttle = Throttle::new();
         run_local(
             move |report| {
@@ -672,10 +674,11 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize};
     use std::sync::mpsc;
 
-    use dictate_services::media::tools::Tools;
-    use dictate_services::meetings::MeetingError;
-    use dictate_services::presets::TranscribePreset;
-    use dictate_services::whisper::models::RemoteFile;
+    use loah_services::media::tools::Tools;
+    use loah_services::meetings::MeetingError;
+    use loah_services::migrate::Fallbacks;
+    use loah_services::presets::TranscribePreset;
+    use loah_services::whisper::models::RemoteFile;
 
     use super::*;
     use crate::test_support::{script, CountingStore};
@@ -898,6 +901,27 @@ mod tests {
     }
 
     #[test]
+    fn the_backend_reads_dictates_speaker_models_only_when_the_copy_of_them_failed() {
+        let p = parts();
+        assert_eq!(p.backend.diarize_fallback, None);
+
+        let dictates = p._dir.path().join("Dictate").join("diarization-models");
+        let state = p.state.clone().with_fallbacks(Fallbacks {
+            diarization_models: Some(dictates.clone()),
+            ..Fallbacks::default()
+        });
+        let backend = AppBackend::new(
+            &state,
+            Arc::new(DiarizerCache::default()),
+            p._dir.path().join("diarization"),
+        );
+
+        assert_eq!(backend.diarize_fallback, Some(dictates));
+        // Loah's own folder is still the one a download goes to.
+        assert_eq!(backend.diarize_dir, p._dir.path().join("diarization"));
+    }
+
+    #[test]
     fn readiness_goes_by_the_settings_and_the_key_flags_and_never_asks_the_key_store() {
         let p = parts();
         let b = &p.backend;
@@ -1117,7 +1141,7 @@ mod tests {
             "echo \"TITLE:$*\"\necho FILE:source.m4a",
             "",
         );
-        let ffmpeg = dir.path().join("dictate-ffmpeg");
+        let ffmpeg = dir.path().join("loah-ffmpeg");
         let mut p = parts();
         p.backend = p.backend.with_tools({
             let ffmpeg = ffmpeg.clone();

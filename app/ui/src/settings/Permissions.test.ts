@@ -113,7 +113,7 @@ test("a microphone that was refused can only be turned on in System Settings, an
   // The system doesn't show its prompt a second time, so a button for it would do nothing.
   expect(within(microphone).queryByRole("button", { name: "Grant access…" })).not.toBeInTheDocument();
   expect(microphone).toHaveTextContent(
-    "Dictate doesn't have Microphone access — turn it on in System Settings → Privacy & Security.",
+    "Loah doesn't have Microphone access — turn it on in System Settings → Privacy & Security.",
   );
   await user.click(within(microphone).getByRole("button", { name: "Open System Settings" }));
   expect(api.openPermissionSettings).toHaveBeenCalledExactlyOnceWith("microphone");
@@ -139,7 +139,7 @@ test("a permission that is granted has no buttons, and the note about a rebuilt 
 
   expect(screen.queryByRole("button")).not.toBeInTheDocument();
   expect(screen.getByText(/rebuilt or updated/)).toHaveTextContent(
-    "An app that is rebuilt or updated without a signature may need Accessibility granted again: in System Settings, remove Dictate from the list and add it again.",
+    "An app that is rebuilt or updated without a signature may need Accessibility granted again: in System Settings, remove Loah from the list and add it again.",
   );
 });
 

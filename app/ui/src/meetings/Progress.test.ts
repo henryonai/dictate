@@ -105,7 +105,7 @@ test("a job that has not begun is waiting for its turn, with every card waiting:
 test("says that the window can be closed", () => {
   panel(fakeJob());
 
-  expect(screen.getByText("You can close this window — Dictate will notify you when it's done.")).toBeInTheDocument();
+  expect(screen.getByText("You can close this window — Loah will notify you when it's done.")).toBeInTheDocument();
 });
 
 test("cancel_button_calls_meeting_cancel", async () => {
@@ -168,5 +168,5 @@ test("speaks Vietnamese when the language is", () => {
   panel(fakeJob({ step: "transcript", progress: 0.25, stepStartedMs: Date.now() - 30_000 }), "file");
 
   expect(screen.getByText("Đang transcript: đã chạy 00:30 · còn khoảng 01:30")).toBeInTheDocument();
-  expect(screen.getByText("Có thể đóng cửa sổ — Dictate sẽ báo khi xong.")).toBeInTheDocument();
+  expect(screen.getByText("Có thể đóng cửa sổ — Loah sẽ báo khi xong.")).toBeInTheDocument();
 });

@@ -11,16 +11,17 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use dictate_core::meetings::library::MeetingLibrary;
-use dictate_services::ai;
-use dictate_services::http::ApiError;
-use dictate_services::presets::{AiProvider, TranscribePreset, EDIT_PRESETS};
-use dictate_services::secrets::{Account, SecretStore};
-use dictate_services::settings::{self, Settings, SettingsStore};
-use dictate_services::transcribe_api::{self, TranscribeError};
-use dictate_services::whisper::models::{self, DownloadError, ModelStatus, HUGGING_FACE_BASE_URL};
+use loah_core::meetings::library::MeetingLibrary;
+use loah_services::ai;
+use loah_services::http::ApiError;
+use loah_services::migrate::FailedItem;
+use loah_services::presets::{AiProvider, TranscribePreset, EDIT_PRESETS};
+use loah_services::secrets::{Account, SecretStore};
+use loah_services::settings::{self, Settings, SettingsStore, Theme};
+use loah_services::transcribe_api::{self, TranscribeError};
+use loah_services::whisper::models::{self, DownloadError, ModelStatus, HUGGING_FACE_BASE_URL};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager as _, State};
 use tauri_plugin_autostart::ManagerExt as _;
 use tauri_plugin_opener::OpenerExt as _;
 
@@ -36,6 +37,9 @@ use crate::tray;
 const DOWNLOAD_EVENT: &str = "model-download";
 /// The event that tells the Settings window of settings that changed without it (see [`emit_language`]).
 const SETTINGS_EVENT: &str = "settings-changed";
+/// The event that tells every window of the theme that was chosen (see [`save_settings_telling`]): its payload is the word of the
+/// setting, `"system"`, `"light"` or `"dark"`.
+const THEME_EVENT: &str = "theme-changed";
 
 /// The settings plus what the UI may know about the keys.
 ///
@@ -50,6 +54,9 @@ pub struct SettingsView {
     pub shares_openrouter_key: bool,
     /// Why the settings file wasn't used as it was. Only the first view after the start carries it.
     pub load_warning: Option<String>,
+    /// What could not be copied from Dictate at this start, with what the system said and whether Dictate's copy is used
+    /// meanwhile, for a note that says so. Only the first view after the start carries it, like `load_warning`.
+    pub migration_note: Option<Vec<FailedItem>>,
     /// What the language choice "System" means on this machine: the language of the tray menu. The window
     /// resolves "System" to this one and not by its own guess, so that both always agree.
     pub system_language: tray::Lang,
@@ -229,6 +236,7 @@ fn get_settings_view(store: &SettingsStore, keys: &KeyFlags) -> SettingsView {
         has_transcribe_key,
         shares_openrouter_key: settings::shares_ai_key(&settings, has_ai_key, has_transcribe_key),
         load_warning: None,
+        migration_note: None,
         system_language: tray::system_language(),
         settings,
     }
@@ -352,6 +360,64 @@ fn save_settings_inner(
         return Err(saving_failed(e));
     }
     Ok(get_settings_view(store, keys))
+}
+
+/// What the native chrome of the windows (their title bars) is told for a theme: `None` gives it back to the OS, which is dark when the
+/// OS is; the two others force it, whatever the OS is, as the pages are forced by `data-theme`.
+pub(crate) fn native_theme(theme: Theme) -> Option<tauri::Theme> {
+    match theme {
+        Theme::System => None,
+        Theme::Light => Some(tauri::Theme::Light),
+        Theme::Dark => Some(tauri::Theme::Dark),
+    }
+}
+
+/// Gives the title bars the theme of the settings. It is app-wide, and the runtime posts it to the main thread: no window is given a theme
+/// of its own, which on Windows would overrule this one. Called at the start with the saved theme; `save_settings` gives `theme_chosen` the
+/// same call when the theme changes.
+pub(crate) fn set_native_theme(app: &AppHandle, theme: Theme) {
+    native_theme_at_start(theme, |native| app.set_theme(native));
+}
+
+/// What the start tells the title bars (`set_native`): the theme if it is forced, and nothing for `System`. `set_theme(None)` is not a no-op
+/// on Linux, where it sets GTK's `prefer-dark` to false and so overrules the dark preference of the desktop, and at the start there is nothing
+/// to give back to the OS: only a change made while the app runs (`theme_chosen`) has to.
+pub(crate) fn native_theme_at_start(theme: Theme, set_native: impl Fn(Option<tauri::Theme>)) {
+    if theme != Theme::System {
+        set_native(native_theme(theme));
+    }
+}
+
+/// A theme was chosen and saved: the title bars take it (`set_native`) and every window is told (`THEME_EVENT`), so that the pages and
+/// their frames change together and cannot drift apart. The windows of the dictation panels and of the recording bar hold no copy of the
+/// settings: the event is how they know.
+fn theme_chosen<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    theme: Theme,
+    set_native: impl Fn(Option<tauri::Theme>),
+) {
+    set_native(native_theme(theme));
+    if let Err(e) = app.emit(THEME_EVENT, theme) {
+        log::warn!("Could not tell the windows of the new theme: {e}");
+    }
+}
+
+/// `save_settings_inner`, and when the saved theme is not the one the settings had, `theme_chosen`. Nothing is told when the save failed:
+/// what the windows show is what the file says.
+fn save_settings_telling<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    store: &SettingsStore,
+    keys: &KeyFlags,
+    settings: Settings,
+    apply_launch_at_login: impl FnMut(bool) -> Result<(), String>,
+    set_native: impl Fn(Option<tauri::Theme>),
+) -> Result<SettingsView, String> {
+    let before = store.get().theme;
+    let view = save_settings_inner(store, keys, settings, apply_launch_at_login)?;
+    if view.settings.theme != before {
+        theme_chosen(app, view.settings.theme, set_native);
+    }
+    Ok(view)
 }
 
 /// An API error as shown to the user. An error status with no message gets the HTTP reason phrase, so that a
@@ -506,26 +572,36 @@ pub(crate) async fn blocking<T: Send + 'static>(
         .map_err(|e| format!("The work stopped unexpectedly: {e}"))
 }
 
-/// Turns launch at login on or off in the system, when it isn't already as asked.
-fn set_launch_at_login(app: &AppHandle, enabled: bool) -> Result<(), String> {
+/// Turns launch at login on or off in the system, when it isn't already as asked. Turned off, it also removes the login entry
+/// that Dictate left behind where it starts Loah (a person who upgraded before Loah removed it at the first start would never be
+/// rid of it otherwise: Loah's own entry is the only one that this switch knew).
+pub(crate) fn set_launch_at_login(app: &AppHandle, enabled: bool) -> Result<(), String> {
     let manager = app.autolaunch();
     let current = manager
         .is_enabled()
         .map_err(|e| format!("Could not read the launch at login setting: {e}"))?;
-    if current == enabled {
-        return Ok(());
+    if current != enabled {
+        let changed = if enabled {
+            manager.enable()
+        } else {
+            manager.disable()
+        };
+        changed.map_err(|e| format!("Could not change launch at login: {e}"))?;
     }
-    let changed = if enabled {
-        manager.enable()
-    } else {
-        manager.disable()
-    };
-    changed.map_err(|e| format!("Could not change launch at login: {e}"))
+    if !enabled {
+        crate::legacy::remove_dictate_wrapper_autostart();
+    }
+    Ok(())
 }
 
 /// Opens a folder in the file manager, creating it first if needed.
 fn open_folder(app: &AppHandle, folder: &Path) -> Result<(), String> {
     ensure_directory(folder)?;
+    open_existing_folder(app, folder)
+}
+
+/// Opens a folder in the file manager as it is: nothing is made.
+fn open_existing_folder(app: &AppHandle, folder: &Path) -> Result<(), String> {
     app.opener()
         .open_path(folder.to_string_lossy().into_owned(), None::<String>)
         .map_err(|e| format!("Could not open {}: {e}", folder.display()))
@@ -536,10 +612,20 @@ pub fn open_meetings_folder_now(app: &AppHandle) -> Result<(), String> {
     open_folder(app, &MeetingLibrary::default_directory())
 }
 
-/// Opens the folder of the saved dictations (`Dictate/Dictations`), creating it first if needed.
+/// Opens the folder of the saved dictations (`Loah/Dictations`), creating it first if needed. When the copy of Dictate's
+/// dictations failed it is Dictate's folder, where they still are: only opened, never made or changed (if it is gone, Loah's
+/// own is opened).
 pub fn open_dictations_folder_now(app: &AppHandle) -> Result<(), String> {
     let paths = SavePaths::system().ok_or("The system has no folder for the app's data.")?;
-    open_folder(app, &paths.dir)
+    let dictates = app
+        .try_state::<AppState>()
+        .and_then(|state| state.fallbacks.dictations.clone());
+    let target = paths.folder_to_open(dictates.as_deref());
+    if target.create {
+        open_folder(app, target.folder)
+    } else {
+        open_existing_folder(app, target.folder)
+    }
 }
 
 // ---- the commands
@@ -565,9 +651,17 @@ pub async fn get_settings(state: State<'_, AppState>) -> Result<SettingsView, St
     blocking(move || {
         let mut view = get_settings_view(&state.settings, state.loaded_keys());
         view.load_warning = state.take_load_warning();
+        view.migration_note = state.take_migration_note();
         view
     })
     .await
+}
+
+/// Whether Dictate, the app that Loah replaces, is still installed and running or set to start at login: Settings says
+/// so, because the two share the shortcut and the meetings folder. Asked when the page is opened, and best effort.
+#[tauri::command]
+pub async fn dictate_still_present() -> Result<bool, String> {
+    blocking(crate::legacy::dictate_still_present).await
 }
 
 #[tauri::command]
@@ -579,13 +673,27 @@ pub async fn save_settings(
     let state = state.inner().clone();
     let handle = app.clone();
     let view = blocking(move || {
-        save_settings_inner(&state.settings, state.loaded_keys(), settings, |enabled| {
-            set_launch_at_login(&handle, enabled)
-        })
+        save_settings_telling(
+            &handle,
+            &state.settings,
+            state.loaded_keys(),
+            settings,
+            |enabled| set_launch_at_login(&handle, enabled),
+            |theme| handle.set_theme(theme),
+        )
     })
     .await??;
     tray::refresh(&app, &view.settings);
     Ok(view)
+}
+
+/// The theme that the settings ask for, for a window that has just opened: it follows `theme-changed` from then on. The windows of the
+/// dictation panels and of the recording bar can't read the settings, so this is how they know.
+#[tauri::command]
+pub async fn current_theme(state: State<'_, AppState>) -> Result<Theme, String> {
+    let state = state.inner().clone();
+    // The settings are locked while they are written to disk.
+    blocking(move || state.settings.get().theme).await
 }
 
 #[tauri::command]
@@ -783,10 +891,10 @@ mod tests {
     use crate::platform::rules::Os;
     use crate::state::{Job, KeyFlags};
     use crate::test_support::{CountingStore, FakeRegistry, NoKeyring};
-    use dictate_services::presets::EDIT_PRESETS;
-    use dictate_services::secrets::{Account, MemoryStore, SecretError};
-    use dictate_services::settings::UiLanguage;
-    use dictate_services::whisper::models::{ModelDir, CATALOG};
+    use loah_services::presets::EDIT_PRESETS;
+    use loah_services::secrets::{Account, MemoryStore, SecretError};
+    use loah_services::settings::{Theme, UiLanguage};
+    use loah_services::whisper::models::{ModelDir, CATALOG};
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::atomic::Ordering;
@@ -901,6 +1009,25 @@ mod tests {
         assert_eq!(json["has_transcribe_key"], false);
         assert_eq!(json["shares_openrouter_key"], false);
         assert_eq!(json["load_warning"], serde_json::Value::Null);
+        assert_eq!(json["migration_note"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn view_carries_what_could_not_be_copied_as_items_that_say_whether_dictates_copy_is_used() {
+        let f = fixture();
+        let mut view = get_settings_view(&f.store, &f.keys);
+        view.migration_note = Some(vec![FailedItem {
+            item: "Dictations".into(),
+            reason: "Permission denied".into(),
+            fallback: true,
+        }]);
+
+        let json = serde_json::to_value(view).unwrap();
+
+        assert_eq!(
+            json["migration_note"],
+            serde_json::json!([{"item": "Dictations", "reason": "Permission denied", "fallback": true}])
+        );
     }
 
     #[test]
@@ -1059,6 +1186,166 @@ mod tests {
             *heard.lock().unwrap(),
             [r#"{"dictation_language":"vi-VN"}"#]
         );
+    }
+
+    /// What a window has heard of the event of the theme: its label and the payloads, in order.
+    type Heard = Vec<(String, Arc<Mutex<Vec<String>>>)>;
+
+    /// A mock app with a window for each label, each of which keeps what it hears of the event of the theme.
+    fn windows_hearing_the_theme(labels: &[&str]) -> (tauri::App<tauri::test::MockRuntime>, Heard) {
+        use tauri::{test::mock_builder, Listener, WebviewUrl, WebviewWindowBuilder};
+        let app = mock_builder().build(crate::context()).unwrap();
+        let heard = labels
+            .iter()
+            .map(|label| {
+                let window = WebviewWindowBuilder::new(&app, *label, WebviewUrl::default())
+                    .build()
+                    .unwrap();
+                let sink = Arc::new(Mutex::new(Vec::new()));
+                let keep = sink.clone();
+                window.listen(THEME_EVENT, move |event| {
+                    keep.lock().unwrap().push(event.payload().to_owned());
+                });
+                (label.to_string(), sink)
+            })
+            .collect();
+        (app, heard)
+    }
+
+    /// What the native title bars were told, in order: a stand-in for `AppHandle::set_theme`, which the mock runtime does not have.
+    type NativeCalls = Arc<Mutex<Vec<Option<tauri::Theme>>>>;
+
+    fn native_theme_recorder() -> (NativeCalls, impl Fn(Option<tauri::Theme>)) {
+        let calls: NativeCalls = Arc::default();
+        let sink = calls.clone();
+        (calls, move |theme| sink.lock().unwrap().push(theme))
+    }
+
+    #[test]
+    fn the_native_title_bars_follow_the_theme_and_the_system_one_is_left_to_the_os() {
+        // `None` gives the windows back to the OS: dark when it is dark. The two others force the chrome, whatever the OS is.
+        assert_eq!(native_theme(Theme::System), None);
+        assert_eq!(native_theme(Theme::Light), Some(tauri::Theme::Light));
+        assert_eq!(native_theme(Theme::Dark), Some(tauri::Theme::Dark));
+    }
+
+    #[test]
+    fn at_the_start_a_theme_of_the_system_is_not_told_to_the_title_bars_at_all() {
+        // `set_theme(None)` is not a no-op where the OS has a preference of its own: on Linux it sets GTK's prefer-dark to false, over the
+        // desktop's dark preference. A theme that follows the system has nothing to say at the start, when nothing has been set yet.
+        let (native, set_native) = native_theme_recorder();
+        native_theme_at_start(Theme::System, &set_native);
+        assert!(native.lock().unwrap().is_empty());
+
+        // The two others are forced, as ever.
+        native_theme_at_start(Theme::Dark, &set_native);
+        native_theme_at_start(Theme::Light, &set_native);
+        assert_eq!(
+            *native.lock().unwrap(),
+            [Some(tauri::Theme::Dark), Some(tauri::Theme::Light)]
+        );
+    }
+
+    #[test]
+    fn saving_a_new_theme_tells_every_window() {
+        let f = fixture();
+        let (app, heard) =
+            windows_hearing_the_theme(&["settings", "meetings", "bubble", "card", "recorder"]);
+        let (native, set_native) = native_theme_recorder();
+        let mut s = f.store.get();
+        s.theme = Theme::Dark;
+
+        let view = save_settings_telling(
+            app.handle(),
+            &f.store,
+            &f.keys,
+            s.clone(),
+            |_| Ok(()),
+            &set_native,
+        )
+        .unwrap();
+
+        // Saved, and told as the word that the page's `applyTheme` takes.
+        assert_eq!(view.settings.theme, Theme::Dark);
+        assert_eq!(f.store.get().theme, Theme::Dark);
+        for (label, events) in &heard {
+            assert_eq!(*events.lock().unwrap(), [r#""dark""#], "{label}");
+        }
+
+        // The title bars are told in the same breath as the pages: dark.
+        assert_eq!(*native.lock().unwrap(), [Some(tauri::Theme::Dark)]);
+
+        // And back to following the system: that is told too, and the title bars go back to the OS.
+        s.theme = Theme::System;
+        save_settings_telling(app.handle(), &f.store, &f.keys, s, |_| Ok(()), &set_native).unwrap();
+        for (label, events) in &heard {
+            assert_eq!(
+                *events.lock().unwrap(),
+                [r#""dark""#, r#""system""#],
+                "{label}"
+            );
+        }
+        assert_eq!(*native.lock().unwrap(), [Some(tauri::Theme::Dark), None]);
+    }
+
+    #[test]
+    fn saving_something_else_leaves_the_windows_as_they_are() {
+        let f = fixture();
+        let (app, heard) = windows_hearing_the_theme(&["settings", "bubble"]);
+        let (native, set_native) = native_theme_recorder();
+        let mut s = f.store.get();
+        s.vocabulary = "Loah".into();
+
+        save_settings_telling(app.handle(), &f.store, &f.keys, s, |_| Ok(()), &set_native).unwrap();
+
+        for (label, events) in &heard {
+            assert!(events.lock().unwrap().is_empty(), "{label}");
+        }
+        assert!(native.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_save_that_fails_tells_no_window_of_the_theme() {
+        // The settings file cannot be written: its folder is a file. What is not saved is not what the windows show.
+        let dir = tempfile::tempdir().unwrap();
+        let in_the_way = dir.path().join("in-the-way");
+        std::fs::write(&in_the_way, b"x").unwrap();
+        let (store, _) = SettingsStore::open(in_the_way.join("settings.json"));
+        let (app, heard) = windows_hearing_the_theme(&["settings"]);
+        let (native, set_native) = native_theme_recorder();
+        let mut s = store.get();
+        s.theme = Theme::Light;
+
+        save_settings_telling(
+            app.handle(),
+            &store,
+            &KeyFlags::default(),
+            s,
+            |_| Ok(()),
+            &set_native,
+        )
+        .unwrap_err();
+
+        assert!(heard[0].1.lock().unwrap().is_empty());
+        assert!(native.lock().unwrap().is_empty());
+        assert_eq!(store.get().theme, Theme::System);
+    }
+
+    #[test]
+    fn a_window_that_opens_is_told_the_theme_that_is_saved() {
+        use tauri::{test::mock_builder, Manager as _};
+        let dir = tempfile::tempdir().unwrap();
+        let state = state_in(&dir);
+        state.settings.update(|s| s.theme = Theme::Light).unwrap();
+        let app = mock_builder()
+            .manage(state)
+            .build(crate::context())
+            .unwrap();
+
+        let theme = tauri::async_runtime::block_on(current_theme(app.state())).unwrap();
+
+        assert_eq!(theme, Theme::Light);
+        assert_eq!(serde_json::to_string(&theme).unwrap(), r#""light""#);
     }
 
     #[test]
@@ -1707,7 +1994,7 @@ mod tests {
     #[test]
     fn the_meetings_folder_is_created_when_missing() {
         let dir = tempfile::tempdir().unwrap();
-        let folder = dir.path().join("Dictate Meetings");
+        let folder = dir.path().join("Loah Meetings");
         ensure_directory(&folder).unwrap();
         assert!(folder.is_dir());
         // It is fine when it is there already.
@@ -1719,8 +2006,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("in-the-way");
         std::fs::write(&file, b"x").unwrap();
-        let err = ensure_directory(&file.join("Dictate Meetings")).unwrap_err();
-        assert!(err.contains("Dictate Meetings"), "{err}");
+        let err = ensure_directory(&file.join("Loah Meetings")).unwrap_err();
+        assert!(err.contains("Loah Meetings"), "{err}");
     }
 
     // ---- permissions
@@ -1862,7 +2149,7 @@ mod tests {
     fn the_guide_is_remembered_beside_the_settings_and_not_before_it_was_shown() {
         let dir = tempfile::tempdir().unwrap();
         // The folder of the settings is not there at the first start.
-        let settings = dir.path().join("Dictate").join("settings.json");
+        let settings = dir.path().join("Loah").join("settings.json");
         let mark = GuideMark::beside(&settings);
         assert!(!mark.shown());
 

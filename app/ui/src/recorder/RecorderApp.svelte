@@ -288,19 +288,20 @@
     height: 52px;
     padding: 0 10px 0 16px;
     white-space: nowrap;
-    background: #1c1c1c;
+    background: var(--panel);
     border-radius: 26px;
-    box-shadow: 0 4px 10px rgb(0 0 0 / 0.3);
+    /* A ring of the line color first, so that the capsule has an edge on a screen of its own color: it takes no room of the layout. */
+    box-shadow: 0 0 0 1px var(--line), var(--shadow-pop);
   }
   .dot {
     flex: none;
     width: 10px;
     height: 10px;
-    background: #ff453a;
+    background: var(--record);
     border-radius: 50%;
   }
   .dot.paused {
-    background: #ff9f0a;
+    background: var(--warn);
   }
   .time {
     flex: none;
@@ -312,7 +313,7 @@
     flex: none;
     width: 1px;
     height: 24px;
-    background: rgb(255 255 255 / 0.2);
+    background: var(--line);
   }
   .question {
     font-weight: 600;
@@ -350,21 +351,22 @@
   }
   .bar {
     width: 3px;
-    background: rgb(255 255 255 / 0.2);
+    /* A bar that is not lit: the track of the meter, which has to show in light as well. */
+    background: var(--hover);
     border-radius: 1px;
     transition: background-color 0.08s linear;
   }
   .bar.lit {
-    background: #30d158;
+    background: var(--ok);
   }
   .bar.last.lit {
-    background: #ff9f0a;
+    background: var(--warn);
   }
   .note {
     flex: none;
     font-size: 11px;
     font-weight: 600;
-    color: #ffd60a;
+    color: var(--warn);
   }
   .note::before {
     content: "⚠ ";
@@ -374,8 +376,8 @@
   .note.off {
     padding: 3px 9px;
     font-weight: 700;
-    color: #fff;
-    background: #d92d20;
+    color: var(--on-record);
+    background: var(--record);
     border-radius: 999px;
   }
   button {
@@ -395,7 +397,7 @@
   .round {
     width: 32px;
     height: 32px;
-    background: rgb(255 255 255 / 0.14);
+    background: var(--hover);
     border-radius: 50%;
   }
   .stop {
@@ -404,26 +406,26 @@
     padding: 0 14px;
     font-size: 12px;
     font-weight: 600;
-    color: #000;
-    background: #fff;
+    color: var(--on-accent);
+    background: var(--accent);
     border-radius: 16px;
   }
   .square {
     width: 10px;
     height: 10px;
-    background: #000;
+    background: currentColor;
     border-radius: 2px;
   }
   .trash {
     width: 28px;
     height: 28px;
-    color: rgb(255 255 255 / 0.7);
+    color: var(--muted);
     background: transparent;
     border-radius: 50%;
   }
   .trash:hover:not(:disabled) {
-    color: #ff453a;
-    background: rgb(255 255 255 / 0.1);
+    color: var(--danger);
+    background: var(--wash);
   }
   .pill {
     height: 32px;
@@ -432,10 +434,10 @@
     border-radius: 16px;
   }
   .pill.danger {
-    color: #fff;
-    background: #d92d20;
+    color: var(--on-record);
+    background: var(--record);
   }
   .pill.keep {
-    background: rgb(255 255 255 / 0.14);
+    background: var(--hover);
   }
 </style>

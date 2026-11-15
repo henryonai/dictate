@@ -4,7 +4,7 @@
 # Usage: scripts/check-ffmpeg-lgpl.sh FILE...
 #
 # ffmpeg is LGPL only when it is built without --enable-gpl, --enable-nonfree and --enable-version3 (version3 makes it LGPL v3, which
-# the build that ships does not want), and with none of the GPL or non-free libraries (x264, x265, xvid, fdk-aac, ...). Dictate is MIT
+# the build that ships does not want), and with none of the GPL or non-free libraries (x264, x265, xvid, fdk-aac, ...). Loah is MIT
 # and ships the ffmpeg that scripts/build-ffmpeg.sh makes next to its own program; this is the check that what ships is that one.
 #
 # What it looks at, for each file:

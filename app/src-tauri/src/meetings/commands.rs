@@ -10,7 +10,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use dictate_services::media::tools::{self, Tool, Tools};
+use loah_services::media::tools::{self, Tool, Tools};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_dialog::DialogExt;
@@ -378,7 +378,7 @@ pub async fn meetings_open_settings(app: AppHandle, tab: String) -> Result<(), S
 #[tauri::command]
 pub async fn meetings_readiness(state: State<'_, AppState>) -> Result<Readiness, String> {
     let state = state.inner().clone();
-    blocking(move || readiness(&state, dictate_services::system::total_ram_gb())).await
+    blocking(move || readiness(&state, loah_services::system::total_ram_gb())).await
 }
 
 /// Which tools are installed (ffmpeg, yt-dlp) and their versions.
@@ -390,10 +390,10 @@ pub async fn media_tools() -> Result<ToolsView, String> {
 
 #[cfg(test)]
 mod tests {
-    use dictate_services::media::tools::{install_command, Tool};
-    use dictate_services::secrets::{Account, MemoryStore};
-    use dictate_services::settings::{SettingsStore, UiLanguage};
-    use dictate_services::whisper::models::{self, ModelDir};
+    use loah_services::media::tools::{install_command, Tool};
+    use loah_services::secrets::{Account, MemoryStore};
+    use loah_services::settings::{SettingsStore, UiLanguage};
+    use loah_services::whisper::models::{self, ModelDir};
 
     use super::*;
     use crate::test_support::script;

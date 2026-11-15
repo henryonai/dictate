@@ -1,14 +1,14 @@
 [package]
-name = "dictate-app"
+name = "loah-app"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "The Dictate desktop app: tray, settings window and the commands behind it"
+description = "The Loah desktop app: tray, settings window and the commands behind it"
 
-# The command people type for `dictate --toggle` and the name of the process.
+# The command people type for `loah --toggle` and the name of the process.
 [[bin]]
-name = "dictate"
+name = "loah"
 path = "src/main.rs"
 
 [build-dependencies]
@@ -17,14 +17,14 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 # The dictation controller's Backend (the network calls of the stop pipeline) is used as a trait object.
 async-trait = "0.1.92"
-# The file names of saved dictations are the local time. The same version and features as dictate-core.
+# The file names of saved dictations are the local time. The same version and features as loah-core.
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
-dictate-core = { path = "../../crates/dictate-core" }
-dictate-services = { path = "../../crates/dictate-services" }
 dirs = "7.0.0"
 env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
 # The random token in the address of the media server. Already in Cargo.lock (Tauri uses it), pinned to that version.
 getrandom = "=0.3.4"
+loah-core = { path = "../../crates/loah-core" }
+loah-services = { path = "../../crates/loah-services" }
 log = "0.4"
 reqwest = { version = "0.12.28", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
@@ -46,7 +46,7 @@ tauri-plugin-opener = "2"
 trash = "=5.2.9"
 # The loopback server that plays a recording's media to the meetings window (src/meetings/media_server.rs).
 tiny_http = "=0.12.0"
-# The channel the shortcut and `dictate --toggle` send their events on, the timer for the release of a key, `select!` (the
+# The channel the shortcut and `loah --toggle` send their events on, the timer for the release of a key, `select!` (the
 # meeting backend waits for a blocking thread and for what it reports at once) and `#[tokio::test]`, which needs the runtime:
 # the services turn these features on too, and the app does not rely on that.
 tokio = { version = "1.54.1", default-features = false, features = ["macros", "rt", "sync", "time"] }
@@ -98,7 +98,7 @@ x11rb = "0.13"
 [dev-dependencies]
 # The scripted `MeetingBackend` of the pipeline's tests (`meetings::fakes`), which the tests of the meetings commands run
 # the pipeline on. No normal build has the feature: Cargo does not turn on the features of dev-dependencies for those.
-dictate-services = { path = "../../crates/dictate-services", features = ["test-support"] }
+loah-services = { path = "../../crates/loah-services", features = ["test-support"] }
 # The mock runtime, to ask the app's own commands from the windows of the app and see what the permissions let through.
 tauri = { version = "2", features = ["test"] }
 tempfile = "3.27.0"

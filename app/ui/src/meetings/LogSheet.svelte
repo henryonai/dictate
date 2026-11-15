@@ -105,7 +105,7 @@
   }
   pre {
     margin: 0;
-    font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font: 12px/1.45 var(--mono);
     white-space: pre-wrap;
     overflow-wrap: anywhere;
     user-select: text;

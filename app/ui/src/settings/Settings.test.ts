@@ -88,6 +88,121 @@ test("the load warning goes away when it is dismissed", async () => {
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 });
 
+const DICTATIONS_USED = { item: "Dictations", reason: "Permission denied", fallback: true };
+const MODELS_NOT_USED = { item: "whisper-models", reason: "Permission denied", fallback: false };
+const MARKER_NOT_WRITTEN = { item: "migrated-from-dictate", reason: "Read-only file system", fallback: false };
+
+test("says what could not be copied from Dictate, and that Loah uses Dictate's copy of it, until dismissed", async () => {
+  const user = userEvent.setup();
+  vi.mocked(api.getSettings).mockResolvedValue(fakeView({ migration_note: [DICTATIONS_USED] }));
+  render(Settings);
+
+  const note = await screen.findByRole("alert");
+  expect(note).toHaveTextContent("Not everything was copied.");
+  expect(note).toHaveTextContent("Loah could not copy the saved dictations (Permission denied) from Dictate");
+  expect(note).toHaveTextContent("still using Dictate's copy of them");
+  expect(note).toHaveTextContent("tries again at the next start");
+
+  // Every answer after the first carries no note; the banner must not go with it.
+  await user.click(screen.getByRole("checkbox", { name: "Save recordings + transcripts" }));
+  await vi.waitFor(() => expect(api.saveSettings).toHaveBeenCalled());
+  expect(screen.getByRole("alert")).toHaveTextContent("the saved dictations (Permission denied)");
+
+  await user.click(screen.getByRole("button", { name: "Dismiss" }));
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
+test("an item with no copy of Dictate's to read is not said to be read from Dictate's copy", async () => {
+  vi.mocked(api.getSettings).mockResolvedValue(fakeView({ migration_note: [MODELS_NOT_USED] }));
+  render(Settings);
+
+  const note = await screen.findByRole("alert");
+  expect(note).toHaveTextContent("Loah could not copy the speech models (Permission denied) from Dictate.");
+  expect(note).toHaveTextContent("It tries again at the next start.");
+  expect(note).not.toHaveTextContent("still using");
+  expect(note).not.toHaveTextContent("Dictate's copy");
+});
+
+test("the note words the items that are read from Dictate's copy and the ones that are not each in their own sentence", async () => {
+  vi.mocked(api.getSettings).mockResolvedValue(fakeView({ migration_note: [DICTATIONS_USED, MODELS_NOT_USED] }));
+  render(Settings);
+
+  const note = await screen.findByRole("alert");
+  expect(note).toHaveTextContent(
+    "Loah could not copy the saved dictations (Permission denied) from Dictate, so it is still using Dictate's copy of them",
+  );
+  expect(note).toHaveTextContent("Loah could not copy the speech models (Permission denied) from Dictate. It tries again");
+});
+
+test("a mark that could not be written is said in a sentence of its own: the copy itself is complete", async () => {
+  vi.mocked(api.getSettings).mockResolvedValue(fakeView({ migration_note: [MARKER_NOT_WRITTEN] }));
+  render(Settings);
+
+  const note = await screen.findByRole("alert");
+  expect(note).toHaveTextContent(
+    "Loah copied everything from Dictate but could not note that it is done (Read-only file system); it checks again at the next start.",
+  );
+  // The mark is written, not copied, and nothing is missing: no "not everything was copied", no "could not copy", no internal name.
+  expect(note).not.toHaveTextContent("Not everything was copied.");
+  expect(note).not.toHaveTextContent("could not copy");
+  expect(note).not.toHaveTextContent("migrated-from-dictate");
+  expect(note).not.toHaveTextContent("still using");
+});
+
+test("the mark is not said beside an item that could not be copied: the mark is only written when nothing failed", async () => {
+  vi.mocked(api.getSettings).mockResolvedValue(fakeView({ migration_note: [MODELS_NOT_USED, MARKER_NOT_WRITTEN] }));
+  render(Settings);
+
+  const note = await screen.findByRole("alert");
+  expect(note).toHaveTextContent("Not everything was copied.");
+  expect(note).toHaveTextContent("Loah could not copy the speech models (Permission denied) from Dictate. It tries again at the next start.");
+  expect(note).not.toHaveTextContent("copied everything");
+  expect(note).not.toHaveTextContent("Read-only file system");
+});
+
+test("an item that this version has no name for is shown as the Rust side calls it", async () => {
+  vi.mocked(api.getSettings).mockResolvedValue(
+    fakeView({ migration_note: [{ item: "something-new", reason: "x", fallback: false }] }),
+  );
+  render(Settings);
+
+  expect(await screen.findByRole("alert")).toHaveTextContent("Loah could not copy something-new (x) from Dictate.");
+});
+
+test("both wordings are in Vietnamese in the Vietnamese interface", async () => {
+  vi.mocked(api.getSettings).mockResolvedValue(
+    fakeView({ ui_language: "vi", migration_note: [DICTATIONS_USED, MODELS_NOT_USED] }),
+  );
+  render(Settings);
+
+  const note = await screen.findByRole("alert");
+  expect(note).toHaveTextContent("Chưa chép được hết dữ liệu.");
+  expect(note).toHaveTextContent("Loah chưa chép được các bản đọc chính tả đã lưu (Permission denied) từ Dictate nên tạm dùng bản của Dictate");
+  expect(note).toHaveTextContent("Loah chưa chép được các model Whisper (Permission denied) từ Dictate. Loah sẽ thử lại ở lần mở sau.");
+});
+
+test("the sentence about the mark is in Vietnamese in the Vietnamese interface", async () => {
+  vi.mocked(api.getSettings).mockResolvedValue(fakeView({ ui_language: "vi", migration_note: [MARKER_NOT_WRITTEN] }));
+  render(Settings);
+
+  const note = await screen.findByRole("alert");
+  expect(note).toHaveTextContent(
+    "Loah đã chép xong mọi thứ từ Dictate nhưng chưa ghi lại được là việc chép đã xong (Read-only file system); Loah sẽ kiểm tra lại ở lần mở sau.",
+  );
+  expect(note).not.toHaveTextContent("Chưa chép được hết dữ liệu.");
+  expect(note).not.toHaveTextContent("migrated-from-dictate");
+});
+
+test("the note about the copy from Dictate and the warning about the file are two banners", async () => {
+  vi.mocked(api.getSettings).mockResolvedValue(
+    fakeView({ load_warning: "reset", migration_note: [{ item: "Dictations", reason: "x", fallback: true }] }),
+  );
+  render(Settings);
+
+  await screen.findAllByRole("tab");
+  expect(screen.getAllByRole("alert")).toHaveLength(2);
+});
+
 test("no banner when the settings loaded cleanly", async () => {
   render(Settings);
   await screen.findAllByRole("tab");

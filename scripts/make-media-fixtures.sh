@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Regenerates the media files in crates/dictate-services/tests/fixtures/media/ that the decoder tests
-# (crates/dictate-services/src/media/decode.rs) read. The outputs are committed: this script only documents how they were
+# Regenerates the media files in crates/loah-services/tests/fixtures/media/ that the decoder tests
+# (crates/loah-services/src/media/decode.rs) read. The outputs are committed: this script only documents how they were
 # made, and is needed again only when a fixture has to change.
 #
 # Every audio file is the same clip: 1 second of a 440 Hz sine at half scale, so that a test can check the length and
@@ -28,7 +28,7 @@
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-out="$root/crates/dictate-services/tests/fixtures/media"
+out="$root/crates/loah-services/tests/fixtures/media"
 
 command -v ffmpeg >/dev/null || {
     echo "ffmpeg is not installed (macOS: brew install ffmpeg)" >&2

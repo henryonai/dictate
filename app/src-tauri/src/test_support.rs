@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
-use dictate_services::secrets::{Account, MemoryStore, SecretError, SecretStore};
+use loah_services::secrets::{Account, MemoryStore, SecretError, SecretStore};
 use tauri_plugin_global_shortcut::Shortcut;
 
 use crate::hotkey::Registry;

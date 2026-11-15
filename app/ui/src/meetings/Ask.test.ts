@@ -35,6 +35,11 @@ test("the field has the words of the example, under the heading of the questions
   expect(field()).toHaveAttribute("placeholder", "Ask about this recording… (e.g. who owns the docs?)");
 });
 
+test("the_Ask_button_is_the_filled_one_of_the_pane", () => {
+  ask();
+  expect(screen.getByRole("button", { name: "Ask" })).toHaveClass("primary");
+});
+
 test("ask_submits_once_and_renders_answer: Enter asks, the field is cleared, and the answer is shown with its stamps as links", async () => {
   const user = userEvent.setup();
   vi.mocked(api.meetingAsk).mockResolvedValue("**An** owns the docs, see [01:05].");

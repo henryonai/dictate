@@ -7,6 +7,7 @@
     "core:default",
     "allow-get-settings",
     "allow-save-settings",
+    "allow-current-theme",
     "allow-set-ai-provider",
     "allow-set-transcribe-preset",
     "allow-set-hotkey",
@@ -26,6 +27,7 @@
     "allow-permissions-status",
     "allow-request-permission",
     "allow-open-permission-settings",
+    "allow-dictate-still-present",
     "allow-media-tools",
     {
       "identifier": "opener:allow-open-url",

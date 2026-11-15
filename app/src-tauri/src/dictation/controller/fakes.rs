@@ -10,11 +10,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use chrono::{NaiveDate, NaiveDateTime};
-use dictate_services::audio::capture::{CaptureError, CaptureEvent};
-use dictate_services::dictation::pipeline::Backend;
-use dictate_services::presets::AiProvider;
-use dictate_services::secrets::Account;
-use dictate_services::settings::SettingsStore;
+use loah_services::audio::capture::{CaptureError, CaptureEvent};
+use loah_services::dictation::pipeline::Backend;
+use loah_services::presets::AiProvider;
+use loah_services::secrets::Account;
+use loah_services::settings::SettingsStore;
 use tokio_util::sync::CancellationToken;
 
 use super::{CaptureFactory, Clock, Controller, Deps, LocalStt, PanelSink, RunningCapture};
@@ -542,7 +542,7 @@ impl FakeMic {
 
     /// What the meter shows for it.
     pub fn marker_level() -> f32 {
-        dictate_services::audio::level::level(&[Self::MARKER; 64])
+        loah_services::audio::level::level(&[Self::MARKER; 64])
     }
 
     pub fn send(&self, event: CaptureEvent) {
@@ -923,7 +923,7 @@ impl Fixture {
         self.ctl.on_hotkey(HotkeyEvent::Released);
     }
 
-    pub fn change_settings(&self, change: impl FnOnce(&mut dictate_services::settings::Settings)) {
+    pub fn change_settings(&self, change: impl FnOnce(&mut loah_services::settings::Settings)) {
         self.settings.update(change).unwrap();
     }
 
@@ -963,7 +963,7 @@ impl Fixture {
         self.press();
         self.wait_for("the first state of a listening bubble", || {
             let last = self.ui.last();
-            last.phase == dictate_services::dictation::machine::Phase::Recording
+            last.phase == loah_services::dictation::machine::Phase::Recording
                 && last.view != View::Hidden
         });
         self.wait_for("the microphone", || {

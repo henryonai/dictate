@@ -5,6 +5,7 @@ mod commands;
 mod config;
 mod dictation;
 mod hotkey;
+mod legacy;
 mod meetings;
 mod panel;
 // Fixture states for the panels, to look at them without the controller. A debug build only.
@@ -20,8 +21,8 @@ mod tray;
 use std::sync::Arc;
 use std::time::Duration;
 
-use dictate_services::secrets::KeyringStore;
-use dictate_services::settings::SettingsStore;
+use loah_services::secrets::KeyringStore;
+use loah_services::settings::SettingsStore;
 use tauri::{Manager, RunEvent, WindowEvent};
 use tauri_plugin_autostart::MacosLauncher;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
@@ -37,6 +38,10 @@ fn context<R: tauri::Runtime>() -> tauri::Context<R> {
     tauri::generate_context!()
 }
 
+/// The name of the app as a window, the tray and the notifications show it. It is the `productName` of tauri.conf.json (a test holds the two
+/// together): that one is what the installers, `Loah.app` and the bundle are called, and a window made in the code is titled like it.
+const APP_NAME: &str = "Loah";
+
 /// How long quitting waits for downloads to write down what they have, so that they can be resumed.
 const QUIT_WAIT: Duration = Duration::from_secs(3);
 
@@ -44,12 +49,12 @@ fn main() {
     let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
         .try_init();
 
-    // What the shortcut and `dictate --toggle` hear goes down this channel, to the dictation controller.
+    // What the shortcut and `loah --toggle` hear goes down this channel, to the dictation controller.
     let (hotkey_tx, hotkey_rx) = unbounded_channel();
     let toggle_tx = hotkey_tx.clone();
 
     let builder = tauri::Builder::default()
-        // A second launch ends here: `dictate --toggle` toggles dictation, `dictate --record` starts or stops a recording, anything
+        // A second launch ends here: `loah --toggle` toggles dictation, `loah --record` starts or stops a recording, anything
         // else shows the window of the first. This plugin must come first.
         .plugin(tauri_plugin_single_instance::init(
             move |app, args, _cwd| {
@@ -102,6 +107,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::get_settings,
             commands::save_settings,
+            commands::current_theme,
             commands::set_ai_provider,
             commands::set_transcribe_preset,
             commands::set_hotkey,
@@ -121,6 +127,7 @@ fn main() {
             commands::permissions_status,
             commands::request_permission,
             commands::open_permission_settings,
+            commands::dictate_still_present,
             meetings::commands::media_tools,
             meetings::commands::meetings_list,
             meetings::commands::meeting_detail,
@@ -171,7 +178,7 @@ fn main() {
             panel::panel_resized,
         ])
         .build(context())
-        .expect("the Dictate app could not start");
+        .expect("the Loah app could not start");
 
     app.run(|app, event| match event {
         // Opening the app again from Finder, Launchpad or Spotlight reaches the running one as this event, not as a
@@ -221,26 +228,58 @@ fn setup(
 
     let settings_path =
         SettingsStore::default_path().ok_or("the system has no folder for the app's settings")?;
-    // Without a settings file this is the first start: Settings opens so that a new user sees where to begin.
-    let first_launch = !settings_path.exists();
+    // What Dictate 2.0.0 saved (the settings, the models, the dictations) comes over before anything looks at these folders,
+    // and so before the first start is told by the missing settings file: a person whose settings came over is not new here.
+    let carried = legacy::carry_over_from_dictate();
+    // What could not be copied is not reset: Loah reads Dictate's own copy of it (and writes only its own folders).
+    let fallbacks = carried.fallbacks.clone();
+    // Without a settings file this is the first start: Settings opens so that a new user sees where to begin. Dictate's
+    // settings that could not be copied are settings all the same.
+    let first_launch = legacy::is_first_launch(&settings_path, &fallbacks);
     let guide_mark = commands::GuideMark::beside(&settings_path);
-    let (store, warning) = SettingsStore::open(settings_path);
+    let (store, warning) =
+        SettingsStore::open_with_fallback(settings_path, fallbacks.settings.as_deref());
     if let Some(warning) = &warning {
         log::warn!("{warning}");
     }
+    // The setting is otherwise applied only when it changes, and Loah has no login item of its own yet: at the start after the
+    // migration was done, the settings that came over decide (and a registration that failed is tried again at the next).
+    // On Linux Dictate's own login entry runs `/usr/bin/dictate`, which is now Loah's wrapper: it goes, or Loah would start twice.
+    match carried.settle_login_item(
+        store.get().launch_at_login,
+        || commands::set_launch_at_login(app.handle(), true),
+        legacy::remove_dictate_wrapper_autostart,
+    ) {
+        legacy::LoginItem::Registered => {
+            log::info!("Registered Loah to start at login, as the settings from Dictate say");
+        }
+        legacy::LoginItem::Failed(e) => log::warn!(
+            "Could not register Loah to start at login (it is tried again at the next start): {e}"
+        ),
+        legacy::LoginItem::NotPending | legacy::LoginItem::NotWanted => {}
+    }
     let models_base =
         state::models_base_dir().ok_or("the system has no folder for the app's data")?;
-    let models = state::open_model_dir(&models_base)?;
+    let models = state::open_model_dir(&models_base, fallbacks.whisper_models.clone())?;
     let initial = store.get();
+    let theme = initial.theme;
     let auto_write = initial.auto_write;
     let lang = tray::language_for(&initial);
     let hotkey = tray::hotkey_label(&initial);
     let accel = initial.hotkey;
 
     let diarize_dir = state::open_diarize_dir(&models_base)?;
-    let state = AppState::new(store, warning, Arc::new(KeyringStore::new()), models);
+    let state = AppState::new(store, warning, Arc::new(KeyringStore::new()), models)
+        .with_fallbacks(fallbacks);
+    state.set_migration_note(
+        (!carried.report.failed.is_empty())
+            .then(|| carried.report.failed_items(&carried.fallbacks)),
+    );
     let startup = state.clone();
     app.manage(state);
+    // The title bars of the windows follow the saved theme from the start, when it is a forced one: `System` is left to the OS, which
+    // `set_theme(None)` would overrule on Linux (the pages ask for the theme themselves, `current_theme`).
+    commands::set_native_theme(app.handle(), theme);
     // One platform layer for the whole app. What the system says about the permissions is read now, to know whether
     // the person needs the guide in Settings (macOS only: the other systems have no permission to grant).
     let platform = platform::SystemPlatform(platform::current(app.handle()));
@@ -263,7 +302,7 @@ fn setup(
         None => log::info!("The shortcut is {} ({:?})", status.label, status.backend),
         Some(error) => log::warn!("The shortcut {} does not work: {error}", status.label),
     }
-    // What the shortcut, the tray and `dictate --toggle` say goes to the controller as soon as there is one; until then it
+    // What the shortcut, the tray and `loah --toggle` say goes to the controller as soon as there is one; until then it
     // waits in the channel, `--toggle` of this very launch included.
     dictation::system::start(app.handle().clone(), startup, dictation, hotkey_rx);
     let args = std::env::args().collect::<Vec<_>>();
@@ -303,7 +342,7 @@ mod tests {
     use tauri::{App, WebviewUrl, WebviewWindowBuilder};
 
     /// The commands of the Settings window.
-    const SETTINGS_COMMANDS: [&str; 22] = [
+    const SETTINGS_COMMANDS: [&str; 23] = [
         "get_settings",
         "save_settings",
         "set_ai_provider",
@@ -325,6 +364,8 @@ mod tests {
         "permissions_status",
         "request_permission",
         "open_permission_settings",
+        // Whether the old Dictate is still there: General says so.
+        "dictate_still_present",
         // Which tools of the system are installed: the one command the meetings window shares with Settings.
         "media_tools",
     ];
@@ -396,6 +437,14 @@ mod tests {
 
     /// The command that only the recording bar has: its page tells how big its capsule is, and the window is sized to it.
     const BAR_ONLY_COMMAND: &str = "recording_bar_resized";
+
+    /// The command of every window that has a page: the theme that the settings ask for. The panels and the bar can't read the
+    /// settings, and a window that opens asks for the theme before it hears of a change. It is in no list above, which say what
+    /// is one window's and not another's: this one is everyone's.
+    const THEME_COMMAND: &str = "current_theme";
+
+    /// The windows that draw a page, by the label that their capability names.
+    const PAGE_WINDOWS: [&str; 5] = ["settings", "meetings", "bubble", "card", "recorder"];
 
     /// The commands of the two floating windows.
     const PANEL_COMMANDS: [&str; 18] = [
@@ -522,9 +571,46 @@ mod tests {
             .into_iter()
             .chain(PANEL_COMMANDS)
             .chain(MEETINGS_COMMANDS)
-            .chain([BAR_ONLY_COMMAND])
+            .chain([BAR_ONLY_COMMAND, THEME_COMMAND])
         {
             assert!(asked_by(&app, "stranger", command).is_err(), "{command}");
+        }
+    }
+
+    #[test]
+    fn every_window_that_draws_a_page_may_ask_for_the_theme_and_a_stranger_may_not() {
+        let app = app();
+        for window in PAGE_WINDOWS {
+            assert_eq!(asked_by(&app, window, THEME_COMMAND), Ok(()), "{window}");
+        }
+        let refusal = asked_by(&app, "stranger", THEME_COMMAND).expect_err("a stranger");
+        assert!(refusal.contains("not allowed"), "{refusal}");
+    }
+
+    #[test]
+    fn every_window_that_draws_a_page_may_hear_the_theme_change() {
+        // `theme-changed` reaches the page as an event that it listens for: the permission to listen is the one that the settings'
+        // capability has by `core:default` and each of the others names.
+        for (file, source) in [
+            ("default.json", include_str!("../capabilities/default.json")),
+            (
+                "meetings.json",
+                include_str!("../capabilities/meetings.json"),
+            ),
+            ("panel.json", include_str!("../capabilities/panel.json")),
+            (
+                "recorder.json",
+                include_str!("../capabilities/recorder.json"),
+            ),
+        ] {
+            let (_, commands, others) = capability(source);
+            assert!(commands.contains(THEME_COMMAND), "{file}");
+            assert!(
+                others
+                    .iter()
+                    .any(|name| name == "core:default" || name == "core:event:allow-listen"),
+                "{file}: {others:?}"
+            );
         }
     }
 
@@ -630,14 +716,14 @@ mod tests {
     }
 
     #[test]
-    fn the_capability_of_the_recorder_is_its_five_commands_the_language_listening_for_events_and_being_dragged(
+    fn the_capability_of_the_recorder_is_its_five_commands_the_language_the_theme_listening_for_events_and_being_dragged(
     ) {
         let (windows, commands, others) = capability(include_str!("../capabilities/recorder.json"));
 
         assert_eq!(windows, ["recorder"]);
         let wanted: BTreeSet<String> = RECORDER_COMMANDS
             .into_iter()
-            .chain([BAR_SHARED_COMMAND, BAR_ONLY_COMMAND])
+            .chain([BAR_SHARED_COMMAND, BAR_ONLY_COMMAND, THEME_COMMAND])
             .map(str::to_owned)
             .collect();
         assert_eq!(commands, wanted);
@@ -733,7 +819,11 @@ mod tests {
         let (windows, commands, others) = capability(include_str!("../capabilities/meetings.json"));
 
         assert_eq!(windows, ["meetings"]);
-        let wanted: BTreeSet<String> = MEETINGS_COMMANDS.into_iter().map(str::to_owned).collect();
+        let wanted: BTreeSet<String> = MEETINGS_COMMANDS
+            .into_iter()
+            .chain([THEME_COMMAND])
+            .map(str::to_owned)
+            .collect();
         assert_eq!(commands, wanted);
         // The events of the jobs (`meeting-job`, `meetings-changed`) and of the files dropped on it; no more of the core.
         assert_eq!(
@@ -754,8 +844,12 @@ mod tests {
             );
             assert!(!panels.contains(command), "{command} in panel.json");
         }
-        // And every command of Settings is still the settings' own (no panel command crept in).
-        let own: BTreeSet<String> = SETTINGS_COMMANDS.into_iter().map(str::to_owned).collect();
+        // And every command of Settings is still the settings' own, and the theme that every window asks (no panel command crept in).
+        let own: BTreeSet<String> = SETTINGS_COMMANDS
+            .into_iter()
+            .chain([THEME_COMMAND])
+            .map(str::to_owned)
+            .collect();
         assert_eq!(settings, own);
     }
 
@@ -779,6 +873,37 @@ mod tests {
             !csp.contains("unsafe-eval") && !csp.contains("https:"),
             "{csp}"
         );
+    }
+
+    #[test]
+    fn the_app_is_called_loah_in_its_configuration_and_in_the_code() {
+        // The product name is the name of the app in the installers, of `Loah.app` and of the folder of the Windows install; the identifier is
+        // what the system keeps the permissions and the data of the Windows uninstaller under; the settings window is the first one the
+        // user sees. The windows that the code makes, the tray and its version line say the same name: `APP_NAME`.
+        let config: Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        assert_eq!(crate::APP_NAME, "Loah");
+        assert_eq!(config["productName"], json!(crate::APP_NAME));
+        assert_eq!(config["identifier"], json!("io.github.henryonai.loah"));
+        assert_eq!(config["app"]["windows"][0]["title"], json!("Loah"));
+        for field in ["shortDescription", "longDescription"] {
+            let text = config["bundle"][field].as_str().unwrap();
+            assert!(!text.contains("Dictate"), "{field}: {text}");
+        }
+        assert!(config["bundle"]["longDescription"]
+            .as_str()
+            .unwrap()
+            .starts_with("Loah writes what you say"));
+    }
+
+    #[test]
+    fn the_deb_takes_the_place_of_dictate_and_answers_to_its_name() {
+        // Installing the package `loah` removes the package `dictate` of 2.0.0 (Replaces and Conflicts), and what asks for `dictate` is
+        // satisfied (Provides). The two commands of the old name are in the release overlay.
+        let config: Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let deb = &config["bundle"]["linux"]["deb"];
+        for field in ["conflicts", "replaces", "provides"] {
+            assert_eq!(deb[field], json!(["dictate"]), "{field}");
+        }
     }
 
     #[test]
@@ -844,7 +969,7 @@ mod tests {
             .into_iter()
             .chain(PANEL_COMMANDS)
             .chain(MEETINGS_COMMANDS)
-            .chain([BAR_ONLY_COMMAND])
+            .chain([BAR_ONLY_COMMAND, THEME_COMMAND])
             .map(str::to_owned)
             .collect();
         for build in as_checked_out(include_str!("../build.rs")) {
@@ -886,7 +1011,7 @@ mod tests {
         for info in as_checked_out(include_str!("../Info.plist")) {
             assert!(
                 plist_in_one_line(&info).contains(
-                    "<key>NSMicrophoneUsageDescription</key><string>Dictate records your voice to turn it into text.</string>"
+                    "<key>NSMicrophoneUsageDescription</key><string>Loah records your voice to turn it into text.</string>"
                 ),
                 "{info:?}"
             );
@@ -913,7 +1038,7 @@ mod tests {
         for info in as_checked_out(include_str!("../Info.plist")) {
             assert!(
                 plist_in_one_line(&info).contains(
-                    "<key>NSScreenCaptureUsageDescription</key><string>Dictate records your screen and the sound of your computer for meetings you choose to record.</string>"
+                    "<key>NSScreenCaptureUsageDescription</key><string>Loah records your screen and the sound of your computer for meetings you choose to record.</string>"
                 ),
                 "{info:?}"
             );

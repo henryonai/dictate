@@ -1,6 +1,6 @@
 # License texts
 
-What is in this folder is the source of `THIRD_PARTY_LICENSES.txt`, the file of license texts that every installer of Dictate carries (next to `LICENSE`, [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) and `COPYING.LGPLv2.1`). [scripts/generate-licenses.py](../scripts/generate-licenses.py) joins these files with the license files of every Rust crate and npm package that the program is built from:
+What is in this folder is the source of `THIRD_PARTY_LICENSES.txt`, the file of license texts that every installer of Loah carries (next to `LICENSE`, [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) and `COPYING.LGPLv2.1`). [scripts/generate-licenses.py](../scripts/generate-licenses.py) joins these files with the license files of every Rust crate and npm package that the program is built from:
 
 ```sh
 python3 scripts/generate-licenses.py
@@ -10,7 +10,7 @@ It needs `cargo`, and the interface installed with `pnpm --dir app install`. Run
 
 ## `native/`: the components that are not Rust crates or npm packages
 
-Each file is the license file of the release that Dictate is built with, copied as it is. When a version changes, copy the new file and change the version here and in the generator.
+Each file is the license file of the release that Loah is built with, copied as it is. When a version changes, copy the new file and change the version here and in the generator.
 
 | File | What it is | Where it was taken from |
 |---|---|---|
@@ -27,6 +27,7 @@ Each file is the license file of the release that Dictate is built with, copied 
 | `pyannote-segmentation-3.0-LICENSE.txt` | pyannote segmentation 3.0, in the ONNX form that is downloaded (MIT) | `LICENSE` of <https://huggingface.co/csukuangfj/sherpa-onnx-pyannote-segmentation-3-0> |
 | `sherpa-onnx-LICENSE.txt` | sherpa-onnx 1.13.8 (Apache-2.0); the project has no `NOTICE` file | `LICENSE` of <https://github.com/k2-fsa/sherpa-onnx> at `v1.13.8` |
 | `onnxruntime-LICENSE.txt`, `onnxruntime-ThirdPartyNotices.txt` | ONNX Runtime 1.28.2 (MIT) and the notices of the code that it contains; the project has no `NOTICE` file | `LICENSE` and `ThirdPartyNotices.txt` of <https://github.com/microsoft/onnxruntime> at `v1.28.2`, the version that `cmake/onnxruntime-*.cmake` of sherpa-onnx 1.13.8 downloads |
+| `be-vietnam-pro-OFL.txt` | Be Vietnam Pro 1.002, the font of the Settings and meetings windows (SIL Open Font License 1.1); the same file as `app/ui/src/fonts/OFL.txt`, next to the font files that are bundled in the interface | `OFL.txt` of <https://github.com/bettergui/BeVietnamPro> at `804e62d`; the WOFF2 files are `fonts/webfonts/BeVietnamPro-{Regular,Medium,SemiBold}.woff2` of the same commit |
 
 ## `spdx/`: standard texts
 

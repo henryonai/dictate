@@ -11,16 +11,16 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use chrono::NaiveDateTime;
-use dictate_services::audio::capture::{CaptureError, CaptureEvent};
-use dictate_services::audio::{level, resample};
-use dictate_services::dictation::lang::display_hotkey;
-use dictate_services::dictation::machine::{self, Action, Phase};
-use dictate_services::dictation::pipeline::{
+use loah_services::audio::capture::{CaptureError, CaptureEvent};
+use loah_services::audio::{level, resample};
+use loah_services::dictation::lang::display_hotkey;
+use loah_services::dictation::machine::{self, Action, Phase};
+use loah_services::dictation::pipeline::{
     self, Backend, Notice, NoticeKey, Outcome, PipelineConfig, Progress, StopInput,
 };
-use dictate_services::presets::{find_edit_preset, EDIT_PRESETS};
-use dictate_services::secrets::Account;
-use dictate_services::settings::{self, Settings, SettingsStore};
+use loah_services::presets::{find_edit_preset, EDIT_PRESETS};
+use loah_services::secrets::Account;
+use loah_services::settings::{self, Settings, SettingsStore};
 use tokio_util::sync::CancellationToken;
 
 use crate::config;
@@ -337,7 +337,7 @@ impl Controller {
 
     // ---- the hotkey ---------------------------------------------------------------------------------------------------
 
-    /// What the shortcut, the tray or `dictate --toggle` says. A bug in the handling ends the dictation that is current, and no
+    /// What the shortcut, the tray or `loah --toggle` says. A bug in the handling ends the dictation that is current, and no
     /// more: the shortcut works for the next event.
     pub fn on_hotkey(&self, event: HotkeyEvent) {
         if catch_unwind(AssertUnwindSafe(|| self.handle_hotkey(event))).is_err() {
@@ -372,7 +372,7 @@ impl Controller {
                 HotkeyEvent::Pressed => {
                     machine::on_press(phase, hold_mode, inner.writing, inner.written)
                 }
-                // `dictate --toggle` is a press of a toggle, whatever the mode.
+                // `loah --toggle` is a press of a toggle, whatever the mode.
                 HotkeyEvent::Toggle => {
                     machine::on_press(phase, false, inner.writing, inner.written)
                 }

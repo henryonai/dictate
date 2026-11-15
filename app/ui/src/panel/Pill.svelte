@@ -43,7 +43,7 @@
     <div class="live">
       <div class="scroll" bind:this={scroller}>
         <p class="text">
-          {#if done !== ""}<span>{done.trimEnd()}</span>{/if}{between}{#if live !== ""}<span style:color="rgba(255, 255, 255, 0.65)">{live.trimStart()}</span>{/if}
+          {#if done !== ""}<span>{done.trimEnd()}</span>{/if}{between}{#if live !== ""}<span style:color="var(--muted)">{live.trimStart()}</span>{/if}
         </p>
       </div>
     </div>
@@ -74,7 +74,7 @@
     align-items: center;
     gap: 10px;
     width: max-content;
-    color: rgb(245 245 245);
+    color: var(--ink);
   }
 
   .live {
@@ -82,8 +82,8 @@
     width: 420px;
     padding: 12px 16px;
     border-radius: 14px;
-    background: rgb(28 28 28 / 0.94);
-    box-shadow: 0 6px 12px rgb(0 0 0 / 0.25);
+    background: color-mix(in srgb, var(--panel) 94%, transparent);
+    box-shadow: 0 0 0 1px var(--line), var(--shadow-pop);
   }
 
   .scroll {
@@ -106,8 +106,8 @@
     height: 50px;
     padding: 0 8px 0 16px;
     border-radius: 999px;
-    background: rgb(28 28 28);
-    box-shadow: 0 6px 12px rgb(0 0 0 / 0.3);
+    background: var(--panel);
+    box-shadow: 0 0 0 1px var(--line), var(--shadow-pop);
   }
 
   .dot {
@@ -115,12 +115,12 @@
     width: 10px;
     height: 10px;
     border-radius: 50%;
-    background: rgb(255 69 58);
+    background: var(--record);
   }
 
   .timer {
     min-width: 2.6em;
-    color: rgb(209 209 209);
+    color: var(--muted);
     font-size: 13px;
     font-variant-numeric: tabular-nums;
   }
@@ -133,8 +133,8 @@
     padding: 0 14px;
     border: 0;
     border-radius: 999px;
-    background: rgb(245 245 245);
-    color: black;
+    background: var(--accent);
+    color: var(--on-accent);
     font: inherit;
     font-weight: 600;
     white-space: nowrap;
@@ -159,8 +159,9 @@
     margin: 0;
     padding: 6px 12px;
     border-radius: 12px;
-    background: rgb(28 28 28 / 0.94);
-    color: rgb(255 159 10);
+    background: color-mix(in srgb, var(--panel) 94%, transparent);
+    box-shadow: 0 0 0 1px var(--line), var(--shadow-pop);
+    color: var(--warn);
     font-size: 12px;
     line-height: 1.35;
     text-align: center;
@@ -170,8 +171,18 @@
     margin: 0;
     padding: 3px 10px;
     border-radius: 999px;
-    background: rgb(0 0 0 / 0.45);
+    background: color-mix(in srgb, var(--panel) 85%, transparent);
+    box-shadow: 0 0 0 1px var(--line), var(--shadow-pop);
     font-size: 12px;
     white-space: nowrap;
+  }
+
+  /* A web view before Safari 16.2 (macOS 13.0 has 16.0) does not know color-mix(): the boxes are then solid. */
+  @supports not (color: color-mix(in srgb, red, blue)) {
+    .live,
+    .problem,
+    .caption {
+      background: var(--panel);
+    }
   }
 </style>

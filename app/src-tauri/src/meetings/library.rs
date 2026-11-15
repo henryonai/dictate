@@ -13,17 +13,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Local;
-use dictate_core::meetings::library::{
+use loah_core::meetings::library::{
     files, Kind, MeetingLibrary, MeetingRecord, Meta, SCREEN_SOURCE,
 };
-use dictate_core::meetings::{
+use loah_core::meetings::{
     append_log, atomic_write, export_file_name, export_markdown, SummaryDoc,
 };
-use dictate_services::media::ytdlp::link_is_valid;
-use dictate_services::meetings::{sweep_stale_files, JobSpec, MeetingError, StartAt};
-use dictate_services::record::marker::MARKER;
-use dictate_services::record::session::Finished;
-use dictate_services::summary;
+use loah_services::media::ytdlp::link_is_valid;
+use loah_services::meetings::{sweep_stale_files, JobSpec, MeetingError, StartAt};
+use loah_services::record::marker::MARKER;
+use loah_services::record::session::Finished;
+use loah_services::summary;
 
 use super::backend::ai_ready;
 use super::jobs::{Events, Registry};
@@ -599,10 +599,10 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{mpsc, Mutex};
 
-    use dictate_core::meetings::library::{files, Meta};
-    use dictate_services::meetings::fakes::{gate, FakeBackend, GateControl};
-    use dictate_services::settings::SettingsStore;
-    use dictate_services::whisper::models::ModelDir;
+    use loah_core::meetings::library::{files, Meta};
+    use loah_services::meetings::fakes::{gate, FakeBackend, GateControl};
+    use loah_services::settings::SettingsStore;
+    use loah_services::whisper::models::ModelDir;
     use serde_json::json;
 
     use super::*;
@@ -1084,8 +1084,8 @@ mod tests {
 
     // ---- recording
 
-    use dictate_core::meetings::library::SCREEN_SOURCE;
-    use dictate_services::record::session::Finished;
+    use loah_core::meetings::library::SCREEN_SOURCE;
+    use loah_services::record::session::Finished;
 
     /// A recording that ended well: `name` is in its folder, with something in it.
     fn finished(rig: &Rig, id: &str, name: &str, notes: &[&str]) -> Finished {
@@ -1911,9 +1911,7 @@ mod tests {
         // The start of the app reads the flags once; after that the key store is not asked for them.
         state.loaded_keys();
         let asked = secrets.gets();
-        state
-            .keys
-            .set(dictate_services::secrets::Account::Ai, false);
+        state.keys.set(loah_services::secrets::Account::Ai, false);
 
         // No AI key saved (as far as the flags say): there is nothing to ask.
         let error =
@@ -1927,7 +1925,7 @@ mod tests {
         assert_eq!(secrets.gets(), asked);
 
         // A recording with no transcript has nothing to ask about.
-        state.keys.set(dictate_services::secrets::Account::Ai, true);
+        state.keys.set(loah_services::secrets::Account::Ai, true);
         let error =
             tauri::async_runtime::block_on(rig.meetings.ask(&state, FILE, "Who owns the docs?"))
                 .unwrap_err();

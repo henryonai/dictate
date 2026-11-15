@@ -1,4 +1,4 @@
-// The commands of the Rust side and its events (`model-download`, `hotkey-status`, `settings-changed`, `meeting-job`,
+// The commands of the Rust side and its events (`model-download`, `hotkey-status`, `settings-changed`, `theme-changed`, `meeting-job`,
 // `meetings-changed`), with their types. Nothing else in the UI calls `invoke`: when a command changes, this is the one
 // place to follow it. Names and argument names mirror app/src-tauri/src/commands.rs and app/src-tauri/src/meetings/.
 import { invoke } from "@tauri-apps/api/core";
@@ -8,6 +8,8 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import type { PanelState } from "../panel/state";
 
 export type UiLanguage = "system" | "en" | "vi";
+/** The look of every window: "system" follows the OS, the others force the light or the dark colors. */
+export type Theme = "system" | "light" | "dark";
 export type Engine = "whisper" | "api";
 export type AiProvider = "anthropic" | "openai";
 export type TranscribePreset = "openrouter" | "openai" | "groq" | "custom";
@@ -19,6 +21,7 @@ export type SettingsTab = "general" | "speech" | "ai" | "accounts";
 /** The settings file. */
 export interface Settings {
   ui_language: UiLanguage;
+  theme: Theme;
   /** BCP-47, e.g. `en-US`. */
   dictation_language: string;
   hotkey: string;
@@ -48,6 +51,16 @@ export interface Settings {
   transcribe_language: string;
 }
 
+/** One item that could not be copied from Dictate at the start. */
+export interface MigrationItem {
+  /** `settings.json`, `whisper-models`, `diarization-models`, `Dictations`, or `migrated-from-dictate` (the mark that the copy is done). */
+  item: string;
+  /** What the system said. */
+  reason: string;
+  /** Dictate's own copy of it is read in its place (read only); false when there is none to read. */
+  fallback: boolean;
+}
+
 /** The settings plus what the UI may know about the keys (never the keys). */
 export interface SettingsView extends Settings {
   has_ai_key: boolean;
@@ -56,6 +69,8 @@ export interface SettingsView extends Settings {
   shares_openrouter_key: boolean;
   /** Why the settings file wasn't used as it was. Only the first view after the start carries it. */
   load_warning: string | null;
+  /** What could not be copied from Dictate at this start. Only the first view carries it. */
+  migration_note: MigrationItem[] | null;
   /** What the "system" language means on this machine, as the Rust side resolved it: the language of the tray menu. */
   system_language: "en" | "vi";
 }
@@ -389,7 +404,7 @@ export interface OpenRecorder {
 }
 
 /** The global that a meetings window made for the picker has before its page runs (`meetings::window::OPEN_RECORDER_GLOBAL`). */
-const OPEN_RECORDER_GLOBAL = "__dictateOpenRecorder";
+const OPEN_RECORDER_GLOBAL = "__loahOpenRecorder";
 
 /**
  * The ask for the picker that the window was made with, read once: a page that is not there yet can't hear `meetings-open-recorder`,
@@ -439,6 +454,8 @@ export const api = {
   editPresets: () => invoke<EditPresetView[]>("edit_presets"),
   transcribePresets: () => invoke<TranscribePresetView[]>("transcribe_presets"),
   openMeetingsFolder: () => invoke<void>("open_meetings_folder"),
+  /** Whether Dictate, the app that Loah replaces, is still installed and running or set to start at login. Best effort: false when unsure. */
+  dictateStillPresent: () => invoke<boolean>("dictate_still_present"),
   /** ffmpeg and yt-dlp as the system has them (versions as they say them): what a link or a file that symphonia can't read needs. */
   mediaTools: () => invoke<ToolsView>("media_tools"),
   /** The microphone and Accessibility permissions as the system has them now (macOS; elsewhere both are `not_needed`). */
@@ -551,6 +568,8 @@ export const api = {
     invoke<void>("panel_resized", { label, width, height }),
   /** The language of the UI the settings ask for, which the panels speak. */
   panelLanguage: () => invoke<"en" | "vi">("panel_language"),
+  /** The theme the settings ask for, for a window that has just opened (every window may ask): see `followTheme` in theme.ts. */
+  currentTheme: () => invoke<Theme>("current_theme"),
 
   /** Resolves with the function that stops listening. */
   onHotkeyStatus: (handler: (status: HotkeyStatus) => void) =>
@@ -558,6 +577,9 @@ export const api = {
   /** Settings that the Rust side changed without the window (the language menu of the dictation chip): only the ones that changed. */
   onSettingsChanged: (handler: (patch: Partial<Settings>) => void) =>
     listen<Partial<Settings>>("settings-changed", (event) => handler(event.payload)),
+  /** A theme was chosen in Settings (to every window): the word of the setting. Resolves with the function that stops listening. */
+  onThemeChanged: (handler: (theme: Theme) => void) =>
+    listen<Theme>("theme-changed", (event) => handler(event.payload)),
   /** The meetings window sends someone to a page of Settings (`meetings_open_settings`): show it. Resolves with the function that stops listening. */
   onSettingsTab: (handler: (tab: SettingsTab) => void) =>
     listen<SettingsTab>("settings-tab", (event) => handler(event.payload)),

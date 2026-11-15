@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <title>Loah</title>
+  <!--
+    The app icon, "voice becomes lines": sound bars on the left turn into lines of text on the right.
+    scripts/make-icons.sh makes every icon file of the app from this drawing (and from the two tray drawings next to it).
+
+    The tile is the macOS icon grid: 824 px square with 185 px corners, centered on the 1024 px canvas, so that it has a clear
+    margin of 100 px on every side. The Windows and Linux icons are made from the same drawing and have the same margin.
+
+    One rhythm holds it together: every stroke is 72 px wide and every gap, between bars, between lines and between the two groups,
+    is 48 px. The tallest bar spans the same height as the three lines (centers at 392 and 632). The strokes are thick on purpose:
+    at 16 px a bar is about one pixel wide, and thinner ones blur into the tile.
+  -->
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="#232327"/>
+  <!-- the sound bars, centered on the tile (y 512): half heights 52, 120 and 80 -->
+  <path d="M237 460v104M357 392v240M477 432v160" fill="none" stroke="#4c9aff" stroke-width="72" stroke-linecap="round"/>
+  <!-- the lines of text, 190, 146 and 176 px long from where they start (x 597) -->
+  <path d="M597 392h190M597 512h146M597 632h176" fill="none" stroke="#e9e9ee" stroke-width="72" stroke-linecap="round"/>
+</svg>

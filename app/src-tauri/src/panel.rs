@@ -15,9 +15,9 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use dictate_services::dictation::lang::{FAVOURITES, OTHERS};
-use dictate_services::dictation::machine::Phase;
-use dictate_services::dictation::pipeline::Notice;
+use loah_services::dictation::lang::{FAVOURITES, OTHERS};
+use loah_services::dictation::machine::Phase;
+use loah_services::dictation::pipeline::Notice;
 use serde::Serialize;
 use tauri::{
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, PhysicalPosition, PhysicalSize,
@@ -515,7 +515,7 @@ fn floating(
     size: (f64, f64),
 ) -> WebviewWindowBuilder<'_, tauri::Wry, AppHandle> {
     builder
-        .title("Dictate")
+        .title(crate::APP_NAME)
         .inner_size(size.0, size.1)
         .transparent(true)
         .decorations(false)
@@ -918,7 +918,7 @@ async fn ask_controller<T: Send + 'static>(
         .map_err(|e| format!("The work stopped unexpectedly: {e}"))
 }
 
-const STARTING: &str = "Dictate is still starting. Try again in a moment.";
+const STARTING: &str = "Loah is still starting. Try again in a moment.";
 
 /// The panel as it is now: a page that loads after a state was sent asks for it, so that it is not blank until the next one.
 #[tauri::command]
@@ -1084,7 +1084,7 @@ pub async fn dictation_open_settings(dictation: State<'_, DictationHandle>) -> R
 
 #[cfg(test)]
 mod tests {
-    use dictate_services::dictation::pipeline::NoticeKey;
+    use loah_services::dictation::pipeline::NoticeKey;
     use serde_json::{json, Value};
 
     use super::*;
@@ -1357,6 +1357,8 @@ mod tests {
             "allow-panel-state",
             "allow-panel-language",
             "allow-panel-resized",
+            // The theme that the settings ask for, which every window with a page asks (`main.rs` has the same name in each capability).
+            "allow-current-theme",
         ];
         let mut wanted = vec!["core:event:allow-listen", "core:event:allow-unlisten"];
         wanted.extend(commands);

@@ -3,8 +3,8 @@
 //! transcribing itself and has no thread: the controller asks it for the next job, runs the job where it likes and
 //! tells it the result, so that all of it is tested with plain numbers.
 
-use dictate_services::audio::resample;
-use dictate_services::dictation::live::{LiveJob, LiveTranscript, LiveWindow};
+use loah_services::audio::resample;
+use loah_services::dictation::live::{LiveJob, LiveTranscript, LiveWindow};
 
 /// How many times a commit job that fails is tried again before it is given up on. The next one then starts after it, so
 /// that a job that always fails (a language that Whisper does not know) cannot hold the live text still for the rest of
@@ -94,7 +94,7 @@ impl LiveText {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dictate_services::dictation::live::{LIVE_MIN_SAMPLES, LIVE_WINDOW_SAMPLES};
+    use loah_services::dictation::live::{LIVE_MIN_SAMPLES, LIVE_WINDOW_SAMPLES};
 
     const SECOND: usize = 16_000;
 

@@ -413,9 +413,9 @@
     min-width: 0;
   }
   .record {
-    color: #fff;
-    background: #d92d20;
-    border-color: #d92d20;
+    color: var(--on-record);
+    background: var(--record);
+    border-color: var(--record);
   }
   .problem {
     display: flex;

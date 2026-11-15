@@ -35,10 +35,10 @@ pub const OPEN_RECORDER_EVENT: &str = "meetings-open-recorder";
 /// A page that is not there yet cannot hear [`OPEN_RECORDER_EVENT`]: Tauri sends an event only to a page that has registered a
 /// listener for it, which the page does when it has started, and nothing orders the two.
 ///
-/// The contract for the page: when it mounts it reads `window.__dictateOpenRecorder`, deletes it, and shows the picker (with the
+/// The contract for the page: when it mounts it reads `window.__loahOpenRecorder`, deletes it, and shows the picker (with the
 /// error, if there is one) when it was there; and it listens for `meetings-open-recorder` for the asks that come later. The global
 /// is set again by a reload of the window, which the app does not do (a development build does).
-pub const OPEN_RECORDER_GLOBAL: &str = "__dictateOpenRecorder";
+pub const OPEN_RECORDER_GLOBAL: &str = "__loahOpenRecorder";
 
 /// What the page is told when the picker is asked for.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -128,7 +128,7 @@ fn bring_forward<R: Runtime>(window: &WebviewWindow<R>) {
 
 fn builder<R: Runtime>(app: &AppHandle<R>) -> WebviewWindowBuilder<'_, R, AppHandle<R>> {
     WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App(PAGE.into()))
-        .title("Dictate")
+        .title(crate::APP_NAME)
         .inner_size(WIDTH, HEIGHT)
         .min_inner_size(MIN_WIDTH, MIN_HEIGHT)
         .center()
@@ -255,7 +255,7 @@ mod tests {
     #[test]
     fn the_page_of_a_window_made_for_the_picker_finds_what_to_open_in_a_global_at_start() {
         // The name is the contract with the page: it reads this global when it mounts and deletes it.
-        assert_eq!(OPEN_RECORDER_GLOBAL, "__dictateOpenRecorder");
+        assert_eq!(OPEN_RECORDER_GLOBAL, "__loahOpenRecorder");
 
         let none = open_recorder_script(&OpenRecorder { error: None });
         assert_eq!(literal_of(&none), serde_json::json!({ "error": null }));

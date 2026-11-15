@@ -5,7 +5,7 @@
   import Row from "./Row.svelte";
 
   // The recordings in groups by day, with the search box above them.
-  let { store }: { store: MeetingsStore } = $props();
+  let { store, onpick }: { store: MeetingsStore; /** A recording was picked: told after the pick is made. */ onpick?: () => void } = $props();
 
   // A window that stays open past midnight changes what "Today" is.
   let now = $state(new Date());
@@ -31,7 +31,10 @@
         <h2>{group.label}</h2>
         <ul>
           {#each group.rows as row (row.id)}
-            <li><Row {row} selected={row.id === store.selectedId} onselect={(id) => store.select(id)} /></li>
+            <li><Row {row} selected={row.id === store.selectedId} onselect={(id) => {
+                void store.choose(id);
+                onpick?.();
+              }} /></li>
           {/each}
         </ul>
       </section>

@@ -1,11 +1,11 @@
 name: Bug report
-description: Something in Dictate doesn't work as it should
+description: Something in Loah doesn't work as it should
 labels: [bug]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for taking the time to report this. For a security problem, please don't open an issue: follow [SECURITY.md](https://github.com/henryonai/dictate/blob/main/SECURITY.md) instead.
+        Thanks for taking the time to report this. For a security problem, please don't open an issue: follow [SECURITY.md](https://github.com/henryonai/loah/blob/main/SECURITY.md) instead.
   - type: textarea
     id: what-happened
     attributes:
@@ -43,9 +43,9 @@ body:
   - type: input
     id: version
     attributes:
-      label: Dictate version
-      description: The release you installed, as in the name of the installer (Dictate_2.0.0_amd64.deb is 2.0.0), or the commit you built.
-      placeholder: 2.0.0, or the commit you built
+      label: Loah version
+      description: The release you installed, as in the name of the installer (Loah_2.1.0_amd64.deb is 2.1.0), or the commit you built. If you upgraded from Dictate, say so.
+      placeholder: 2.1.0, or the commit you built
     validations:
       required: true
   - type: dropdown
@@ -84,7 +84,7 @@ body:
     id: log
     attributes:
       label: Log
-      description: For a recording, in the library click ⋯ → View log → Copy, and paste it here. For anything else, start Dictate from a terminal with RUST_LOG=dictate=debug and paste what it prints.
+      description: For a recording, in the library click ⋯ → View log → Copy, and paste it here. For anything else, start Loah from a terminal with RUST_LOG=loah=debug and paste what it prints.
       render: text
   - type: checkboxes
     id: privacy

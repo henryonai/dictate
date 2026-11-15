@@ -49,6 +49,27 @@ describe("loading", () => {
     expect(store.loadWarning).toBe("The settings file was reset to defaults.");
   });
 
+  test("keeps the note about what could not be copied from Dictate after later views that carry none, until it is dismissed", async () => {
+    const note = [{ item: "Dictations", reason: "Permission denied", fallback: true }];
+    const store = await loaded(fakeView({ migration_note: note }));
+    expect(store.migrationNote).toEqual(note);
+
+    await store.update({ auto_refine: false });
+
+    expect(store.view?.migration_note).toBeNull();
+    expect(store.migrationNote).toEqual(note);
+    store.dismissMigrationNote();
+    expect(store.migrationNote).toBeNull();
+  });
+
+  test("never sends the notes back with the settings", async () => {
+    const store = await loaded(fakeView({ load_warning: "reset", migration_note: [{ item: "Dictations", reason: "x", fallback: false }] }));
+    await store.update({ auto_refine: false });
+    const sent = vi.mocked(api.saveSettings).mock.lastCall?.[0] as unknown as Record<string, unknown>;
+    expect(sent).not.toHaveProperty("migration_note");
+    expect(sent).not.toHaveProperty("load_warning");
+  });
+
   test("lets the warning go when the person dismisses it", async () => {
     const store = await loaded(fakeView({ load_warning: "reset" }));
     store.dismissWarning();

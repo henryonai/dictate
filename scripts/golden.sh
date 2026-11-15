@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Regenerates tests/golden/expected.jsonl and expected-empty.jsonl: the replies of the macOS (Swift) dictate-mcp
 # to tests/golden/requests.jsonl (against tests/golden/fixture) and tests/golden/requests-empty.jsonl (against an
-# empty library folder). crates/dictate-mcp/tests/golden.rs checks the Rust dictate-mcp against these files, so
+# empty library folder). crates/loah-mcp/tests/golden.rs checks the Rust loah-mcp against these files, so
 # this script is only needed on a Mac, when the requests, the fixture or the Swift server change.
 #
 # Needs: macOS with a Swift toolchain, jq, and the Swift repository (default: ../dictate next to this one;
-# set DICTATE_SWIFT_REPO to use another checkout).
+# set LOAH_SWIFT_REPO to use another checkout).
 #
 # How the Swift binary is built:
 #   1. `swift build -c release --product dictate-mcp` in the Swift repository. That resolves every package of
@@ -14,10 +14,14 @@
 #      into a temporary package whose Package.swift has no WhisperKit and no Dictate app target (dictate-mcp
 #      needs only DictateCore), and build that. Nothing in the Swift repository is touched.
 #
-# The Swift server still says "Dictate is the user's macOS app for recording meetings, calls and videos." in its
-# `instructions`; the Rust server says "Dictate is an app for macOS, Windows and Linux that records the user's
-# meetings, calls and videos." (see the top of crates/dictate-mcp/tests/golden.rs). After regenerating, put the
-# Rust sentence back in every `initialize` reply of expected.jsonl, or the golden test fails on it.
+# The Swift server is still Dictate: it says "Dictate is the user's macOS app for recording meetings, calls and videos." in its
+# `instructions` and is called "dictate". The Rust server is Loah and says "Loah is an app for macOS, Windows and Linux that
+# records the user's meetings, calls and videos." (see the top of crates/loah-mcp/tests/golden.rs). After regenerating, put the Rust
+# text back in expected.jsonl and expected-empty.jsonl, or the golden test fails on it:
+#   - the first sentence of `instructions` in every `initialize` reply (the one above);
+#   - the server name, `"name":"dictate"` -> `"name":"loah"`, in every reply;
+#   - the app name in three places: "List the user's Dictate recordings" and "ticked them off in Dictate." (the descriptions of
+#     list_meetings and list_action_items), and "Action items as ticked off in Dictate (" (get_meeting), each with Loah.
 #
 # The server runs with TZ=Asia/Ho_Chi_Minh, so the dates in the replies do not depend on this machine's zone.
 # Replies are written with sorted keys (one JSON object per line, as the server writes them): Swift orders the keys
@@ -27,11 +31,11 @@ set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 golden="$root/tests/golden"
-swift_repo=${DICTATE_SWIFT_REPO:-"$root/../dictate"}
+swift_repo=${LOAH_SWIFT_REPO:-"$root/../dictate"}
 zone=Asia/Ho_Chi_Minh
 
 command -v jq >/dev/null || { echo "golden.sh: jq is required" >&2; exit 1; }
-[ -d "$swift_repo/Sources/DictateCore" ] || { echo "golden.sh: no Swift repository at $swift_repo (set DICTATE_SWIFT_REPO)" >&2; exit 1; }
+[ -d "$swift_repo/Sources/DictateCore" ] || { echo "golden.sh: no Swift repository at $swift_repo (set LOAH_SWIFT_REPO)" >&2; exit 1; }
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT

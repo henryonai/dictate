@@ -1,6 +1,10 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { render, screen, within } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { declarationsOf, parseCss, styleOf } from "../css-rules";
 import type { LineView } from "../lib/api";
 import { setLanguage } from "../lib/i18n";
 import Transcript from "./Transcript.svelte";
@@ -235,4 +239,35 @@ test("the headings and the words are Vietnamese in Vietnamese", () => {
   expect(screen.getByText("(bản nháp)")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Đổi tên người nói" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "01:05" })).toHaveAttribute("title", "Tua tới 01:05");
+});
+
+// ---- The look (jsdom loads no style: the source of the component says what it draws)
+
+const styles = parseCss(styleOf(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "Transcript.svelte"), "utf8")));
+
+test("the_current_line_uses_the_accent_not_yellow", () => {
+  // The line that is said now: a 2 px bar of the accent on its left and the faint tint; the warning color is no longer its mark.
+  const current = declarationsOf(styles, ".line.current");
+  expect(current["box-shadow"]).toBe("inset 2px 0 0 var(--accent)");
+  expect(current.background).toBe("var(--hl)");
+  expect(JSON.stringify(styles)).not.toMatch(/ffd60a|warn|yellow/i);
+});
+
+test("the_list_is_the_page_itself_that_scrolls_and_not_a_framed_box_that_runs_empty_to_the_bottom", () => {
+  const list = declarationsOf(styles, ".list");
+  expect(list["overflow-y"]).toBe("auto");
+  expect(list.flex).toBe("1");
+  for (const frame of ["background", "border", "border-radius", "box-shadow"]) {
+    expect(list, `.list has no ${frame}`).not.toHaveProperty(frame);
+  }
+});
+
+test("the_transcript_fills_its_column: the section takes the room that is left and the list has no height of its own, so a short one leaves no box", () => {
+  expect(declarationsOf(styles, ".transcript").flex).toBe("1");
+  const list = declarationsOf(styles, ".list");
+  // `min-height: 0` lets it shrink and scroll; any other minimum or a height would hold a box open under a short transcript.
+  expect(list["min-height"]).toBe("0");
+  for (const size of ["height", "max-height", "min-block-size", "block-size"]) {
+    expect(list, `.list has no ${size}`).not.toHaveProperty(size);
+  }
 });

@@ -7,8 +7,8 @@
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use dictate_services::record::capture::TokenStore;
-use dictate_services::settings::SettingsStore;
+use loah_services::record::capture::TokenStore;
+use loah_services::settings::SettingsStore;
 
 /// What writes a token down.
 type Persist = Box<dyn FnMut(&str) + Send>;
