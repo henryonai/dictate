@@ -240,6 +240,30 @@ test("escape_closes_the_overlay_list: with the Add menu open, Esc closes the men
   expect(recordings()).not.toBeInTheDocument();
 });
 
+test("escape_closes_the_overlay_list: with a menu of the recording open, Esc closes the menu and leaves the list, and the next one closes the list", async () => {
+  const user = userEvent.setup();
+  window.innerWidth = 900;
+  await open();
+  // A recording is shown, and the list is brought back over it.
+  await user.click(screen.getByRole("button", { name: "Show list" }));
+  await user.click(screen.getByRole("button", { name: /Weekly planning/ }));
+  await screen.findByRole("heading", { level: 1, name: "Weekly planning" });
+  await user.click(screen.getByRole("button", { name: "Show list" }));
+  expect(recordings()).toBeInTheDocument();
+  const more = "More: summarize again, open folder, view log, delete";
+  await user.click(screen.getByRole("button", { name: more }));
+  expect(screen.getByRole("group", { name: more })).toBeInTheDocument();
+
+  await user.keyboard("{Escape}");
+
+  expect(screen.queryByRole("group", { name: more })).not.toBeInTheDocument();
+  expect(recordings(), "the one Esc was the menu's").toBeInTheDocument();
+  expect(screen.getByRole("button", { name: more })).toHaveFocus();
+
+  await user.keyboard("{Escape}");
+  expect(recordings()).not.toBeInTheDocument();
+});
+
 test("escape_closes_the_overlay_list: with a dialog open, Esc closes the dialog and leaves the list", async () => {
   const user = userEvent.setup();
   window.innerWidth = 900;

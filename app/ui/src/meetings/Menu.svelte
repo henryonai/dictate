@@ -44,6 +44,9 @@
     trigger?.focus();
   }
 
+  // Heard in the capture phase, ahead of the window's other keys (as the Add menu of ImportBar is): the Esc is told to have been taken
+  // (`preventDefault`) when it closes the menu, so that the list that lies over the recording in a narrow window (MeetingsApp) does not
+  // close with it. The next Esc is the list's.
   function onkeydown(event: KeyboardEvent) {
     if (open && event.key === "Escape") {
       event.preventDefault();
@@ -56,7 +59,7 @@
   }
 </script>
 
-<svelte:window {onkeydown} {onpointerdown} />
+<svelte:window onkeydowncapture={onkeydown} {onpointerdown} />
 
 <div class="menu" bind:this={root}>
   <button
