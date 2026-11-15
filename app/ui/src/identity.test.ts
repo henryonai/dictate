@@ -42,6 +42,7 @@ describe("the app is called Loah", () => {
       "general.dictate_still_installed",
       "settings.migration_failed",
       "settings.migration_failed_plain",
+      "settings.migration_marker_failed",
     ]);
     for (const [name, locale] of [["en", en], ["vi", vi]] as [string, Record<string, string>][]) {
       const naming = Object.entries(locale)

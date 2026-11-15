@@ -18,6 +18,10 @@
 
   const store = new SettingsStore();
 
+  // The mark that the copy is done is not an item that is copied: it is written last, and only when every item was copied. When it is
+  // the one thing that failed, the copy is complete, and the note says so in a sentence of its own, not as an item that could not be copied.
+  const MARKER = "migrated-from-dictate";
+
   // The items of the note about the copy from Dictate, in the words of the window: a name for each (the Rust side's own name for an
   // item this window has no name for), and the two kinds of item in a sentence each, as only the ones that have a copy of Dictate's
   // to read are read from it.
@@ -58,16 +62,22 @@
     </div>
   {/if}
   {#if store.migrationNote}
-    {@const used = store.migrationNote.filter((entry) => entry.fallback)}
-    {@const unused = store.migrationNote.filter((entry) => !entry.fallback)}
+    {@const items = store.migrationNote.filter((entry) => entry.item !== MARKER)}
+    {@const marker = store.migrationNote.find((entry) => entry.item === MARKER)}
+    {@const used = items.filter((entry) => entry.fallback)}
+    {@const unused = items.filter((entry) => !entry.fallback)}
     <div class="banner warning" role="alert">
       <span>
-        <strong>{t("settings.migration_lead")}</strong>
-        {#if used.length > 0}
-          {t("settings.migration_failed", { items: itemList(used) })}
-        {/if}
-        {#if unused.length > 0}
-          {t("settings.migration_failed_plain", { items: itemList(unused) })}
+        {#if marker && items.length === 0}
+          {t("settings.migration_marker_failed", { reason: marker.reason })}
+        {:else}
+          <strong>{t("settings.migration_lead")}</strong>
+          {#if used.length > 0}
+            {t("settings.migration_failed", { items: itemList(used) })}
+          {/if}
+          {#if unused.length > 0}
+            {t("settings.migration_failed_plain", { items: itemList(unused) })}
+          {/if}
         {/if}
       </span>
       <button type="button" onclick={() => store.dismissMigrationNote()}>{t("settings.dismiss")}</button>

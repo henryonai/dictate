@@ -134,14 +134,30 @@ test("the note words the items that are read from Dictate's copy and the ones th
   expect(note).toHaveTextContent("Loah could not copy the speech models (Permission denied) from Dictate. It tries again");
 });
 
-test("the internal name of the mark that the copy is done is never shown", async () => {
+test("a mark that could not be written is said in a sentence of its own: the copy itself is complete", async () => {
   vi.mocked(api.getSettings).mockResolvedValue(fakeView({ migration_note: [MARKER_NOT_WRITTEN] }));
   render(Settings);
 
   const note = await screen.findByRole("alert");
-  expect(note).toHaveTextContent("Loah could not copy the mark that the copy is done (Read-only file system) from Dictate.");
+  expect(note).toHaveTextContent(
+    "Loah copied everything from Dictate but could not note that it is done (Read-only file system); it checks again at the next start.",
+  );
+  // The mark is written, not copied, and nothing is missing: no "not everything was copied", no "could not copy", no internal name.
+  expect(note).not.toHaveTextContent("Not everything was copied.");
+  expect(note).not.toHaveTextContent("could not copy");
   expect(note).not.toHaveTextContent("migrated-from-dictate");
   expect(note).not.toHaveTextContent("still using");
+});
+
+test("the mark is not said beside an item that could not be copied: the mark is only written when nothing failed", async () => {
+  vi.mocked(api.getSettings).mockResolvedValue(fakeView({ migration_note: [MODELS_NOT_USED, MARKER_NOT_WRITTEN] }));
+  render(Settings);
+
+  const note = await screen.findByRole("alert");
+  expect(note).toHaveTextContent("Not everything was copied.");
+  expect(note).toHaveTextContent("Loah could not copy the speech models (Permission denied) from Dictate. It tries again at the next start.");
+  expect(note).not.toHaveTextContent("copied everything");
+  expect(note).not.toHaveTextContent("Read-only file system");
 });
 
 test("an item that this version has no name for is shown as the Rust side calls it", async () => {
@@ -155,14 +171,25 @@ test("an item that this version has no name for is shown as the Rust side calls 
 
 test("both wordings are in Vietnamese in the Vietnamese interface", async () => {
   vi.mocked(api.getSettings).mockResolvedValue(
-    fakeView({ ui_language: "vi", migration_note: [DICTATIONS_USED, MODELS_NOT_USED, MARKER_NOT_WRITTEN] }),
+    fakeView({ ui_language: "vi", migration_note: [DICTATIONS_USED, MODELS_NOT_USED] }),
   );
   render(Settings);
 
   const note = await screen.findByRole("alert");
   expect(note).toHaveTextContent("Chưa chép được hết dữ liệu.");
   expect(note).toHaveTextContent("Loah chưa chép được các bản đọc chính tả đã lưu (Permission denied) từ Dictate nên tạm dùng bản của Dictate");
-  expect(note).toHaveTextContent("Loah chưa chép được các model Whisper (Permission denied); dấu báo đã chép xong (Read-only file system) từ Dictate. Loah sẽ thử lại ở lần mở sau.");
+  expect(note).toHaveTextContent("Loah chưa chép được các model Whisper (Permission denied) từ Dictate. Loah sẽ thử lại ở lần mở sau.");
+});
+
+test("the sentence about the mark is in Vietnamese in the Vietnamese interface", async () => {
+  vi.mocked(api.getSettings).mockResolvedValue(fakeView({ ui_language: "vi", migration_note: [MARKER_NOT_WRITTEN] }));
+  render(Settings);
+
+  const note = await screen.findByRole("alert");
+  expect(note).toHaveTextContent(
+    "Loah đã chép xong mọi thứ từ Dictate nhưng chưa ghi lại được là việc chép đã xong (Read-only file system); Loah sẽ kiểm tra lại ở lần mở sau.",
+  );
+  expect(note).not.toHaveTextContent("Chưa chép được hết dữ liệu.");
   expect(note).not.toHaveTextContent("migrated-from-dictate");
 });
 
